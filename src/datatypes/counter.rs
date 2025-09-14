@@ -8,6 +8,7 @@ use crate::{
         crdts::Crdt,
         datatype::DatatypeBlanket,
         datatype_instrument,
+        option::DatatypeOption,
         transactional::{TransactionContext, TransactionalDatatype},
     },
     operations::Operation,
@@ -21,14 +22,19 @@ pub struct Counter {
 }
 
 impl Counter {
-    // TODO: this should be pub (crate)
-    pub(crate) fn new(key: String, state: DatatypeState, client_info: Arc<ClientInfo>) -> Self {
+    pub(crate) fn new(
+        key: String,
+        state: DatatypeState,
+        client_info: Arc<ClientInfo>,
+        option: DatatypeOption,
+    ) -> Self {
         Counter {
             datatype: Arc::new(TransactionalDatatype::new(
                 &key,
                 DataType::Counter,
                 state,
                 client_info,
+                option,
             )),
             tx_ctx: Default::default(),
         }
@@ -52,8 +58,8 @@ impl Counter {
     ///
     /// ```
     /// # use syncyam::{Client, Counter, DatatypeState};
-    /// let client = Client::builder("test-collection", "test-client").build().unwrap();
-    /// let counter = client.create_counter("test-counter".to_string()).unwrap();
+    /// let client = Client::builder("test-collection", "test-client").build();
+    /// let counter = client.create_datatype("test-counter").build_counter().unwrap();
     /// assert_eq!(counter.increase_by(5), 5);
     /// assert_eq!(counter.increase_by(-2), 3);
     /// ```
@@ -80,8 +86,8 @@ impl Counter {
     ///
     /// ```
     /// # use syncyam::{Client, Counter, DatatypeState};
-    /// let client = Client::builder("test-collection", "test-client").build().unwrap();
-    /// let counter = client.create_counter("test-counter".to_string()).unwrap();
+    /// let client = Client::builder("test-collection", "test-client").build();
+    /// let counter = client.create_datatype("test-counter").build_counter().unwrap();
     /// assert_eq!(counter.increase(), 1);
     /// assert_eq!(counter.increase(), 2);
     /// ```
@@ -99,8 +105,8 @@ impl Counter {
     ///
     /// ```
     /// # use syncyam::{Client, Counter, DatatypeState};
-    /// let client = Client::builder("test-collection", "test-client").build().unwrap();
-    /// let counter = client.create_counter("test-counter".to_string()).unwrap();
+    /// let client = Client::builder("test-collection", "test-client").build();
+    /// let counter = client.create_datatype("test-counter").build_counter().unwrap();
     /// assert_eq!(counter.get_value(), 0);
     /// counter.increase();
     /// assert_eq!(counter.get_value(), 1);
@@ -130,8 +136,8 @@ impl Counter {
     ///
     /// ```
     /// # use syncyam::{Client, Counter, DatatypeState};
-    /// let client = Client::builder("test-collection", "test-client").build().unwrap();
-    /// let counter = client.create_counter("test-counter".to_string()).unwrap();
+    /// let client = Client::builder("test-collection", "test-client").build();
+    /// let counter = client.create_datatype("test-counter").build_counter().unwrap();
     ///
     /// // Successful transaction
     /// let result = counter.transaction("batch-update", |c| {
@@ -201,6 +207,7 @@ mod tests_counter {
             module_path!().to_owned(),
             Default::default(),
             Default::default(),
+            Default::default(),
         );
         assert_eq!(counter.get_type(), DataType::Counter);
         assert_eq!(counter.get_key(), module_path!().to_string());
@@ -214,6 +221,7 @@ mod tests_counter {
             module_path!().to_owned(),
             Default::default(),
             Default::default(),
+            Default::default(),
         );
         assert_eq!(1, counter.increase());
         assert_eq!(11, counter.increase_by(10));
@@ -225,6 +233,7 @@ mod tests_counter {
     fn can_use_transaction() {
         let counter = Counter::new(
             module_path!().to_owned(),
+            Default::default(),
             Default::default(),
             Default::default(),
         );
@@ -250,6 +259,7 @@ mod tests_counter {
     async fn can_run_transactions_concurrently() {
         let counter = Counter::new(
             module_path!().to_owned(),
+            Default::default(),
             Default::default(),
             Default::default(),
         );

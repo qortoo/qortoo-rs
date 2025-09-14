@@ -1,9 +1,11 @@
+pub mod builder;
 pub mod common;
 #[allow(dead_code)]
 pub mod counter;
 mod crdts;
 pub mod datatype;
 mod mutable;
+pub mod option;
 mod rollback;
 mod transactional;
 
@@ -27,7 +29,10 @@ use std::sync::Arc;
 
 pub(crate) use datatype_instrument;
 
-use crate::{Counter, DataType, Datatype, DatatypeState, clients::client::ClientInfo};
+use crate::{
+    Counter, DataType, Datatype, DatatypeState, clients::client::ClientInfo,
+    datatypes::option::DatatypeOption,
+};
 
 /// A typed wrapper for concrete datatypes managed by the client.
 ///
@@ -63,10 +68,11 @@ impl DatatypeSet {
         key: &str,
         state: DatatypeState,
         client_info: Arc<ClientInfo>,
+        option: DatatypeOption,
     ) -> Self {
         match r#type {
             DataType::Counter => {
-                DatatypeSet::Counter(Counter::new(key.to_owned(), state, client_info))
+                DatatypeSet::Counter(Counter::new(key.to_owned(), state, client_info, option))
             }
             _ => {
                 todo!()
@@ -97,6 +103,7 @@ mod tests_datatype_set {
             DataType::Counter,
             "k1",
             DatatypeState::DueToCreate,
+            Default::default(),
             Default::default(),
         );
         let ds2 = ds1.clone();

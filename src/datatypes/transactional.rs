@@ -8,7 +8,9 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use crate::{
     DataType, DatatypeState, IntoString,
     clients::client::ClientInfo,
-    datatypes::{common::ReturnType, datatype::Datatype, mutable::MutableDatatype},
+    datatypes::{
+        common::ReturnType, datatype::Datatype, mutable::MutableDatatype, option::DatatypeOption,
+    },
     errors::datatypes::DatatypeError,
     operations::Operation,
     types::uid::Duid,
@@ -74,6 +76,7 @@ pub struct Attributes {
     pub r#type: DataType,
     pub duid: Duid,
     pub client_info: Arc<ClientInfo>,
+    pub option: DatatypeOption,
 }
 
 pub struct TransactionalDatatype {
@@ -104,12 +107,14 @@ impl TransactionalDatatype {
         r#type: DataType,
         state: DatatypeState,
         client_info: Arc<ClientInfo>,
+        option: DatatypeOption,
     ) -> Self {
         let attr = Attributes {
             key: key.to_owned(),
             r#type,
             duid: Duid::new(),
             client_info,
+            option,
         };
         let transactional = Self {
             attr,
@@ -283,6 +288,7 @@ mod tests_transactional {
             DataType::Counter,
             Default::default(),
             Default::default(),
+            Default::default(),
         ));
         {
             let mutable = tx_dt.mutable.write();
@@ -319,6 +325,7 @@ mod tests_transactional {
             DataType::Counter,
             Default::default(),
             Default::default(),
+            Default::default(),
         ));
         let parent_span = Span::current();
 
@@ -352,6 +359,7 @@ mod tests_transactional {
         let tx_dt = Arc::new(TransactionalDatatype::new(
             module_path!(),
             DataType::Counter,
+            Default::default(),
             Default::default(),
             Default::default(),
         ));

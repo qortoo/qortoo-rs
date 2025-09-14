@@ -2,7 +2,7 @@ use std::fmt::Debug;
 
 pub use crate::{
     clients::client::Client,
-    datatypes::{DatatypeSet, counter::Counter, datatype::Datatype},
+    datatypes::{DatatypeSet, builder::DatatypeBuilder, counter::Counter, datatype::Datatype},
     errors::{clients::ClientError, datatypes::DatatypeError},
     types::datatype::{DataType, DatatypeState},
 };
@@ -10,6 +10,7 @@ pub use crate::{
 pub(crate) mod clients;
 mod constants;
 pub(crate) mod datatypes;
+pub(crate) mod defaults;
 pub(crate) mod errors;
 pub(crate) mod observability;
 pub(crate) mod operations;
