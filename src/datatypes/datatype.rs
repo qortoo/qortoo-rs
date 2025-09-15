@@ -1,12 +1,12 @@
 use crate::{DataType, DatatypeState, datatypes::transactional::TransactionalDatatype};
 
 /// The `Datatype` trait defines the common interface for all
-/// conflict-free datatypes (e.g., Counter, Register).
+/// conflict-free datatypes (e.g., Counter, Register, Document).
 ///
 /// Each datatype exposes:
-/// - a **key**: a unique identifier used to distinguish instances,
+/// - a **key**: a unique identifier used to distinguish instances in a collection,
 /// - a **type**: an enum variant of [`DataType`] describing the kind of datatype,
-/// - a **state**: a [`DatatypeState`] indicating the current lifecycle/status.
+/// - a **state**: a [`DatatypeState`] indicating the current lifecycle/state of this datatype.
 ///
 ///
 /// # Example
@@ -14,15 +14,18 @@ use crate::{DataType, DatatypeState, datatypes::transactional::TransactionalData
 /// use syncyam::Client;
 /// use syncyam::{Counter, Datatype};
 /// use syncyam::{DatatypeState, DataType};
-/// let client = Client::builder("test-collection", "test-client").build().unwrap();
-/// let counter = client.create_counter("test-counter".to_string()).unwrap();
+/// let client = Client::builder("test-collection", "test-client").build();
+/// let counter = client.create_datatype("test-counter".to_string()).build_counter().unwrap();
 /// assert_eq!(counter.get_key(), "test-counter");
 /// assert_eq!(counter.get_type(), DataType::Counter);
 /// assert_eq!(counter.get_state(), DatatypeState::DueToCreate);
 /// ```
 pub trait Datatype {
+    /// returns a unique identifier used to distinguish instances in a collection.
     fn get_key(&self) -> &str;
+    /// returns an enum variant of [`DataType`] describing the kind of this datatype.
     fn get_type(&self) -> DataType;
+    /// returns a [`DatatypeState`] indicating the current lifecycle/status of this datatype.
     fn get_state(&self) -> DatatypeState;
 }
 
@@ -60,6 +63,7 @@ mod tests_datatype_trait {
         let data = TransactionalDatatype::new(
             key,
             DataType::Counter,
+            Default::default(),
             Default::default(),
             Default::default(),
         );

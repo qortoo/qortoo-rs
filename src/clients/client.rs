@@ -3,8 +3,11 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 
 use crate::{
-    Counter, DataType, DatatypeState, IntoString, clients::datatype_manager::DatatypeManager,
-    datatypes::DatatypeSet, errors::clients::ClientError, types::uid::Cuid,
+    DataType, DatatypeBuilder, DatatypeState, IntoString,
+    clients::datatype_manager::DatatypeManager,
+    datatypes::{DatatypeSet, option::DatatypeOption},
+    errors::clients::ClientError,
+    types::uid::Cuid,
 };
 
 /// A builder for constructing a [`Client`].
@@ -15,9 +18,9 @@ use crate::{
 /// # Examples
 /// ```
 /// use syncyam::Client;
-/// let client = Client::builder("my-collection", "my-app").build().unwrap();
-/// assert_eq!(client.get_collection(), "my-collection");
-/// assert_eq!(client.get_alias(), "my-app");
+/// let client = Client::builder("test-collection", "test-app").build();
+/// assert_eq!(client.get_collection(), "test-collection");
+/// assert_eq!(client.get_alias(), "test-app");
 /// ```
 pub struct ClientBuilder {
     collection: String,
@@ -29,17 +32,17 @@ impl ClientBuilder {
     /// Finalizes the builder and returns a new [`Client`].
     ///
     /// It initializes client metadata and datatype management structures.
-    pub fn build(self) -> Result<Client, ClientError> {
+    pub fn build(self) -> Client {
         let client_info = Arc::new(ClientInfo {
             collection: self.collection.into_boxed_str(),
             cuid: self.cuid,
             alias: self.alias.into_boxed_str(),
         });
 
-        Ok(Client {
+        Client {
             info: client_info.clone(),
             datatypes: RwLock::new(DatatypeManager::new(client_info.clone())),
-        })
+        }
     }
 }
 
@@ -56,7 +59,7 @@ pub struct ClientInfo {
 /// are propagated into tracing metadata and used to associate created
 /// datatypes with their owner.
 ///
-/// Use [`Client::builder`] to construct a client and the `create_*`/`subscribe_*`
+/// Use [`Client::builder`] to construct a client and the `create_datatype` / `subscribe_datatype` / `subscribe_or_create_datatype`
 /// helpers to get specific datatypes.
 pub struct Client {
     info: Arc<ClientInfo>,
@@ -70,7 +73,7 @@ impl Client {
     /// # Examples
     /// ```
     /// use syncyam::Client;
-    /// let client = Client::builder("col", "alias").build().unwrap();
+    /// let client = Client::builder("col", "alias").build();
     /// assert_eq!(client.get_alias(), "alias");
     /// ```
     pub fn builder(collection: impl IntoString, alias: impl IntoString) -> ClientBuilder {
@@ -81,55 +84,16 @@ impl Client {
         }
     }
 
-    fn subscribe_or_create_datatype(
+    pub(crate) fn do_subscribe_or_create_datatype(
         &self,
         key: String,
         r#type: DataType,
         state: DatatypeState,
+        option: DatatypeOption,
     ) -> Result<DatatypeSet, ClientError> {
         self.datatypes
             .write()
-            .subscribe_or_create_datatype(&key, r#type, state)
-    }
-
-    /// Subscribes to an existing `Counter` identified by `key`.
-    ///
-    /// If the datatype does not yet exist locally, it is registered
-    /// with [`DatatypeState::DueToSubscribe`].
-    pub fn subscribe_counter(&self, key: impl IntoString) -> Result<Counter, ClientError> {
-        self.subscribe_or_create_datatype(
-            key.into(),
-            DataType::Counter,
-            DatatypeState::DueToSubscribe,
-        )
-        .map(|ds| Ok(ds.ensure_counter().unwrap()))?
-    }
-
-    /// Creates a `Counter` identified by `key`.
-    ///
-    /// If the datatype already exists with a compatible state, the
-    /// existing handle is returned. New instances are marked with
-    /// [`DatatypeState::DueToCreate`].
-    pub fn create_counter(&self, key: impl IntoString) -> Result<Counter, ClientError> {
-        self.subscribe_or_create_datatype(key.into(), DataType::Counter, DatatypeState::DueToCreate)
-            .map(|ds| Ok(ds.ensure_counter().unwrap()))?
-    }
-
-    /// Ensures a `Counter` exists by subscribing or creating it.
-    ///
-    /// This helper is convenient when the caller does not know if
-    /// the datatype exists. The returned instance is marked with
-    /// [`DatatypeState::DueToSubscribeOrCreate`].
-    pub fn subscribe_or_create_counter(
-        &self,
-        key: impl IntoString,
-    ) -> Result<Counter, ClientError> {
-        self.subscribe_or_create_datatype(
-            key.into(),
-            DataType::Counter,
-            DatatypeState::DueToSubscribeOrCreate,
-        )
-        .map(|ds| Ok(ds.ensure_counter().unwrap()))?
+            .subscribe_or_create_datatype(&key, r#type, state, option)
     }
 
     /// Returns an existing datatype by `key`, if it has been created or
@@ -147,6 +111,30 @@ impl Client {
     pub fn get_alias(&self) -> &str {
         &self.info.alias
     }
+
+    /// Get `DatatypeBuilder` to subscribe a `Datatype` identified by `key`.
+    ///
+    /// The `Datatype` built by this builder will be marked
+    /// with [`DatatypeState::DueToSubscribe`].
+    pub fn subscribe_datatype(&self, key: impl IntoString) -> DatatypeBuilder {
+        DatatypeBuilder::new(self, key.into(), DatatypeState::DueToSubscribe)
+    }
+
+    /// Get `DatatypeBuilder` to create a `Datatype` identified by `key`.
+    ///
+    /// The `Datatype` built by this builder will be marked
+    /// with [`DatatypeState::DueToCreate`].
+    pub fn create_datatype(&self, key: impl IntoString) -> DatatypeBuilder {
+        DatatypeBuilder::new(self, key.into(), DatatypeState::DueToCreate)
+    }
+
+    /// Get `DatatypeBuilder` to subscribe or create a `Datatype` identified by `key`.
+    ///
+    /// The `Datatype` built by this builder will be marked
+    /// with [`DatatypeState::DueToSubscribeOrCreate`].
+    pub fn subscribe_or_create_datatype(&self, key: impl IntoString) -> DatatypeBuilder {
+        DatatypeBuilder::new(self, key.into(), DatatypeState::DueToSubscribeOrCreate)
+    }
 }
 
 #[cfg(test)]
@@ -161,33 +149,30 @@ mod tests_client {
 
     #[test]
     fn can_build_client() {
-        let client = Client::builder("collection1", "alias1").build().unwrap();
+        let client = Client::builder("collection1", "alias1").build();
         assert_eq!(client.get_collection(), "collection1");
         assert_eq!(client.get_alias(), "alias1");
     }
 
     #[test]
     fn can_use_counter_from_client() {
-        let client1 = Client::builder(module_path!(), module_path!())
-            .build()
-            .unwrap();
+        let client1 = Client::builder(module_path!(), module_path!()).build();
 
         assert!(client1.get_datatype("k1").is_none());
 
-        let counter1 = client1.subscribe_counter("k1").unwrap();
+        let counter1 = client1.subscribe_datatype("k1").build_counter().unwrap();
         assert_eq!(counter1.get_state(), DatatypeState::DueToSubscribe);
         assert!(client1.get_datatype("k1").is_some());
 
-        let client2 = Client::builder(module_path!(), module_path!())
-            .build()
-            .unwrap();
-        let counter2 = client2.create_counter("k1").unwrap();
+        let client2 = Client::builder(module_path!(), module_path!()).build();
+        let counter2 = client2.create_datatype("k1").build_counter().unwrap();
         assert_eq!(counter2.get_state(), DatatypeState::DueToCreate);
 
-        let client3 = Client::builder(module_path!(), module_path!())
-            .build()
+        let client3 = Client::builder(module_path!(), module_path!()).build();
+        let counter3 = client3
+            .subscribe_or_create_datatype("k1")
+            .build_counter()
             .unwrap();
-        let counter3 = client3.subscribe_or_create_counter("k1").unwrap();
         assert_eq!(counter3.get_state(), DatatypeState::DueToSubscribeOrCreate);
     }
 }

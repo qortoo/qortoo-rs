@@ -4,7 +4,9 @@ use std::{
 };
 
 use crate::{
-    ClientError, DataType, DatatypeState, clients::client::ClientInfo, datatypes::DatatypeSet,
+    ClientError, DataType, DatatypeState,
+    clients::client::ClientInfo,
+    datatypes::{DatatypeSet, option::DatatypeOption},
     errors::err,
 };
 
@@ -30,6 +32,7 @@ impl DatatypeManager {
         key: &str,
         r#type: DataType,
         state: DatatypeState,
+        option: DatatypeOption,
     ) -> Result<DatatypeSet, ClientError> {
         match self.datatypes.entry(key.to_owned()) {
             Entry::Occupied(entry) => {
@@ -46,9 +49,9 @@ impl DatatypeManager {
                 }
                 Ok(existing.clone())
             }
-            Entry::Vacant(_) => {
-                let dt = DatatypeSet::new(r#type, key, state, self.info.clone());
-                self.datatypes.insert(key.to_owned(), dt.clone());
+            Entry::Vacant(entry) => {
+                let dt = DatatypeSet::new(r#type, key, state, self.info.clone(), option);
+                entry.insert(dt.clone());
                 Ok(dt)
             }
         }
@@ -62,15 +65,23 @@ mod tests_datatype_manager {
     #[test]
     fn can_use_subscribe_or_create_datatype() {
         let mut dm = DatatypeManager::new(Default::default());
-        let res1 =
-            dm.subscribe_or_create_datatype("k1", DataType::Counter, DatatypeState::DueToCreate);
+        let res1 = dm.subscribe_or_create_datatype(
+            "k1",
+            DataType::Counter,
+            DatatypeState::DueToCreate,
+            Default::default(),
+        );
         assert!(res1.is_ok());
         let dt1 = res1.unwrap();
         assert_eq!(dt1.get_type(), DataType::Counter);
         assert_eq!(dt1.get_state(), DatatypeState::DueToCreate);
 
-        let res2 =
-            dm.subscribe_or_create_datatype("k1", DataType::List, DatatypeState::DueToCreate);
+        let res2 = dm.subscribe_or_create_datatype(
+            "k1",
+            DataType::List,
+            DatatypeState::DueToCreate,
+            Default::default(),
+        );
         assert_eq!(
             res2.err().unwrap(),
             ClientError::FailedToSubscribeOrCreateDatatype("".into())
@@ -80,14 +91,19 @@ mod tests_datatype_manager {
             "k1",
             DataType::Counter,
             DatatypeState::DueToSubscribeOrCreate,
+            Default::default(),
         );
         assert_eq!(
             res3.err().unwrap(),
             ClientError::FailedToSubscribeOrCreateDatatype("".into())
         );
 
-        let res4 =
-            dm.subscribe_or_create_datatype("k1", DataType::Counter, DatatypeState::DueToCreate);
+        let res4 = dm.subscribe_or_create_datatype(
+            "k1",
+            DataType::Counter,
+            DatatypeState::DueToCreate,
+            Default::default(),
+        );
         assert!(res4.is_ok());
         let dt4 = res4.unwrap();
         assert_eq!(dt4.get_state(), DatatypeState::DueToCreate);
