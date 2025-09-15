@@ -1,0 +1,18 @@
+coverage:
+  status:
+    project:
+      default:
+        # Require at least 90% overall project coverage
+        target: 90%
+        # Allow a small fluctuation before failing the check
+        threshold: 1%
+    patch:
+      default:
+        # Also require new/changed code to meet 90%
+        target: 90%
+        threshold: 1%
+
+comment:
+  layout: "reach, diff, flags, files"
+  behavior: default
+  require_changes: false
