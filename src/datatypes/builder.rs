@@ -1,6 +1,6 @@
 use crate::{
     Client, ClientError, Counter, DataType, DatatypeSet, DatatypeState,
-    datatypes::option::DatatypeOption, defaults, errors::err,
+    datatypes::option::DatatypeOption, defaults,
 };
 
 /// A builder for constructing SyncYam datatypes with configurable options.
@@ -39,19 +39,19 @@ use crate::{
 /// The builder preserves the intended lifecycle state based on how it was
 /// obtained from [`Client`]. For example:
 /// ```
-/// use syncyam::{Client, DatatypeState};
+/// use syncyam::{Client, DatatypeState, Datatype};
 /// let client = Client::builder("docs-collection", "docs-app").build();
 /// assert_eq!(
-///     client.subscribe_datatype("k").build_counter().unwrap().get_state(),
+///     client.subscribe_datatype("k1").build_counter().unwrap().get_state(),
 ///     DatatypeState::DueToSubscribe
 /// );
 /// assert_eq!(
-///     client.create_datatype("k").build_counter().unwrap().get_state(),
+///     client.create_datatype("k2").build_counter().unwrap().get_state(),
 ///     DatatypeState::DueToCreate
 /// );
 /// assert_eq!(
 ///     client
-///         .subscribe_or_create_datatype("k")
+///         .subscribe_or_create_datatype("k3")
 ///         .build_counter()
 ///         .unwrap()
 ///         .get_state(),
