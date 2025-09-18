@@ -20,7 +20,7 @@ impl Debug for OperationBody {
 }
 
 impl MemoryMeasurable for OperationBody {
-    fn size(&self) -> usize {
+    fn size(&self) -> u64 {
         match self {
             #[cfg(test)]
             OperationBody::Delay4Test(body) => body.size(),
@@ -55,8 +55,8 @@ impl Delay4TestBody {
 
 #[cfg(test)]
 impl MemoryMeasurable for Delay4TestBody {
-    fn size(&self) -> usize {
-        size_of::<u64>() + size_of::<bool>()
+    fn size(&self) -> u64 {
+        (size_of::<u64>() + size_of::<bool>()) as u64
     }
 }
 
@@ -73,8 +73,8 @@ impl CounterIncreaseBody {
 }
 
 impl MemoryMeasurable for CounterIncreaseBody {
-    fn size(&self) -> usize {
-        size_of::<i64>()
+    fn size(&self) -> u64 {
+        size_of::<i64>() as u64
     }
 }
 
@@ -98,8 +98,8 @@ mod tests_operation_body {
     #[test]
     fn can_measure_body_size() {
         let body = OperationBody::CounterIncrease(CounterIncreaseBody::new(123));
-        assert_eq!(body.size(), size_of::<i64>());
+        assert_eq!(body.size(), size_of::<i64>() as u64);
         let body = OperationBody::Delay4Test(Delay4TestBody::new(123, true));
-        assert_eq!(body.size(), size_of::<u64>() + size_of::<bool>());
+        assert_eq!(body.size(), (size_of::<u64>() + size_of::<bool>()) as u64);
     }
 }
