@@ -79,15 +79,6 @@ impl DatatypeSet {
             }
         }
     }
-
-    /// Ensure and return the internal datatype if the type matches `DataType::Counter`.
-    ///
-    /// If the type doesn't match, this returns None.
-    pub fn ensure_counter(self) -> Option<Counter> {
-        match self {
-            DatatypeSet::Counter(cnt) => Some(cnt),
-        }
-    }
 }
 
 #[cfg(test)]

@@ -6,12 +6,13 @@ use crate::{
     types::{operation_id::OperationId, uid::Cuid},
 };
 
-const TRANSACTION_CONSTANT_SIZE: usize = size_of::<Vec<Operation>>() // operations
+const TRANSACTION_CONSTANT_SIZE: u64 = (size_of::<Vec<Operation>>() // operations
     + types::uid::UID_LEN // cuid
     + size_of::<Option<String>>() // tag
     + size_of::<u64>() // cseq
     + size_of::<u64>() // sseq
-    + size_of::<bool>(); // event
+    + size_of::<bool>())  // event
+    as u64;
 
 pub struct Transaction {
     cuid: Cuid,
@@ -91,10 +92,10 @@ impl Display for Transaction {
 }
 
 impl MemoryMeasurable for Transaction {
-    fn size(&self) -> usize {
-        let op_size: usize = self.operations.iter().map(|op| op.size()).sum();
-        let tag_size = match &self.tag {
-            Some(s) => s.len(),
+    fn size(&self) -> u64 {
+        let op_size: u64 = self.operations.iter().map(|op| op.size()).sum();
+        let tag_size: u64 = match &self.tag {
+            Some(s) => s.len() as u64,
             None => 0,
         };
         TRANSACTION_CONSTANT_SIZE + tag_size + op_size

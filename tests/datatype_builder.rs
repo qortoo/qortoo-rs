@@ -1,13 +1,13 @@
 mod tests_datatype_builder {
     use syncyam::{Client, DataType, Datatype, DatatypeState};
+    use tracing::instrument;
 
     #[test]
+    #[instrument]
     fn can_build_counter() {
         let client = Client::builder(module_path!(), module_path!()).build();
         let counter = client
             .create_datatype(module_path!())
-            .with_max_num_of_rollback_transactions(100000)
-            .with_max_size_of_rollback_memory(10_000_000)
             .build_counter()
             .unwrap();
         counter.increase_by(42);

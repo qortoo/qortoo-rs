@@ -20,7 +20,7 @@ pub struct Operation {
 }
 
 pub trait MemoryMeasurable {
-    fn size(&self) -> usize;
+    fn size(&self) -> u64;
 }
 
 impl Operation {
@@ -69,8 +69,8 @@ impl Display for Operation {
 }
 
 impl MemoryMeasurable for Operation {
-    fn size(&self) -> usize {
-        size_of::<u64>() + size_of::<SystemTime>() + self.body.size()
+    fn size(&self) -> u64 {
+        (size_of::<u64>() + size_of::<SystemTime>()) as u64 + self.body.size()
     }
 }
 
@@ -92,7 +92,7 @@ mod tests_operations {
 
     #[test]
     fn can_measure_operation_size() {
-        let constant_size = size_of::<u64>() + size_of::<SystemTime>();
+        let constant_size = (size_of::<u64>() + size_of::<SystemTime>()) as u64;
         let op = Operation::new_counter_increase(1);
         assert_eq!(op.size(), constant_size + op.body.size());
         let op = Operation::new_delay_for_test(1, true);

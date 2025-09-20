@@ -202,6 +202,7 @@ mod tests_counter {
     }
 
     #[test]
+    #[instrument]
     fn can_call_public_blanket_trait_methods() {
         let counter = Counter::new(
             module_path!().to_owned(),

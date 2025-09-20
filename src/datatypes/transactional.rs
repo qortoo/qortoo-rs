@@ -113,23 +113,16 @@ impl TransactionalDatatype {
             key: key.to_owned(),
             r#type,
             duid: Duid::new(),
-            client_info,
+            client_info: client_info.clone(),
             option,
         };
-        let transactional = Self {
+        Self {
             attr,
-            mutable: RwLock::new(MutableDatatype::new(r#type, state)),
+            mutable: RwLock::new(MutableDatatype::new(r#type, state, client_info)),
             tx_ctx: Default::default(),
             op_mutex: Default::default(),
             tx_mutex: Default::default(),
-        };
-        transactional.set_rollback_data();
-        transactional
-    }
-
-    fn set_rollback_data(&self) {
-        let mut mutable = self.mutable.write();
-        mutable.set_rollback();
+        }
     }
 
     pub fn execute_local_operation_as_tx(
@@ -294,7 +287,7 @@ mod tests_transactional {
             let mutable = tx_dt.mutable.write();
             assert_eq!(0, mutable.op_id.cseq);
             assert!(mutable.transaction.is_none());
-            assert_eq!(0, mutable.rollback.transactions.len());
+            assert_eq!(mutable.op_id, mutable.rollback.op_id);
         }
 
         let op1 = Operation::new_delay_for_test(10, true);
@@ -304,7 +297,7 @@ mod tests_transactional {
             let mutable = tx_dt.mutable.write();
             assert_eq!(1, mutable.op_id.cseq);
             assert!(mutable.transaction.is_none());
-            assert_eq!(1, mutable.rollback.transactions.len());
+            assert_eq!(mutable.op_id, mutable.rollback.op_id);
         }
 
         let op2 = Operation::new_delay_for_test(10, false);
@@ -313,7 +306,7 @@ mod tests_transactional {
         {
             let mutable = tx_dt.mutable.write();
             assert_eq!(1, mutable.op_id.cseq);
-            assert_eq!(1, mutable.rollback.transactions.len());
+            assert_eq!(mutable.op_id, mutable.rollback.op_id);
         }
     }
 

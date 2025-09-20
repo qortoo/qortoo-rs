@@ -9,7 +9,7 @@ use crate::{
 
 pub mod counter_crdt;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Crdt {
     Counter(CounterCrdt),
 }
