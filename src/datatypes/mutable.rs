@@ -4,11 +4,11 @@ use tracing::instrument;
 
 use crate::{
     DataType, DatatypeError, DatatypeState,
+    clients::client::ClientInfo,
     datatypes::{common::ReturnType, crdts::Crdt, rollback::Rollback},
     operations::{Operation, transaction::Transaction},
     types::operation_id::OperationId,
 };
-use crate::clients::client::ClientInfo;
 
 #[derive(Debug)]
 pub struct MutableDatatype {
