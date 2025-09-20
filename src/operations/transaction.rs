@@ -93,7 +93,7 @@ impl Display for Transaction {
 
 impl MemoryMeasurable for Transaction {
     fn size(&self) -> u64 {
-        let op_size: u64 = self.operations.iter().map(|op| op.size()).sum()  ;
+        let op_size: u64 = self.operations.iter().map(|op| op.size()).sum();
         let tag_size: u64 = match &self.tag {
             Some(s) => s.len() as u64,
             None => 0,

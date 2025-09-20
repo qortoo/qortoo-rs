@@ -17,3 +17,6 @@ target
 .vscode
 .cursor
 coverage
+AGENTS.md
+GEMINI.md
+CLAUDE.md

@@ -4,10 +4,11 @@ use tracing::instrument;
 
 use crate::{
     DataType, DatatypeError, DatatypeState,
-    datatypes::{common::ReturnType, crdts::Crdt, rollback::RollbackData},
+    datatypes::{common::ReturnType, crdts::Crdt, rollback::Rollback},
     operations::{Operation, transaction::Transaction},
     types::operation_id::OperationId,
 };
+use crate::clients::client::ClientInfo;
 
 #[derive(Debug)]
 pub struct MutableDatatype {
@@ -15,35 +16,32 @@ pub struct MutableDatatype {
     pub state: DatatypeState,
     pub op_id: OperationId,
     pub transaction: Option<Transaction>,
-    pub rollback: RollbackData,
+    pub rollback: Rollback,
+}
+
+pub struct OperationalDatatype<'a> {
+    pub crdt: &'a mut Crdt,
+    pub op_id: &'a mut OperationId,
 }
 
 impl MutableDatatype {
-    pub fn new(r#type: DataType, state: DatatypeState) -> Self {
+    pub fn new(r#type: DataType, state: DatatypeState, client_info: Arc<ClientInfo>) -> Self {
+        let crdt = Crdt::new(r#type);
+        let op_id = OperationId::new_with_cuid(&client_info.cuid);
         Self {
-            crdt: Crdt::new(r#type),
+            crdt: crdt.clone(),
             state,
-            op_id: OperationId::new(),
+            op_id: op_id.clone(),
             transaction: Default::default(),
-            rollback: Default::default(),
+            rollback: Rollback::new(crdt, state, op_id.clone()),
         }
-    }
-
-    pub fn set_rollback(&mut self) {
-        self.rollback
-            .set(&self.op_id, self.crdt.serialize(), self.state);
     }
 
     #[instrument(skip_all)]
     pub fn do_rollback(&mut self) {
         self.op_id = self.rollback.op_id.clone();
         self.state = self.rollback.state;
-        self.crdt.deserialize(&self.rollback.crdt);
-        let transactions = self.rollback.transactions.clone();
-
-        for tx in transactions.iter() {
-            self.replay_transaction(tx);
-        }
+        self.crdt = self.rollback.shadow_crdt.clone();
     }
 
     pub fn end_transaction(&mut self, tag: Option<String>, committed: bool) {
@@ -51,7 +49,7 @@ impl MutableDatatype {
             if let Some(mut tx) = self.transaction.take() {
                 tx.set_tag(tag);
                 let tx = Arc::new(tx);
-                self.rollback.push_transaction(tx);
+                self.commit_transaction_on_rollback(tx.clone());
             }
         } else {
             self.do_rollback();
@@ -59,12 +57,12 @@ impl MutableDatatype {
     }
 
     fn replay_local_operation(
-        &mut self,
+        op_dt: &mut OperationalDatatype,
         op: &Operation,
         op_id: &OperationId,
     ) -> Result<ReturnType, DatatypeError> {
-        self.op_id.sync(op_id);
-        let result = self.crdt.execute_local_operation(op);
+        op_dt.op_id.sync(op_id);
+        let result = op_dt.crdt.execute_local_operation(op);
         if result.is_err() {
             // this cannot happen
             unreachable!()
@@ -72,12 +70,13 @@ impl MutableDatatype {
         result
     }
 
-    fn replay_transaction(&mut self, tx: &Arc<Transaction>) {
+    fn commit_transaction_on_rollback(&mut self, tx: Arc<Transaction>) {
         if *tx.cuid() == self.op_id.cuid {
             let mut op_id = tx.get_op_id();
             tx.iter().for_each(|op| {
                 op_id.lamport = op.lamport;
-                self.replay_local_operation(op, &op_id).unwrap();
+                let mut op_dt = self.rollback.get_operational_datatype();
+                Self::replay_local_operation(&mut op_dt, op, &op_id).unwrap();
             });
         } else {
             // replay remote operation

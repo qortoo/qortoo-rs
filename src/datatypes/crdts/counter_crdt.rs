@@ -4,7 +4,7 @@ use crate::{
     operations::{Operation, body::OperationBody},
 };
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct CounterCrdt {
     value: i64,
 }
