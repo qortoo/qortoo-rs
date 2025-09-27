@@ -54,19 +54,16 @@ where
 mod tests_datatype_trait {
     use crate::{
         DataType, DatatypeState,
-        datatypes::{datatype::Datatype, transactional::TransactionalDatatype},
+        datatypes::{
+            common::new_attribute, datatype::Datatype, transactional::TransactionalDatatype,
+        },
     };
 
     #[test]
     fn can_call_datatype_trait_functions() {
-        let key = module_path!();
-        let data = TransactionalDatatype::new(
-            key,
-            DataType::Counter,
-            Default::default(),
-            Default::default(),
-            Default::default(),
-        );
+        let attr = new_attribute!(DataType::Counter);
+        let key = attr.key.clone();
+        let data = TransactionalDatatype::new_arc(attr, DatatypeState::DueToCreate);
         assert_eq!(data.get_key(), key);
         assert_eq!(data.get_type(), DataType::Counter);
         assert_eq!(data.get_state(), DatatypeState::DueToCreate);

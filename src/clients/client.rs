@@ -5,7 +5,7 @@ use parking_lot::RwLock;
 use crate::{
     DataType, DatatypeBuilder, DatatypeState, IntoString,
     clients::datatype_manager::DatatypeManager,
-    datatypes::{DatatypeSet, option::DatatypeOption},
+    datatypes::{datatype_set::DatatypeSet, option::DatatypeOption},
     errors::clients::ClientError,
     types::uid::Cuid,
 };
@@ -46,7 +46,7 @@ impl ClientBuilder {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct ClientInfo {
     pub collection: Box<str>,
     pub cuid: Cuid,

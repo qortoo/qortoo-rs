@@ -1,6 +1,6 @@
 use crate::{
-    Client, ClientError, Counter, DataType, DatatypeSet, DatatypeState,
-    datatypes::option::DatatypeOption,
+    Client, ClientError, Counter, DataType, DatatypeState,
+    datatypes::{datatype_set::DatatypeSet, option::DatatypeOption},
 };
 
 /// A builder for constructing SyncYam datatypes with configurable options.

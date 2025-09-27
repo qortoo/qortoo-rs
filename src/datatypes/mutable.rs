@@ -3,15 +3,20 @@ use std::sync::Arc;
 use tracing::instrument;
 
 use crate::{
-    DataType, DatatypeError, DatatypeState,
-    clients::client::ClientInfo,
-    datatypes::{common::ReturnType, crdts::Crdt, rollback::Rollback},
+    DatatypeError, DatatypeState,
+    datatypes::{
+        common::{Attribute, ReturnType},
+        crdts::Crdt,
+        rollback::Rollback,
+    },
     operations::{Operation, transaction::Transaction},
     types::operation_id::OperationId,
 };
 
 #[derive(Debug)]
 pub struct MutableDatatype {
+    #[allow(dead_code)]
+    attr: Arc<Attribute>,
     pub crdt: Crdt,
     pub state: DatatypeState,
     pub op_id: OperationId,
@@ -25,10 +30,11 @@ pub struct OperationalDatatype<'a> {
 }
 
 impl MutableDatatype {
-    pub fn new(r#type: DataType, state: DatatypeState, client_info: Arc<ClientInfo>) -> Self {
-        let crdt = Crdt::new(r#type);
-        let op_id = OperationId::new_with_cuid(&client_info.cuid);
+    pub fn new(attr: Arc<Attribute>, state: DatatypeState) -> Self {
+        let crdt = Crdt::new(attr.r#type);
+        let op_id = OperationId::new_with_cuid(&attr.client_info.cuid);
         Self {
+            attr,
             crdt: crdt.clone(),
             state,
             op_id: op_id.clone(),

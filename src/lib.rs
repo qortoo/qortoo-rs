@@ -1,8 +1,10 @@
 use std::fmt::Debug;
 
+pub use datatypes::datatype_set::DatatypeSet;
+
 pub use crate::{
     clients::client::Client,
-    datatypes::{DatatypeSet, builder::DatatypeBuilder, counter::Counter, datatype::Datatype},
+    datatypes::{builder::DatatypeBuilder, counter::Counter, datatype::Datatype},
     errors::{clients::ClientError, datatypes::DatatypeError},
     types::datatype::{DataType, DatatypeState},
 };

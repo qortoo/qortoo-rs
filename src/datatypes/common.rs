@@ -1,4 +1,125 @@
+use std::{
+    fmt::{Debug, Formatter},
+    sync::Arc,
+};
+
+use crate::{
+    DataType, clients::client::ClientInfo, datatypes::option::DatatypeOption, types::uid::Duid,
+};
+
+macro_rules! datatype_instrument {
+    ($(#[$attr:meta])* $vis:vis fn $name:ident $($rest:tt)*) => {
+        $(#[$attr])*
+        #[tracing::instrument(skip_all,
+            fields(
+                syncyam.col=%self.datatype.attr.client_info.collection,
+                syncyam.cl=%self.datatype.attr.client_info.alias,
+                syncyam.cuid=%self.datatype.attr.client_info.cuid,
+                syncyam.dt=%self.datatype.attr.key,
+                syncyam.duid=%self.datatype.attr.duid,
+            )
+        )]
+        $vis fn $name $($rest)*
+    };
+}
+
+pub(crate) use datatype_instrument;
+
+pub struct Attribute {
+    pub key: String,
+    pub r#type: DataType,
+    pub duid: Duid,
+    pub client_info: Arc<ClientInfo>,
+    pub option: DatatypeOption,
+}
+
+impl Debug for Attribute {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Datatype")
+            .field("client", &self.client_info)
+            .field("key", &self.key)
+            .field("type", &self.r#type)
+            .field("duid", &self.duid.to_string())
+            .field("option", &self.option)
+            .finish()
+    }
+}
+
+impl Attribute {
+    pub fn new(
+        key: String,
+        r#type: DataType,
+        client_info: Arc<ClientInfo>,
+        option: DatatypeOption,
+    ) -> Self {
+        Self {
+            key,
+            r#type,
+            duid: Duid::new(),
+            client_info,
+            option,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn new_for_test(
+        mut paths: std::collections::VecDeque<String>,
+        r#type: DataType,
+    ) -> Arc<Self> {
+        let key = paths.pop_back().unwrap_or(r#type.to_string());
+        let client_alias = paths.pop_back().unwrap_or("client".to_owned());
+        let collection = paths.pop_back().unwrap_or("collection".to_owned());
+        let client_info = Arc::new(ClientInfo {
+            collection: collection.into_boxed_str(),
+            cuid: crate::types::uid::Cuid::new(),
+            alias: client_alias.into_boxed_str(),
+        });
+        Arc::new(Self {
+            key,
+            r#type,
+            duid: Duid::new(),
+            client_info,
+            option: Default::default(),
+        })
+    }
+}
+
+#[cfg(test)]
+macro_rules! new_attribute {
+    ($enum_variant:path) => {{
+        let paths = crate::utils::path::caller_path!();
+        crate::datatypes::common::Attribute::new_for_test(paths, $enum_variant)
+    }};
+}
+
+#[cfg(test)]
+pub(crate) use new_attribute;
+
 pub enum ReturnType {
     None,
     Counter(i64),
+}
+
+#[cfg(test)]
+mod tests_attribute {
+    use tracing::info;
+
+    use crate::{DataType, utils::path::split_module_path};
+
+    #[test]
+    fn can_new_attribute_for_test() {
+        let attr = new_attribute!(DataType::Counter);
+        info!("{:?}", attr);
+        let mut mod_path = split_module_path(module_path!());
+        assert!(attr.key.contains(mod_path.pop_back().unwrap().as_str()));
+        assert_eq!(attr.r#type, DataType::Counter);
+        assert_eq!(
+            attr.client_info.alias.to_string(),
+            mod_path.pop_back().unwrap()
+        );
+        assert_eq!(
+            attr.client_info.collection.to_string(),
+            mod_path.pop_back().unwrap()
+        );
+    }
 }

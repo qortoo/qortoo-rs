@@ -6,7 +6,7 @@ use std::{
 use crate::{
     ClientError, DataType, DatatypeState,
     clients::client::ClientInfo,
-    datatypes::{DatatypeSet, option::DatatypeOption},
+    datatypes::{datatype_set::DatatypeSet, option::DatatypeOption},
     errors::err,
 };
 

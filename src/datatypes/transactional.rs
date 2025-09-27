@@ -7,13 +7,13 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::{
     DataType, DatatypeState, IntoString,
-    clients::client::ClientInfo,
     datatypes::{
-        common::ReturnType, datatype::Datatype, mutable::MutableDatatype, option::DatatypeOption,
+        common::{Attribute, ReturnType},
+        datatype::Datatype,
+        mutable::MutableDatatype,
     },
     errors::datatypes::DatatypeError,
     operations::Operation,
-    types::uid::Duid,
     utils::{defer_guard::DeferGuard, no_guard_mutex::NoGuardMutex},
 };
 
@@ -71,16 +71,8 @@ pub enum BeginTransactionResult<'a> {
     OtherCtx,
 }
 
-pub struct Attributes {
-    pub key: String,
-    pub r#type: DataType,
-    pub duid: Duid,
-    pub client_info: Arc<ClientInfo>,
-    pub option: DatatypeOption,
-}
-
 pub struct TransactionalDatatype {
-    pub attr: Attributes,
+    pub attr: Arc<Attribute>,
     pub mutable: RwLock<MutableDatatype>,
     tx_ctx: RwLock<Option<Arc<TransactionContext>>>,
     op_mutex: NoGuardMutex,
@@ -102,27 +94,14 @@ impl Datatype for TransactionalDatatype {
 }
 
 impl TransactionalDatatype {
-    pub fn new(
-        key: &str,
-        r#type: DataType,
-        state: DatatypeState,
-        client_info: Arc<ClientInfo>,
-        option: DatatypeOption,
-    ) -> Self {
-        let attr = Attributes {
-            key: key.to_owned(),
-            r#type,
-            duid: Duid::new(),
-            client_info: client_info.clone(),
-            option,
-        };
-        Self {
-            attr,
-            mutable: RwLock::new(MutableDatatype::new(r#type, state, client_info)),
+    pub fn new_arc(attr: Arc<Attribute>, state: DatatypeState) -> Arc<Self> {
+        Arc::new(Self {
+            attr: attr.clone(),
+            mutable: RwLock::new(MutableDatatype::new(attr, state)),
             tx_ctx: Default::default(),
             op_mutex: Default::default(),
             tx_mutex: Default::default(),
-        }
+        })
     }
 
     pub fn execute_local_operation_as_tx(
@@ -269,20 +248,18 @@ mod tests_transactional {
 
     use crate::{
         DataType,
-        datatypes::transactional::{TransactionContext, TransactionalDatatype},
+        datatypes::{
+            common::new_attribute,
+            transactional::{TransactionContext, TransactionalDatatype},
+        },
         operations::Operation,
     };
 
     #[test]
     #[instrument]
     fn can_fail_operation_execution() {
-        let tx_dt = Arc::new(TransactionalDatatype::new(
-            "can_fail_operation_execution",
-            DataType::Counter,
-            Default::default(),
-            Default::default(),
-            Default::default(),
-        ));
+        let attr = new_attribute!(DataType::Counter);
+        let tx_dt = TransactionalDatatype::new_arc(attr, Default::default());
         {
             let mutable = tx_dt.mutable.write();
             assert_eq!(0, mutable.op_id.cseq);
@@ -313,13 +290,8 @@ mod tests_transactional {
     #[tokio::test(flavor = "multi_thread", worker_threads = 10)]
     #[instrument]
     async fn can_do_transaction() {
-        let tx_dt = Arc::new(TransactionalDatatype::new(
-            "can_do_transaction",
-            DataType::Counter,
-            Default::default(),
-            Default::default(),
-            Default::default(),
-        ));
+        let attr = new_attribute!(DataType::Counter);
+        let tx_dt = TransactionalDatatype::new_arc(attr, Default::default());
         let parent_span = Span::current();
 
         let mut join_handles = vec![];
@@ -349,13 +321,8 @@ mod tests_transactional {
     #[tokio::test(flavor = "multi_thread", worker_threads = 10)]
     #[instrument]
     async fn can_execute_the_same_tx_ctx_continuously_with_none_tx_ctx() {
-        let tx_dt = Arc::new(TransactionalDatatype::new(
-            module_path!(),
-            DataType::Counter,
-            Default::default(),
-            Default::default(),
-            Default::default(),
-        ));
+        let attr = new_attribute!(DataType::Counter);
+        let tx_dt = TransactionalDatatype::new_arc(attr, Default::default());
         let parent_span = Span::current();
         let _span_guard = parent_span.enter();
         let tx_ctx_with_tag = Arc::new(TransactionContext::new("test_tx"));
