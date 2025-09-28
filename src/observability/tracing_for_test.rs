@@ -15,7 +15,7 @@ use tracing::{
 };
 use tracing_subscriber::{Layer, Registry, layer::Context, prelude::*, registry::LookupSpan};
 
-use crate::{constants, utils::runtime::get_or_init_runtime};
+use crate::{constants, utils::runtime::get_or_init_runtime_handle};
 
 const MESSAGE_FIELD: &str = "message";
 const COLLECTION_FIELD: &str = "syncyam.col";
@@ -36,9 +36,9 @@ extern "C" fn shutdown_provider() {
 }
 
 pub fn init(level: LevelFilter) {
-    let rt = get_or_init_runtime("observability");
+    let handle = get_or_init_runtime_handle("observability");
 
-    rt.block_on(async move {
+    handle.block_on(async move {
         if constants::is_otel_enabled() {
             println!(
                 "Initialize open-telemetry tracing with service '{}' for '{}' level",
