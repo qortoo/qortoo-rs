@@ -32,7 +32,7 @@ pub struct OperationalDatatype<'a> {
 impl MutableDatatype {
     pub fn new(attr: Arc<Attribute>, state: DatatypeState) -> Self {
         let crdt = Crdt::new(attr.r#type);
-        let op_id = OperationId::new_with_cuid(&attr.client_info.cuid);
+        let op_id = OperationId::new_with_cuid(&attr.client_common.cuid);
         Self {
             attr,
             crdt: crdt.clone(),

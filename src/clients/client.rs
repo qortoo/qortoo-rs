@@ -4,10 +4,9 @@ use parking_lot::RwLock;
 
 use crate::{
     DataType, DatatypeBuilder, DatatypeState, IntoString,
-    clients::datatype_manager::DatatypeManager,
+    clients::{common::ClientCommon, datatype_manager::DatatypeManager},
     datatypes::{datatype_set::DatatypeSet, option::DatatypeOption},
     errors::clients::ClientError,
-    types::uid::Cuid,
 };
 
 /// A builder for constructing a [`Client`].
@@ -25,7 +24,6 @@ use crate::{
 pub struct ClientBuilder {
     collection: String,
     alias: String,
-    cuid: Cuid,
 }
 
 impl ClientBuilder {
@@ -33,24 +31,15 @@ impl ClientBuilder {
     ///
     /// It initializes client metadata and datatype management structures.
     pub fn build(self) -> Client {
-        let client_info = Arc::new(ClientInfo {
-            collection: self.collection.into_boxed_str(),
-            cuid: self.cuid,
-            alias: self.alias.into_boxed_str(),
-        });
-
+        let common = ClientCommon::new_arc(
+            self.collection.into_boxed_str(),
+            self.alias.into_boxed_str(),
+        );
         Client {
-            info: client_info.clone(),
-            datatypes: RwLock::new(DatatypeManager::new(client_info.clone())),
+            datatypes: RwLock::new(DatatypeManager::new(common.clone())),
+            common,
         }
     }
-}
-
-#[derive(Default, Debug)]
-pub struct ClientInfo {
-    pub collection: Box<str>,
-    pub cuid: Cuid,
-    pub alias: Box<str>,
 }
 
 /// Facade for creating and subscribing to SyncYam datatypes.
@@ -59,10 +48,10 @@ pub struct ClientInfo {
 /// are propagated into tracing metadata and used to associate created
 /// datatypes with their owner.
 ///
-/// Use [`Client::builder`] to construct a client and the `create_datatype` / `subscribe_datatype` / `subscribe_or_create_datatype`
+/// Use [`Client::builder`] to construct a client, and the `create_datatype` / `subscribe_datatype` / `subscribe_or_create_datatype`
 /// helpers to get specific datatypes.
 pub struct Client {
-    info: Arc<ClientInfo>,
+    common: Arc<ClientCommon>,
     datatypes: RwLock<DatatypeManager>,
 }
 
@@ -80,7 +69,6 @@ impl Client {
         ClientBuilder {
             collection: collection.into(),
             alias: alias.into(),
-            cuid: Cuid::new(),
         }
     }
 
@@ -104,12 +92,12 @@ impl Client {
 
     /// Returns the collection name this client is associated with.
     pub fn get_collection(&self) -> &str {
-        &self.info.collection
+        &self.common.collection
     }
 
     /// Returns the alias (application/client name) for this client.
     pub fn get_alias(&self) -> &str {
-        &self.info.alias
+        &self.common.alias
     }
 
     /// Get `DatatypeBuilder` to subscribe a `Datatype` identified by `key`.

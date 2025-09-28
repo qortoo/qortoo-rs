@@ -3,18 +3,16 @@ use std::{
     sync::Arc,
 };
 
-use crate::{
-    DataType, clients::client::ClientInfo, datatypes::option::DatatypeOption, types::uid::Duid,
-};
+use crate::{DataType, datatypes::option::DatatypeOption, types::uid::Duid};
 
 macro_rules! datatype_instrument {
     ($(#[$attr:meta])* $vis:vis fn $name:ident $($rest:tt)*) => {
         $(#[$attr])*
         #[tracing::instrument(skip_all,
             fields(
-                syncyam.col=%self.datatype.attr.client_info.collection,
-                syncyam.cl=%self.datatype.attr.client_info.alias,
-                syncyam.cuid=%self.datatype.attr.client_info.cuid,
+                syncyam.col=%self.datatype.attr.client_common.collection,
+                syncyam.cl=%self.datatype.attr.client_common.alias,
+                syncyam.cuid=%self.datatype.attr.client_common.cuid,
                 syncyam.dt=%self.datatype.attr.key,
                 syncyam.duid=%self.datatype.attr.duid,
             )
@@ -29,14 +27,14 @@ pub struct Attribute {
     pub key: String,
     pub r#type: DataType,
     pub duid: Duid,
-    pub client_info: Arc<ClientInfo>,
+    pub client_common: Arc<ClientCommon>,
     pub option: DatatypeOption,
 }
 
 impl Debug for Attribute {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Datatype")
-            .field("client", &self.client_info)
+            .field("client", &self.client_common)
             .field("key", &self.key)
             .field("type", &self.r#type)
             .field("duid", &self.duid.to_string())
@@ -49,14 +47,14 @@ impl Attribute {
     pub fn new(
         key: String,
         r#type: DataType,
-        client_info: Arc<ClientInfo>,
+        client_common: Arc<ClientCommon>,
         option: DatatypeOption,
     ) -> Self {
         Self {
             key,
             r#type,
             duid: Duid::new(),
-            client_info,
+            client_common,
             option,
         }
     }
@@ -67,18 +65,20 @@ impl Attribute {
         r#type: DataType,
     ) -> Arc<Self> {
         let key = paths.pop_back().unwrap_or(r#type.to_string());
-        let client_alias = paths.pop_back().unwrap_or("client".to_owned());
-        let collection = paths.pop_back().unwrap_or("collection".to_owned());
-        let client_info = Arc::new(ClientInfo {
-            collection: collection.into_boxed_str(),
-            cuid: crate::types::uid::Cuid::new(),
-            alias: client_alias.into_boxed_str(),
-        });
+        let client_alias = paths
+            .pop_back()
+            .unwrap_or("client".to_owned())
+            .into_boxed_str();
+        let collection = paths
+            .pop_back()
+            .unwrap_or("collection".to_owned())
+            .into_boxed_str();
+        let client_common = ClientCommon::new_arc(collection, client_alias);
         Arc::new(Self {
             key,
             r#type,
             duid: Duid::new(),
-            client_info,
+            client_common,
             option: Default::default(),
         })
     }
@@ -94,6 +94,8 @@ macro_rules! new_attribute {
 
 #[cfg(test)]
 pub(crate) use new_attribute;
+
+use crate::clients::common::ClientCommon;
 
 pub enum ReturnType {
     None,
@@ -114,11 +116,11 @@ mod tests_attribute {
         assert!(attr.key.contains(mod_path.pop_back().unwrap().as_str()));
         assert_eq!(attr.r#type, DataType::Counter);
         assert_eq!(
-            attr.client_info.alias.to_string(),
+            attr.client_common.alias.to_string(),
             mod_path.pop_back().unwrap()
         );
         assert_eq!(
-            attr.client_info.collection.to_string(),
+            attr.client_common.collection.to_string(),
             mod_path.pop_back().unwrap()
         );
     }

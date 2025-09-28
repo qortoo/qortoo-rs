@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     Counter, DataType, Datatype, DatatypeState,
-    clients::client::ClientInfo,
+    clients::common::ClientCommon,
     datatypes::{common::Attribute, option::DatatypeOption, transactional::TransactionalDatatype},
 };
 
@@ -39,10 +39,15 @@ impl DatatypeSet {
         r#type: DataType,
         key: &str,
         state: DatatypeState,
-        client_info: Arc<ClientInfo>,
+        client_common: Arc<ClientCommon>,
         option: DatatypeOption,
     ) -> Self {
-        let attr = Arc::new(Attribute::new(key.to_owned(), r#type, client_info, option));
+        let attr = Arc::new(Attribute::new(
+            key.to_owned(),
+            r#type,
+            client_common,
+            option,
+        ));
         let datatype = TransactionalDatatype::new_arc(attr, state);
         match r#type {
             DataType::Counter => DatatypeSet::Counter(Counter::new(datatype)),
@@ -57,6 +62,7 @@ impl DatatypeSet {
 mod tests_datatype_set {
     use crate::{
         Counter, DataType, Datatype, DatatypeState,
+        clients::common::new_client_common,
         datatypes::{
             datatype::DatatypeBlanket, datatype_set::DatatypeSet,
             transactional::TransactionalDatatype,
@@ -69,7 +75,7 @@ mod tests_datatype_set {
             DataType::Counter,
             "k1",
             DatatypeState::DueToCreate,
-            Default::default(),
+            new_client_common!(),
             Default::default(),
         );
         let ds2 = ds1.clone();

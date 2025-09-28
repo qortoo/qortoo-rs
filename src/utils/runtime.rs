@@ -1,12 +1,14 @@
 use std::{
     collections::HashMap,
+    num::NonZeroUsize,
     sync::{Arc, OnceLock},
+    thread::available_parallelism,
 };
-use std::num::NonZeroUsize;
-use std::thread::available_parallelism;
+
 use parking_lot::Mutex;
 use tokio::runtime::{Builder, Handle, Runtime};
 use tracing::debug;
+
 use crate::defaults;
 
 type RuntimeMap = HashMap<String, Runtime>;

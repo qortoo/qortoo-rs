@@ -5,21 +5,21 @@ use std::{
 
 use crate::{
     ClientError, DataType, DatatypeState,
-    clients::client::ClientInfo,
+    clients::common::ClientCommon,
     datatypes::{datatype_set::DatatypeSet, option::DatatypeOption},
     errors::err,
 };
 
 pub struct DatatypeManager {
-    info: Arc<ClientInfo>,
+    common: Arc<ClientCommon>,
     datatypes: HashMap<String, DatatypeSet>,
 }
 
 impl DatatypeManager {
-    pub fn new(client_info: Arc<ClientInfo>) -> Self {
+    pub fn new(common: Arc<ClientCommon>) -> Self {
         Self {
             datatypes: HashMap::new(),
-            info: client_info,
+            common,
         }
     }
 
@@ -50,7 +50,7 @@ impl DatatypeManager {
                 Ok(existing.clone())
             }
             Entry::Vacant(entry) => {
-                let dt = DatatypeSet::new(r#type, key, state, self.info.clone(), option);
+                let dt = DatatypeSet::new(r#type, key, state, self.common.clone(), option);
                 entry.insert(dt.clone());
                 Ok(dt)
             }
@@ -60,11 +60,14 @@ impl DatatypeManager {
 
 #[cfg(test)]
 mod tests_datatype_manager {
-    use crate::{ClientError, DataType, DatatypeState, clients::datatype_manager::DatatypeManager};
+    use crate::{
+        ClientError, DataType, DatatypeState,
+        clients::{common::new_client_common, datatype_manager::DatatypeManager},
+    };
 
     #[test]
     fn can_use_subscribe_or_create_datatype() {
-        let mut dm = DatatypeManager::new(Default::default());
+        let mut dm = DatatypeManager::new(new_client_common!());
         let res1 = dm.subscribe_or_create_datatype(
             "k1",
             DataType::Counter,
