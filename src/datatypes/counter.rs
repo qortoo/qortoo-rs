@@ -44,7 +44,7 @@ impl Counter {
     ///
     /// ```
     /// # use syncyam::{Client, Counter, DatatypeState};
-    /// let client = Client::builder("test-collection", "test-client").build();
+    /// let client = Client::builder("doc-example", "increase_by-test").build();
     /// let counter = client.create_datatype("test-counter").build_counter().unwrap();
     /// assert_eq!(counter.increase_by(5), 5);
     /// assert_eq!(counter.increase_by(-2), 3);
@@ -72,7 +72,7 @@ impl Counter {
     ///
     /// ```
     /// # use syncyam::{Client, Counter, DatatypeState};
-    /// let client = Client::builder("test-collection", "test-client").build();
+    /// let client = Client::builder("doc-example", "increase-test").build();
     /// let counter = client.create_datatype("test-counter").build_counter().unwrap();
     /// assert_eq!(counter.increase(), 1);
     /// assert_eq!(counter.increase(), 2);
@@ -91,7 +91,7 @@ impl Counter {
     ///
     /// ```
     /// # use syncyam::{Client, Counter, DatatypeState};
-    /// let client = Client::builder("test-collection", "test-client").build();
+    /// let client = Client::builder("doc-example", "get_value-test").build();
     /// let counter = client.create_datatype("test-counter").build_counter().unwrap();
     /// assert_eq!(counter.get_value(), 0);
     /// counter.increase();
@@ -122,7 +122,7 @@ impl Counter {
     ///
     /// ```
     /// # use syncyam::{Client, Counter, DatatypeState};
-    /// let client = Client::builder("test-collection", "test-client").build();
+    /// let client = Client::builder("doc-example", "transaction-test").build();
     /// let counter = client.create_datatype("test-counter").build_counter().unwrap();
     ///
     /// // Successful transaction

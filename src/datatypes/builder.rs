@@ -20,7 +20,7 @@ use crate::{
 /// obtained from [`Client`]. For example:
 /// ```
 /// use syncyam::{Client, DatatypeState, Datatype};
-/// let client = Client::builder("docs-collection", "docs-app").build();
+/// let client = Client::builder("docs-example", "DatatypeBuilder-test").build();
 /// assert_eq!(
 ///     client.subscribe_datatype("k1").build_counter().unwrap().get_state(),
 ///     DatatypeState::DueToSubscribe
@@ -61,7 +61,7 @@ impl<'c> DatatypeBuilder<'c> {
     /// # Examples
     /// ```
     /// use syncyam::Client;
-    /// let client = Client::builder("col", "alias").build();
+    /// let client = Client::builder("doc-example", "build_counter-test").build();
     /// let counter = client
     ///     .create_datatype("counter-1")
     ///     .build_counter()

@@ -60,6 +60,8 @@ impl DatatypeSet {
 
 #[cfg(test)]
 mod tests_datatype_set {
+    use tracing::instrument;
+
     use crate::{
         Counter, DataType, Datatype, DatatypeState,
         clients::common::new_client_common,
@@ -70,6 +72,7 @@ mod tests_datatype_set {
     };
 
     #[test]
+    #[instrument]
     fn can_clone_datatype_set() {
         let ds1 = DatatypeSet::new(
             DataType::Counter,

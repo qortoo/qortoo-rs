@@ -17,9 +17,9 @@ use crate::{
 /// # Examples
 /// ```
 /// use syncyam::Client;
-/// let client = Client::builder("test-collection", "test-app").build();
-/// assert_eq!(client.get_collection(), "test-collection");
-/// assert_eq!(client.get_alias(), "test-app");
+/// let client = Client::builder("doc-example", "ClientBuilder-test").build();
+/// assert_eq!(client.get_collection(), "doc-example");
+/// assert_eq!(client.get_alias(), "ClientBuilder-test");
 /// ```
 pub struct ClientBuilder {
     collection: String,

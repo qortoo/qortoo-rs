@@ -14,7 +14,7 @@ use crate::{DataType, DatatypeState, datatypes::transactional::TransactionalData
 /// use syncyam::Client;
 /// use syncyam::{Counter, Datatype};
 /// use syncyam::{DatatypeState, DataType};
-/// let client = Client::builder("test-collection", "test-client").build();
+/// let client = Client::builder("doc-example", "Datatype-trait").build();
 /// let counter = client.create_datatype("test-counter".to_string()).build_counter().unwrap();
 /// assert_eq!(counter.get_key(), "test-counter");
 /// assert_eq!(counter.get_type(), DataType::Counter);

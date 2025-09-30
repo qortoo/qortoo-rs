@@ -294,6 +294,7 @@ mod tests_tracing {
         collection: String,
     }
     #[test]
+    #[instrument]
     fn can_log_message() {
         let span = span!(Level::INFO, "outmost", collection = "col1");
         let _guard = span.enter();
@@ -315,7 +316,7 @@ mod tests_tracing {
             datatype: "datatype".to_string(),
             duid: "duid".to_string(),
         };
-        do_something_level1("duid1", st);
+        do_something_level1(st);
     }
 
     #[instrument(name = "level1", skip(_st),
@@ -325,7 +326,7 @@ mod tests_tracing {
         syncyam.dt = _st.datatype,
         syncyam.col = _st.collection
         ))]
-    fn do_something_level1(duid: &str, _st: SpanType) {
+    fn do_something_level1(_st: SpanType) {
         info!("info do_something_level1");
         debug!("debug do_something_level1");
         do_something_level2();
@@ -338,13 +339,15 @@ mod tests_tracing {
     }
 
     #[test]
+    #[instrument]
     fn can_log_with_spans() {
         info!("begin can_log_spans");
         client_level("😘");
         info!("end can_log_spans");
     }
-    #[instrument(name = "client1", fields(syncyam.cuid=cuid))]
-    fn client_level(cuid: &str) {
+
+    #[instrument(name = "client1", fields(syncyam.cuid=_cuid))]
+    fn client_level(_cuid: &str) {
         let x = span!(Level::INFO, "client_level");
         let _g = x.enter();
         info!(syncyam.cuid = "🙊", "begin client_level");

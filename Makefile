@@ -13,10 +13,6 @@ tarpaulin:
 	SYNCYAM_RS_OTEL_ENABLED=true cargo tarpaulin -o html -o xml -o Lcov --tests --all-features --engine Llvm --fail-under 90 --output-dir ./coverage
 	open coverage/tarpaulin-report.html
 
-.PHONY: update-coverage-badge
-update-coverage-badge:
-	./scripts/update-coverage-badge.sh
-
 .PHONY: enable-jaeger
 enable-jaeger:
 	export SYNCYAM_RS_OTEL_ENABLED=true
