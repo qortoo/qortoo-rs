@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use opentelemetry::KeyValue;
 use parking_lot::RwLock;
-use tracing::{info_span, instrument};
+use tracing::{Span, info_span, instrument};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::{
@@ -10,6 +10,7 @@ use crate::{
     datatypes::{
         common::{Attribute, ReturnType},
         datatype::Datatype,
+        event_loop::EventLoop,
         mutable::MutableDatatype,
     },
     errors::datatypes::DatatypeError,
@@ -77,6 +78,7 @@ pub struct TransactionalDatatype {
     tx_ctx: RwLock<Option<Arc<TransactionContext>>>,
     op_mutex: NoGuardMutex,
     tx_mutex: NoGuardMutex,
+    event_loop: Arc<EventLoop>,
 }
 
 impl Datatype for TransactionalDatatype {
@@ -95,13 +97,20 @@ impl Datatype for TransactionalDatatype {
 
 impl TransactionalDatatype {
     pub fn new_arc(attr: Arc<Attribute>, state: DatatypeState) -> Arc<Self> {
-        Arc::new(Self {
+        let event_loop = EventLoop::new_arc();
+        let arc_td = Arc::new(Self {
             attr: attr.clone(),
             mutable: RwLock::new(MutableDatatype::new(attr, state)),
+            event_loop: event_loop.clone(),
             tx_ctx: Default::default(),
             op_mutex: Default::default(),
             tx_mutex: Default::default(),
-        })
+        });
+        let span = Span::current();
+        span.in_scope(|| {
+            event_loop.run(arc_td.clone());
+        });
+        arc_td
     }
 
     pub fn execute_local_operation_as_tx(
@@ -150,7 +159,9 @@ impl TransactionalDatatype {
     #[instrument(skip_all)]
     fn end_transaction(&self, tag: Option<String>, committed: bool) {
         let mut mutable = self.mutable.write();
-        mutable.end_transaction(tag, committed);
+        if mutable.end_transaction(tag, committed) {
+            self.event_loop.send_push_transaction();
+        }
         self.tx_ctx.write().take();
         self.tx_mutex.unlock();
     }
@@ -235,6 +246,12 @@ impl TransactionalDatatype {
     fn wait_for_tx_mutex(&self) {
         self.tx_mutex.lock();
         self.tx_mutex.unlock();
+    }
+}
+
+impl Drop for TransactionalDatatype {
+    fn drop(&mut self) {
+        self.event_loop.send_stop();
     }
 }
 

@@ -4,6 +4,7 @@ pub mod counter;
 mod crdts;
 pub mod datatype;
 pub mod datatype_set;
+mod event_loop;
 mod mutable;
 pub mod option;
 mod rollback;

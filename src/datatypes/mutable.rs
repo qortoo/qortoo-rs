@@ -50,16 +50,18 @@ impl MutableDatatype {
         self.crdt = self.rollback.shadow_crdt.clone();
     }
 
-    pub fn end_transaction(&mut self, tag: Option<String>, committed: bool) {
+    pub fn end_transaction(&mut self, tag: Option<String>, committed: bool) -> bool {
         if committed {
             if let Some(mut tx) = self.transaction.take() {
                 tx.set_tag(tag);
                 let tx = Arc::new(tx);
                 self.commit_transaction_on_rollback(tx.clone());
+                return true;
             }
         } else {
             self.do_rollback();
         }
+        false
     }
 
     fn replay_local_operation(

@@ -5,7 +5,7 @@ mod tests_datatype_builder {
     #[test]
     #[instrument]
     fn can_build_counter() {
-        let client = Client::builder(module_path!(), module_path!()).build();
+        let client = Client::builder(module_path!(), "can_build_counter").build();
         let counter = client
             .create_datatype(module_path!())
             .build_counter()

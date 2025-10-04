@@ -52,6 +52,8 @@ where
 
 #[cfg(test)]
 mod tests_datatype_trait {
+    use tracing::instrument;
+
     use crate::{
         DataType, DatatypeState,
         datatypes::{
@@ -60,6 +62,7 @@ mod tests_datatype_trait {
     };
 
     #[test]
+    #[instrument]
     fn can_call_datatype_trait_functions() {
         let attr = new_attribute!(DataType::Counter);
         let key = attr.key.clone();

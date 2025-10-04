@@ -46,8 +46,8 @@ pub fn reserve_to_shutdown_runtime(group: &str) {
         let rt = map_guard.remove(group);
         if let Some(rt) = rt {
             let tasks = rt.metrics().num_alive_tasks();
-            debug!("shutdown {group} which has {tasks} tasks");
             rt.shutdown_background();
+            debug!("shutdown runtime '{group}' which has {tasks} tasks");
         }
     }
 }

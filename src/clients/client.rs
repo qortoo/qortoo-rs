@@ -127,6 +127,8 @@ impl Client {
 
 #[cfg(test)]
 mod tests_client {
+    use tracing::instrument;
+
     use crate::{Datatype, DatatypeState, clients::client::Client};
 
     #[test]
@@ -136,6 +138,7 @@ mod tests_client {
     }
 
     #[test]
+    #[instrument]
     fn can_build_client() {
         let client = Client::builder("collection1", "alias1").build();
         assert_eq!(client.get_collection(), "collection1");
@@ -143,8 +146,9 @@ mod tests_client {
     }
 
     #[test]
+    #[instrument]
     fn can_use_counter_from_client() {
-        let client1 = Client::builder(module_path!(), module_path!()).build();
+        let client1 = Client::builder(module_path!(), "can_use_counter_from_client").build();
 
         assert!(client1.get_datatype("k1").is_none());
 

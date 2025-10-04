@@ -18,25 +18,36 @@ tracing = [
 
 [dependencies]
 # optional
-libc = { version = "^0.2.172", optional = true }
+libc = { version = "^0.2.176", optional = true }
 once_cell = { version = "^1.21.3", optional = true }
-tracing-subscriber = { version = "^0.3.19", features = ["json", "fmt", "env-filter"], optional = true }
+tracing-subscriber = { version = "^0.3.19", features = [
+    "json",
+    "fmt",
+    "env-filter",
+], optional = true }
 opentelemetry_sdk = { version = "^0.30.0", optional = true }
-opentelemetry-otlp = { version = "^0.30.0", features = ["grpc-tonic"], optional = true }
+opentelemetry-otlp = { version = "^0.30.0", features = [
+    "grpc-tonic",
+], optional = true }
 ctor = { version = "^0.5.0", optional = true }
 
 tracing = "^0.1.41"
 nanoid = "^0.4.0"
 tokio = { version = "^1.47.1", features = ["full"] }
 parking_lot = "^0.12.4"
-time = { version = "^0.3", features = ["formatting", "local-offset", "macros"] }
+time = { version = "^0.3.44", features = [
+    "formatting",
+    "local-offset",
+    "macros",
+] }
 itoa = "^1.0.15"
 derive_more = { version = "^2.0.1", features = ["display", "debug"] }
-chrono = "0.4.41"
-thiserror = "^2.0.16"
+chrono = "^0.4.42"
+thiserror = "^2.0.17"
 opentelemetry = { version = "^0.30.0" }
 tracing-opentelemetry = { version = "^0.31.0" }
 ubyte = "^0.10.4"
+crossbeam-channel = "^0.5.15"
 
 [dev-dependencies]
 rstest = "^0.26.1"

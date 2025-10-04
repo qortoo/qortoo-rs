@@ -1,3 +1,5 @@
+use tracing::{Span, info};
+
 use crate::{
     Client, ClientError, Counter, DataType, DatatypeState,
     datatypes::{datatype_set::DatatypeSet, option::DatatypeOption},
@@ -42,12 +44,18 @@ pub struct DatatypeBuilder<'c> {
     client: &'c Client,
     key: String,
     state: DatatypeState,
+    option: DatatypeOption,
 }
 
 impl<'c> DatatypeBuilder<'c> {
     /// Creates a new builder. This is used internally by [`Client`].
     pub(crate) fn new(client: &'c Client, key: String, state: DatatypeState) -> Self {
-        Self { client, key, state }
+        Self {
+            client,
+            key,
+            state,
+            option: DatatypeOption::default(),
+        }
     }
 
     /// Finalizes the builder and constructs a [`Counter`].
@@ -69,12 +77,12 @@ impl<'c> DatatypeBuilder<'c> {
     /// assert_eq!(counter.get_value(), 0);
     /// ```
     pub fn build_counter(self) -> Result<Counter, ClientError> {
-        let option = DatatypeOption::new();
+        info!("builder_counter span: {:?}", Span::current().metadata());
         match self.client.do_subscribe_or_create_datatype(
             self.key,
             DataType::Counter,
             self.state,
-            option,
+            self.option,
         ) {
             Ok(ds) => match ds {
                 DatatypeSet::Counter(counter) => Ok(counter),
@@ -82,17 +90,29 @@ impl<'c> DatatypeBuilder<'c> {
             Err(e) => Err(e),
         }
     }
+
+    pub fn with_max_memory_size_of_push_buffer(mut self, size: u64) -> Self {
+        let option = DatatypeOption::new(size);
+        self.option = option;
+        self
+    }
 }
 
 #[cfg(test)]
 mod tests_datatype_builder {
+    use tracing::instrument;
+
     use crate::Client;
 
     #[test]
-    fn can_use_rollback_related_datatype_builder() {
-        let client = Client::builder(module_path!(), module_path!()).build();
-        let builder = client.subscribe_datatype(module_path!());
-
-        let _counter = builder.build_counter().unwrap();
+    #[instrument]
+    fn can_show_how_to_use_datatype_builder() {
+        // info!("top span: {:?}", Span::current().metadata());
+        let client = Client::builder("tests_datatype_builder", "builder-test").build();
+        let _counter = client
+            .subscribe_datatype(module_path!())
+            .with_max_memory_size_of_push_buffer(20_000_000)
+            .build_counter()
+            .unwrap();
     }
 }
