@@ -129,7 +129,9 @@ impl Client {
 mod tests_client {
     use tracing::instrument;
 
-    use crate::{Datatype, DatatypeState, clients::client::Client};
+    use crate::{
+        Datatype, DatatypeState, clients::client::Client, utils::path::get_test_func_name,
+    };
 
     #[test]
     fn can_assert_send_and_sync_traits() {
@@ -148,7 +150,7 @@ mod tests_client {
     #[test]
     #[instrument]
     fn can_use_counter_from_client() {
-        let client1 = Client::builder(module_path!(), "can_use_counter_from_client").build();
+        let client1 = Client::builder(module_path!(), get_test_func_name!()).build();
 
         assert!(client1.get_datatype("k1").is_none());
 

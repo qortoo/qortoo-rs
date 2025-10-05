@@ -106,22 +106,22 @@ pub enum ReturnType {
 mod tests_attribute {
     use tracing::info;
 
-    use crate::{DataType, utils::path::split_module_path};
+    use crate::{DataType, utils::path::caller_path};
 
     #[test]
     fn can_new_attribute_for_test() {
         let attr = new_attribute!(DataType::Counter);
         info!("{:?}", attr);
-        let mut mod_path = split_module_path(module_path!());
-        assert!(attr.key.contains(mod_path.pop_back().unwrap().as_str()));
+        let mut caller_path = caller_path!();
         assert_eq!(attr.r#type, DataType::Counter);
-        assert_eq!(
+        assert_eq!(attr.key, caller_path.pop_back().unwrap());
+        assert_ne!(
             attr.client_common.alias.to_string(),
-            mod_path.pop_back().unwrap()
+            caller_path.pop_back().unwrap()
         );
         assert_eq!(
             attr.client_common.collection.to_string(),
-            mod_path.pop_back().unwrap()
+            caller_path.pop_back().unwrap()
         );
     }
 }

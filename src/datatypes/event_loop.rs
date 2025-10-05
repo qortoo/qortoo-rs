@@ -33,7 +33,7 @@ impl EventLoop {
             syncyam.cl=%arc_td.attr.client_common.alias,
             syncyam.cuid=%arc_td.attr.client_common.cuid,
             syncyam.dt=%arc_td.attr.key,
-            syncyam.dt=%arc_td.attr.duid,
+            syncyam.duid=%arc_td.attr.duid,
         )
     )]
     pub fn run(&self, arc_td: Arc<TransactionalDatatype>) {

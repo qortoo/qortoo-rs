@@ -1,5 +1,3 @@
-use tracing::{Span, info};
-
 use crate::{
     Client, ClientError, Counter, DataType, DatatypeState,
     datatypes::{datatype_set::DatatypeSet, option::DatatypeOption},
@@ -77,7 +75,6 @@ impl<'c> DatatypeBuilder<'c> {
     /// assert_eq!(counter.get_value(), 0);
     /// ```
     pub fn build_counter(self) -> Result<Counter, ClientError> {
-        info!("builder_counter span: {:?}", Span::current().metadata());
         match self.client.do_subscribe_or_create_datatype(
             self.key,
             DataType::Counter,
@@ -102,15 +99,14 @@ impl<'c> DatatypeBuilder<'c> {
 mod tests_datatype_builder {
     use tracing::instrument;
 
-    use crate::Client;
+    use crate::{Client, utils::path::get_test_func_name};
 
     #[test]
     #[instrument]
     fn can_show_how_to_use_datatype_builder() {
-        // info!("top span: {:?}", Span::current().metadata());
         let client = Client::builder("tests_datatype_builder", "builder-test").build();
         let _counter = client
-            .subscribe_datatype(module_path!())
+            .subscribe_datatype(get_test_func_name!())
             .with_max_memory_size_of_push_buffer(20_000_000)
             .build_counter()
             .unwrap();
