@@ -7,6 +7,7 @@ use crate::{
     datatypes::{
         common::{Attribute, ReturnType},
         crdts::Crdt,
+        push_buffer::{MemoryPushBuffer, PushBuffer, PushBufferError},
         rollback::Rollback,
     },
     operations::{Operation, transaction::Transaction},
@@ -22,6 +23,7 @@ pub struct MutableDatatype {
     pub op_id: OperationId,
     pub transaction: Option<Transaction>,
     pub rollback: Rollback,
+    pub push_buffer: MemoryPushBuffer,
 }
 
 pub struct OperationalDatatype<'a> {
@@ -34,12 +36,13 @@ impl MutableDatatype {
         let crdt = Crdt::new(attr.r#type);
         let op_id = OperationId::new_with_cuid(&attr.client_common.cuid);
         Self {
-            attr,
-            crdt: crdt.clone(),
-            state,
-            op_id: op_id.clone(),
+            push_buffer: MemoryPushBuffer::new(attr.option.clone()),
+            rollback: Rollback::new(crdt.clone(), state, op_id.clone()),
             transaction: Default::default(),
-            rollback: Rollback::new(crdt, state, op_id.clone()),
+            attr,
+            crdt,
+            state,
+            op_id,
         }
     }
 
@@ -48,6 +51,7 @@ impl MutableDatatype {
         self.op_id = self.rollback.op_id.clone();
         self.state = self.rollback.state;
         self.crdt = self.rollback.shadow_crdt.clone();
+        self.replay_push_buffer();
     }
 
     pub fn end_transaction(&mut self, tag: Option<String>, committed: bool) -> bool {
@@ -55,7 +59,16 @@ impl MutableDatatype {
             if let Some(mut tx) = self.transaction.take() {
                 tx.set_tag(tag);
                 let tx = Arc::new(tx);
-                self.commit_transaction_on_rollback(tx.clone());
+                if *tx.cuid() == self.op_id.cuid {
+                    if let Err(err) = self.push_buffer.enque(tx.clone()) {
+                        if err == PushBufferError::ExceedMaxMemSize {
+                            todo!("should reduce the push buffer size");
+                        }
+                        if err == PushBufferError::NonSequentialCseq {
+                            unreachable!("this should not happen");
+                        }
+                    }
+                }
                 return true;
             }
         } else {
@@ -68,26 +81,30 @@ impl MutableDatatype {
         op_dt: &mut OperationalDatatype,
         op: &Operation,
         op_id: &OperationId,
-    ) -> Result<ReturnType, DatatypeError> {
+    ) {
         op_dt.op_id.sync(op_id);
         let result = op_dt.crdt.execute_local_operation(op);
         if result.is_err() {
             // this cannot happen
             unreachable!()
         }
-        result
     }
 
-    fn commit_transaction_on_rollback(&mut self, tx: Arc<Transaction>) {
-        if *tx.cuid() == self.op_id.cuid {
-            let mut op_id = tx.get_op_id();
-            tx.iter().for_each(|op| {
-                op_id.lamport = op.lamport;
-                let mut op_dt = self.rollback.get_operational_datatype();
-                Self::replay_local_operation(&mut op_dt, op, &op_id).unwrap();
-            });
-        } else {
-            // replay remote operation
+    fn replay_push_buffer(&mut self) {
+        for tx in self.push_buffer.iter() {
+            if *tx.cuid() == self.op_id.cuid {
+                let mut op_id = tx.get_op_id();
+                tx.iter().for_each(|op| {
+                    op_id.lamport = op.lamport;
+                    let mut op_dt = OperationalDatatype {
+                        crdt: &mut self.crdt,
+                        op_id: &mut self.op_id,
+                    };
+                    Self::replay_local_operation(&mut op_dt, op, &op_id);
+                });
+            } else {
+                // TODO: replay remote operation
+            }
         }
     }
 

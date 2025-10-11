@@ -247,6 +247,10 @@ impl TransactionalDatatype {
         self.tx_mutex.lock();
         self.tx_mutex.unlock();
     }
+
+    pub fn push_transaction(&self) {
+        // TODO: implment pushing transactions to remote server
+    }
 }
 
 impl Drop for TransactionalDatatype {
@@ -291,7 +295,7 @@ mod tests_transactional {
             let mutable = tx_dt.mutable.write();
             assert_eq!(1, mutable.op_id.cseq);
             assert!(mutable.transaction.is_none());
-            assert_eq!(mutable.op_id, mutable.rollback.op_id);
+            assert_eq!(mutable.op_id.cseq, mutable.rollback.op_id.cseq + 1);
         }
 
         let op2 = Operation::new_delay_for_test(10, false);
@@ -300,7 +304,7 @@ mod tests_transactional {
         {
             let mutable = tx_dt.mutable.write();
             assert_eq!(1, mutable.op_id.cseq);
-            assert_eq!(mutable.op_id, mutable.rollback.op_id);
+            assert_eq!(mutable.op_id.cseq, mutable.rollback.op_id.cseq + 1);
         }
     }
 

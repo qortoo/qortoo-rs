@@ -28,7 +28,7 @@ pub struct Attribute {
     pub r#type: DataType,
     pub duid: Duid,
     pub client_common: Arc<ClientCommon>,
-    pub option: DatatypeOption,
+    pub option: Arc<DatatypeOption>,
 }
 
 impl Debug for Attribute {
@@ -55,7 +55,7 @@ impl Attribute {
             r#type,
             duid: Duid::new(),
             client_common,
-            option,
+            option: Arc::new(option),
         }
     }
 

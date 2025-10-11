@@ -39,6 +39,10 @@ impl Transaction {
         }
     }
 
+    pub fn cseq(&self) -> u64 {
+        self.cseq
+    }
+
     pub fn get_op_id(&self) -> OperationId {
         let mut op_id = OperationId::new_with_cuid(&self.cuid);
         op_id.cseq = self.cseq;
@@ -67,6 +71,7 @@ impl Debug for Transaction {
         write!(f, "{self}")
     }
 }
+
 impl Display for Transaction {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let tag_arg = match &self.tag {

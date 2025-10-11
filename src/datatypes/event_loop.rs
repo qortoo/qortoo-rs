@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crossbeam_channel::{Receiver, Sender};
 use derive_more::Display;
-use tracing::{Instrument, Span, debug, error, instrument};
+use tracing::{Instrument, Span, debug, error, info_span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::datatypes::transactional::TransactionalDatatype;
@@ -27,49 +27,47 @@ impl EventLoop {
         Arc::new(Self { event_tx, event_rx })
     }
 
-    #[instrument(skip_all, name="datatype_event_loop",
-        fields(
+    pub fn run(&self, arc_td: Arc<TransactionalDatatype>) {
+        let event_rx = self.event_rx.clone();
+        let arc_dt_for_thread = arc_td.clone();
+        let parent_cx = Span::current().context();
+        let event_loop_span = info_span!( "datatype_event_loop",
             syncyam.col=%arc_td.attr.client_common.collection,
             syncyam.cl=%arc_td.attr.client_common.alias,
             syncyam.cuid=%arc_td.attr.client_common.cuid,
             syncyam.dt=%arc_td.attr.key,
             syncyam.duid=%arc_td.attr.duid,
-        )
-    )]
-    pub fn run(&self, arc_td: Arc<TransactionalDatatype>) {
-        let event_rx = self.event_rx.clone();
-        let arc_dt_for_thread = arc_td.clone();
-        let event_loop_span = Span::current();
+        );
+        event_loop_span.set_parent(parent_cx);
         arc_dt_for_thread.attr.client_common.handle.spawn(
             async move {
-                event_loop_span.in_scope(|| {
-                    debug!("started event loop");
-                    loop {
-                        let event = match event_rx.recv() {
-                            Ok(event) => event,
-                            Err(e) => {
-                                error!("something wrong with {e:?}; stopping event loop");
-                                break;
-                            }
-                        };
-                        match event {
-                            Event::Stop => {
-                                break;
-                            }
-                            Event::PushTransaction => {
-                                event_loop_span.add_event("push transaction", vec![]);
-                            }
+                debug!("started event loop");
+                loop {
+                    let event = match event_rx.recv() {
+                        Ok(event) => event,
+                        Err(e) => {
+                            error!("something wrong with {e:?}; stopping event loop");
+                            break;
+                        }
+                    };
+                    match event {
+                        Event::Stop => {
+                            break;
+                        }
+                        Event::PushTransaction => {
+                            Span::current().add_event("push transaction", vec![]);
+                            arc_td.push_transaction();
                         }
                     }
-                    event_loop_span.add_event("stop event_loop", vec![]);
-                });
+                }
+                Span::current().add_event("stop event_loop", vec![]);
             }
-            .instrument(Span::current()),
+            .instrument(event_loop_span),
         );
     }
 
     pub fn send_stop(&self) {
-        self.send(Event::Stop)
+        self.send(Event::Stop);
     }
 
     fn send(&self, ev: Event) {
