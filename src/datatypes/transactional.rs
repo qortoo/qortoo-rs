@@ -1,19 +1,19 @@
 use std::sync::Arc;
 
-use opentelemetry::KeyValue;
 use parking_lot::RwLock;
 use tracing::{Span, info_span, instrument};
-use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use crate::{
     DataType, DatatypeState, IntoString,
     datatypes::{
-        common::{Attribute, ReturnType},
+        common::{Attribute, ReturnType, internal_datatype_instrument},
         datatype::Datatype,
         event_loop::EventLoop,
         mutable::MutableDatatype,
+        wired::WiredDatatype,
     },
     errors::datatypes::DatatypeError,
+    observability::macros::add_span_event,
     operations::Operation,
     utils::{defer_guard::DeferGuard, no_guard_mutex::NoGuardMutex},
 };
@@ -74,7 +74,7 @@ pub enum BeginTransactionResult<'a> {
 
 pub struct TransactionalDatatype {
     pub attr: Arc<Attribute>,
-    pub mutable: RwLock<MutableDatatype>,
+    pub mutable: Arc<RwLock<MutableDatatype>>,
     tx_ctx: RwLock<Option<Arc<TransactionContext>>>,
     op_mutex: NoGuardMutex,
     tx_mutex: NoGuardMutex,
@@ -100,7 +100,7 @@ impl TransactionalDatatype {
         let event_loop = EventLoop::new_arc();
         let arc_td = Arc::new(Self {
             attr: attr.clone(),
-            mutable: RwLock::new(MutableDatatype::new(attr, state)),
+            mutable: Arc::new(RwLock::new(MutableDatatype::new(attr, state))),
             event_loop: event_loop.clone(),
             tx_ctx: Default::default(),
             op_mutex: Default::default(),
@@ -108,9 +108,16 @@ impl TransactionalDatatype {
         });
         let span = Span::current();
         span.in_scope(|| {
-            event_loop.run(arc_td.clone());
+            event_loop.run(arc_td.get_wired_datatype());
         });
         arc_td
+    }
+
+    fn get_wired_datatype(&self) -> WiredDatatype {
+        WiredDatatype {
+            mutable: self.mutable.clone(),
+            attr: self.attr.clone(),
+        }
     }
 
     pub fn execute_local_operation_as_tx(
@@ -119,28 +126,24 @@ impl TransactionalDatatype {
         op: Operation,
     ) -> Result<ReturnType, DatatypeError> {
         let mut _defer_guard = None;
-        let begin_span = info_span!("begin_operation");
-        let g_begin_span = begin_span.enter();
+        let mut retries = 0;
         loop {
             match self.begin_transaction(tx_ctx.clone()) {
                 BeginTransactionResult::BeginTx(dg) => {
-                    begin_span.add_event("BeginTx", vec![]);
-                    drop(g_begin_span);
                     _defer_guard = Some(dg);
                     break;
                 }
                 BeginTransactionResult::SameCtx => {
                     // After the first call inside do_transaction, subsequent execute_local_operation_as_tx calls in tx_func run as SameCtx.
                     // If execute_local_operation_as_tx is invoked from another thread, the tx_mutex can ensure exclusive execution.
-                    begin_span.add_event("SameCtx", vec![]);
-                    drop(g_begin_span);
                     _defer_guard = Some(DeferGuard::new());
                     break;
                 }
                 BeginTransactionResult::OtherCtx => {
-                    begin_span.add_event("OtherCtx", vec![]);
                     // For OtherCtx, begin_transaction is repeatedly attempted until it transitions to BeginTx.
                     // If an operation is already running, the tx_mutex is locked, so we wait until we can acquire the tx_mutex lock.
+                    retries += 1;
+                    add_span_event!("OtherCtx", "retries" => retries);
                     self.wait_for_mutex();
                 }
             }
@@ -183,15 +186,19 @@ impl TransactionalDatatype {
                 }
             };
             *self_tx_ctx = Some(curr_tx_ctx.clone());
+            let tag = curr_tx_ctx.tag.clone().unwrap_or("NONE".to_owned());
 
             let mut defer_guard = DeferGuard::new();
             defer_guard.add_defer_func(move |committed| {
                 self.end_transaction(curr_tx_ctx.tag.to_owned(), committed);
             });
+            add_span_event!("BeginTx", "tag" => tag);
             BeginTransactionResult::BeginTx(defer_guard)
         } else if self_tx_ctx.as_ref().unwrap() == &tx_ctx {
             // When execute_local_op_as_tx is called within tx_func of do_transaction, SameCtx should be returned.
             // This means self.tx_ctx is not replaced by end_transaction.
+            let tag = tx_ctx.tag.clone().unwrap_or("NONE".to_owned());
+            add_span_event!("SameCtx", "tag" => tag);
             BeginTransactionResult::SameCtx
         } else {
             // When either execute_local_op_as_tx or do_transaction is called from another thread while do_transaction is running, OtherTx is returned.
@@ -208,15 +215,11 @@ impl TransactionalDatatype {
     where
         F: FnOnce() -> Result<(), DatatypeError>,
     {
-        let begin_span = info_span!("begin_transaction");
-        let g_begin_span = begin_span.enter();
         let mut retries = 0;
         loop {
             match self.begin_transaction(tx_ctx.clone()) {
                 BeginTransactionResult::BeginTx(mut dg) => {
                     self.tx_mutex.lock();
-                    begin_span.add_event("BeginTx", vec![KeyValue::new("retries", retries)]);
-                    drop(g_begin_span);
                     let tx_func_span = info_span!("tx_func");
                     return tx_func_span.in_scope(|| tx_func().inspect(|_x| dg.commit()));
                 }
@@ -228,7 +231,7 @@ impl TransactionalDatatype {
                 }
                 BeginTransactionResult::OtherCtx => {
                     retries += 1;
-                    begin_span.add_event("OtherCtx", vec![KeyValue::new("retries", retries)]);
+                    add_span_event!("OtherCtx", "retries" => retries);
                     // This can occur when the current transaction cannot begin due to any other concurrent operation or transaction.
                     self.wait_for_tx_mutex();
                 }
@@ -254,9 +257,11 @@ impl TransactionalDatatype {
 }
 
 impl Drop for TransactionalDatatype {
+    internal_datatype_instrument! {
+    "drop_transactional_datatype",
     fn drop(&mut self) {
         self.event_loop.send_stop();
-    }
+    }}
 }
 
 #[cfg(test)]
@@ -322,7 +327,7 @@ mod tests_transactional {
             let parent_span = parent_span.clone();
             join_handles.push(tokio::spawn(async move {
                 let thread_span = info_span!("thread", i = i);
-                thread_span.set_parent(parent_span.context());
+                thread_span.set_parent(parent_span.context()).unwrap();
                 let _g_thread_span = thread_span.enter();
                 let tx_ctx = Arc::new(TransactionContext::new(format!("test_tx_{i}")));
                 tx_dt.clone().do_transaction(tx_ctx.clone(), move || {
@@ -359,7 +364,7 @@ mod tests_transactional {
                 let executions = executions.clone();
                 join_handles.push(tokio::spawn(async move {
                     let thread_span = info_span!("thread_with_tag", i = i);
-                    thread_span.set_parent(parent_span.context());
+                    thread_span.set_parent(parent_span.context()).unwrap();
                     let _g_thread_span = thread_span.enter();
                     tx_dt.execute_local_operation_as_tx(tx_ctx, op).unwrap();
                     executions.lock().push(-(i + 1));
@@ -374,7 +379,7 @@ mod tests_transactional {
                 let executions = executions.clone();
                 join_handles.push(tokio::spawn(async move {
                     let thread_span = info_span!("thread_with_no_tag", i = i);
-                    thread_span.set_parent(parent_span.context());
+                    thread_span.set_parent(parent_span.context()).unwrap();
                     let _g_thread_span = thread_span.enter();
                     tx_dt.execute_local_operation_as_tx(tx_ctx, op).unwrap();
                     executions.lock().push(i + 1);

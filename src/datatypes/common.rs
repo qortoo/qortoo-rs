@@ -21,7 +21,25 @@ macro_rules! datatype_instrument {
     };
 }
 
+macro_rules! internal_datatype_instrument {
+    ($span_name:expr, $(#[$attr:meta])* $vis:vis fn $name:ident $($rest:tt)*) => {
+        $(#[$attr])*
+        #[tracing::instrument(skip_all,
+            name = $span_name,
+            fields(
+                syncyam.col=%self.attr.client_common.collection,
+                syncyam.cl=%self.attr.client_common.alias,
+                syncyam.cuid=%self.attr.client_common.cuid,
+                syncyam.dt=%self.attr.key,
+                syncyam.duid=%self.attr.duid,
+            )
+        )]
+        $vis fn $name $($rest)*
+    };
+}
+
 pub(crate) use datatype_instrument;
+pub(crate) use internal_datatype_instrument;
 
 pub struct Attribute {
     pub key: String,

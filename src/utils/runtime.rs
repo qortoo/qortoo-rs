@@ -7,9 +7,8 @@ use std::{
 
 use parking_lot::Mutex;
 use tokio::runtime::{Builder, Handle, Runtime};
-use tracing::debug;
 
-use crate::defaults;
+use crate::{defaults, observability::macros::add_span_event};
 
 type RuntimeMap = HashMap<String, Runtime>;
 type SharedRuntimeMap = Arc<Mutex<RuntimeMap>>;
@@ -47,7 +46,7 @@ pub fn reserve_to_shutdown_runtime(group: &str) {
         if let Some(rt) = rt {
             let tasks = rt.metrics().num_alive_tasks();
             rt.shutdown_background();
-            debug!("shutdown runtime '{group}' which has {tasks} tasks");
+            add_span_event!("shutdown runtime", "group"=>group, "tasks"=> tasks);
         }
     }
 }

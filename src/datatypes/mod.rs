@@ -10,3 +10,4 @@ pub mod option;
 pub mod push_buffer;
 mod rollback;
 mod transactional;
+pub mod wired;
