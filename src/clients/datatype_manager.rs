@@ -81,7 +81,7 @@ mod tests_datatype_manager {
 
         let res2 = dm.subscribe_or_create_datatype(
             "k1",
-            DataType::List,
+            DataType::Map,
             DatatypeState::DueToCreate,
             Default::default(),
         );

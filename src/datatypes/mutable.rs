@@ -11,7 +11,7 @@ use crate::{
         rollback::Rollback,
     },
     operations::{Operation, transaction::Transaction},
-    types::operation_id::OperationId,
+    types::{checkpoint::CheckPoint, operation_id::OperationId},
 };
 
 #[derive(Debug)]
@@ -24,6 +24,7 @@ pub struct MutableDatatype {
     pub transaction: Option<Transaction>,
     pub rollback: Rollback,
     pub push_buffer: MemoryPushBuffer,
+    pub checkpoint: CheckPoint,
 }
 
 pub struct OperationalDatatype<'a> {
@@ -39,6 +40,7 @@ impl MutableDatatype {
             push_buffer: MemoryPushBuffer::new(attr.option.clone()),
             rollback: Rollback::new(crdt.clone(), state, op_id.clone()),
             transaction: Default::default(),
+            checkpoint: CheckPoint::default(),
             attr,
             crdt,
             state,

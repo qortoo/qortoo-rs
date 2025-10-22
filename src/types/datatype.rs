@@ -1,22 +1,15 @@
-use std::fmt;
+use derive_more::Display;
 
 /// DataType represents the kinds of Datatypes in SyncYam
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
 #[repr(i32)]
 pub enum DataType {
+    #[display("Counter")]
     Counter = 0,
+    #[display("Variable")]
     Variable = 1,
-    List = 2,
-}
-
-impl fmt::Display for DataType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            DataType::Counter => write!(f, "Counter"),
-            DataType::Variable => write!(f, "Variable"),
-            DataType::List => write!(f, "List"),
-        }
-    }
+    #[display("Map")]
+    Map = 2,
 }
 
 /// DatatypeState represents the state of a Datatype in SyncYam.
@@ -48,8 +41,8 @@ mod tests {
 
     #[test]
     fn test_datatype_display() {
-        assert_eq!(DataType::Counter.to_string(), "Counter");
-        assert_eq!(DataType::Variable.to_string(), "Variable");
-        assert_eq!(DataType::List.to_string(), "List");
+        assert_eq!(format!("{}", DataType::Counter), "Counter");
+        assert_eq!(format!("{}", DataType::Variable), "Variable");
+        assert_eq!(format!("{}", DataType::Map), "Map");
     }
 }
