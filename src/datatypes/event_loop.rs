@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
 use derive_more::Display;
 use tokio::sync::oneshot;
@@ -81,7 +82,7 @@ impl EventLoop {
                         }
                         Event::PushTransaction => {
                             add_span_event!("receive PushTransaction");
-                            wd.push_transaction();
+                            wd.push_pull();
                         }
                     }
                 }
@@ -93,17 +94,21 @@ impl EventLoop {
 
     pub fn send_stop(&self) {
         let (tx, rx) = oneshot::channel();
-        self.send_to_unbounded(Event::Stop(tx));
-        futures::executor::block_on(async {
-            rx.await.unwrap();
-        });
+        match self.send_to_unbounded(Event::Stop(tx)) {
+            Ok(_) => {
+                futures::executor::block_on(async {
+                    rx.await.unwrap();
+                });
+            }
+            Err(e) => {
+                error!("failed to send stop event to event loop: {}", e);
+            }
+        }
     }
 
-    fn send_to_unbounded(&self, ev: Event) {
-        if let Err(e) = self.unbounded_tx.try_send(ev) {
-            error!("sending error during event loop: {e}");
-            // TODO: When this happen?, what should be done?
-        }
+    fn send_to_unbounded(&self, ev: Event) -> Result<()> {
+        self.unbounded_tx.try_send(ev)?;
+        Ok(())
     }
 
     fn send_to_bounded(&self, ev: Event) {

@@ -10,6 +10,7 @@ pub use crate::{
 };
 
 pub(crate) mod clients;
+pub(crate) mod connectivity;
 mod constants;
 pub(crate) mod datatypes;
 pub(crate) mod defaults;

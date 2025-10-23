@@ -82,7 +82,9 @@ impl Attribute {
         mut paths: std::collections::VecDeque<String>,
         r#type: DataType,
     ) -> Arc<Self> {
-        let key = paths.pop_back().unwrap_or(r#type.to_string());
+        use crate::connectivity::null_connectivity::NullConnectivity;
+
+        let key = paths.pop_back().unwrap_or(format!("{type}"));
         let client_alias = paths
             .pop_back()
             .unwrap_or("client".to_owned())
@@ -91,7 +93,8 @@ impl Attribute {
             .pop_back()
             .unwrap_or("collection".to_owned())
             .into_boxed_str();
-        let client_common = ClientCommon::new_arc(collection, client_alias);
+        let client_common =
+            ClientCommon::new_arc(collection, client_alias, Arc::new(NullConnectivity::new()));
         Arc::new(Self {
             key,
             r#type,

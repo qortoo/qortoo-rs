@@ -5,15 +5,26 @@ use std::{
 
 use tokio::runtime::Handle;
 
+use crate::{
+    connectivity::Connectivity,
+    types::uid::Cuid,
+    utils::runtime::{get_or_init_runtime_handle, reserve_to_shutdown_runtime},
+};
+
 pub struct ClientCommon {
     pub collection: Box<str>,
     pub cuid: Cuid,
     pub alias: Box<str>,
     pub handle: Handle,
+    pub connectivity: Arc<dyn Connectivity>,
 }
 
 impl ClientCommon {
-    pub fn new_arc(collection: Box<str>, alias: Box<str>) -> Arc<Self> {
+    pub fn new_arc(
+        collection: Box<str>,
+        alias: Box<str>,
+        connectivity: Arc<dyn Connectivity>,
+    ) -> Arc<Self> {
         let cuid = Cuid::new();
         let thread_name = format!("{collection}/{alias}/{cuid}");
         Arc::new(Self {
@@ -21,18 +32,21 @@ impl ClientCommon {
             collection,
             alias,
             cuid,
+            connectivity,
         })
     }
 
     #[cfg(test)]
     pub fn new_for_test(mut paths: std::collections::VecDeque<String>) -> Arc<Self> {
+        use crate::connectivity::null_connectivity::NullConnectivity;
+
         paths.pop_back();
         let alias = paths
             .pop_back()
             .unwrap_or("collection".into())
             .into_boxed_str();
         let collection = paths.pop_back().unwrap_or("client".into()).into_boxed_str();
-        Self::new_arc(collection, alias)
+        Self::new_arc(collection, alias, Arc::new(NullConnectivity::new()))
     }
 }
 
@@ -68,8 +82,3 @@ macro_rules! new_client_common {
 }
 #[cfg(test)]
 pub(crate) use new_client_common;
-
-use crate::{
-    types::uid::Cuid,
-    utils::runtime::{get_or_init_runtime_handle, reserve_to_shutdown_runtime},
-};

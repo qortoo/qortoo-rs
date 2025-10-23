@@ -5,6 +5,7 @@ use parking_lot::RwLock;
 use crate::{
     DataType, DatatypeBuilder, DatatypeState, IntoString,
     clients::{common::ClientCommon, datatype_manager::DatatypeManager},
+    connectivity::{Connectivity, null_connectivity::NullConnectivity},
     datatypes::{datatype_set::DatatypeSet, option::DatatypeOption},
     errors::clients::ClientError,
 };
@@ -24,6 +25,7 @@ use crate::{
 pub struct ClientBuilder {
     collection: String,
     alias: String,
+    connectivity: Arc<dyn Connectivity>,
 }
 
 impl ClientBuilder {
@@ -34,6 +36,7 @@ impl ClientBuilder {
         let common = ClientCommon::new_arc(
             self.collection.into_boxed_str(),
             self.alias.into_boxed_str(),
+            self.connectivity,
         );
         Client {
             datatypes: RwLock::new(DatatypeManager::new(common.clone())),
@@ -69,6 +72,7 @@ impl Client {
         ClientBuilder {
             collection: collection.into(),
             alias: alias.into(),
+            connectivity: Arc::new(NullConnectivity::new()),
         }
     }
 

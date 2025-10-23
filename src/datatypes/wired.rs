@@ -10,8 +10,14 @@ pub struct WiredDatatype {
 }
 
 impl WiredDatatype {
-    pub fn push_transaction(&self) {
-        let _mutable = self.mutable.write();
-        // do something with mutable
+    pub fn push_pull(&self) {
+        let mut mutable = self.mutable.write();
+        mutable.push_pull();
+    }
+}
+
+impl MutableDatatype {
+    fn push_pull(&mut self) {
+        // todo: implement push_pull logic
     }
 }
