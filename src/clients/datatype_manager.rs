@@ -7,7 +7,7 @@ use crate::{
     ClientError, DataType, DatatypeState,
     clients::common::ClientCommon,
     datatypes::{datatype_set::DatatypeSet, option::DatatypeOption},
-    errors::err,
+    errors::with_err_out,
 };
 
 pub struct DatatypeManager {
@@ -38,13 +38,12 @@ impl DatatypeManager {
             Entry::Occupied(entry) => {
                 let existing = entry.get();
                 if existing.get_type() != r#type || existing.get_state() != state {
-                    return Err(err!(
-                        ClientError::FailedToSubscribeOrCreateDatatype,
-                        format!(
-                            "{type:?} is demanded as {state:?}, but the clients has {:?} for '{key}' as {:?}",
+                    return Err(with_err_out!(
+                        ClientError::FailedToSubscribeOrCreateDatatype(format!(
+                            "{type:?} '{key}' was demanded as {state:?}, but the client already has {:?} '{key}' as {:?}",
                             existing.get_type(),
                             existing.get_state()
-                        )
+                        ))
                     ));
                 }
                 Ok(existing.clone())

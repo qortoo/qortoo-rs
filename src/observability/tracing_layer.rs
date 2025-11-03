@@ -58,6 +58,7 @@ impl SyncYamTracingLayer {
 
     #[inline]
     fn metadata_into(metadata: &Metadata<'_>, buffer: &mut Vec<u8>) {
+        write!(buffer, "🗂️ ").unwrap();
         buffer.extend_from_slice(metadata.file().unwrap_or("unknown").as_bytes());
         buffer.extend_from_slice(b":");
         let mut buf = Buffer::new();

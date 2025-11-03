@@ -83,8 +83,9 @@ impl Display for Transaction {
         if !self.operations.is_empty() {
             let first = &self.operations[0];
             if self.operations.len() > 1 {
-                let last = self.operations.last().unwrap();
-                lamport_arg = format!("[{}-{}]", first, last)
+                if let Some(last) = self.operations.last() {
+                    lamport_arg = format!("[{}-{}]", first, last)
+                }
             } else {
                 lamport_arg = format!("[{}]", first)
             }

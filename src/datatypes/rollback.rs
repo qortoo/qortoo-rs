@@ -29,6 +29,8 @@ impl Debug for Rollback {
 
 #[cfg(test)]
 mod tests_rollback {
+    use tracing::info;
+
     use crate::{
         DataType,
         datatypes::{crdts::Crdt, rollback::Rollback},
@@ -41,6 +43,6 @@ mod tests_rollback {
             Default::default(),
             Default::default(),
         );
-        println!("{:?}", rollback);
+        info!("{:?}", rollback);
     }
 }

@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
-use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
 use derive_more::Display;
 use tokio::sync::oneshot;
 use tracing::{Instrument, error, instrument};
 
-use crate::{datatypes::wired::WiredDatatype, observability::macros::add_span_event};
+use crate::{
+    DatatypeError, datatypes::wired::WiredDatatype, observability::macros::add_span_event,
+};
 
 #[derive(Display)]
 pub enum Event {
@@ -77,7 +78,9 @@ impl EventLoop {
                     match event {
                         Event::Stop(tx) => {
                             add_span_event!("receive STOP");
-                            tx.send(()).unwrap();
+                            if tx.send(()).is_err() {
+                                error!("failed to send stop confirmation");
+                            }
                             break;
                         }
                         Event::PushTransaction => {
@@ -86,7 +89,7 @@ impl EventLoop {
                         }
                     }
                 }
-                add_span_event!("existing event_loop");
+                add_span_event!("quiting event_loop");
             }
             .in_current_span(),
         );
@@ -97,7 +100,9 @@ impl EventLoop {
         match self.send_to_unbounded(Event::Stop(tx)) {
             Ok(_) => {
                 futures::executor::block_on(async {
-                    rx.await.unwrap();
+                    if rx.await.is_err() {
+                        error!("failed to receive stop confirmation")
+                    }
                 });
             }
             Err(e) => {
@@ -106,18 +111,25 @@ impl EventLoop {
         }
     }
 
-    fn send_to_unbounded(&self, ev: Event) -> Result<()> {
-        self.unbounded_tx.try_send(ev)?;
+    fn send_to_unbounded(&self, ev: Event) -> Result<(), DatatypeError> {
+        self.unbounded_tx.try_send(ev).map_err(|e| {
+            crate::errors::with_err_out!(DatatypeError::FailureInEventLoop(Box::new(e)))
+        })?;
         Ok(())
     }
 
-    fn send_to_bounded(&self, ev: Event) {
-        if let Err(e) = self.bounded_tx.try_send(ev) {
-            add_span_event!("failed to send to bounded channel", "err" => e)
-        }
+    fn send_to_bounded(&self, ev: Event) -> Result<(), DatatypeError> {
+        let ev_str = format!("{ev}");
+        self.bounded_tx.try_send(ev).map_err(|e| {
+            add_span_event!(ev_str, "result"=>"fail");
+            DatatypeError::FailureInEventLoop(Box::new(e))
+        })?;
+        add_span_event!(ev_str, "result"=>"succeed");
+        Ok(())
     }
 
     pub fn send_push_transaction(&self) {
         self.send_to_bounded(Event::PushTransaction)
+            .unwrap_or_default();
     }
 }

@@ -1,4 +1,4 @@
-use std::{error::Error, sync::Arc};
+use std::sync::Arc;
 
 use crate::{
     DatatypeError, IntoString,
@@ -8,6 +8,7 @@ use crate::{
         datatype::DatatypeBlanket,
         transactional::{TransactionContext, TransactionalDatatype},
     },
+    errors::BoxedError,
     operations::Operation,
 };
 
@@ -148,7 +149,7 @@ impl Counter {
         tx_func: T,
     ) -> Result<(), DatatypeError>
     where
-        T: FnOnce(Self) -> Result<(), Box<dyn Error + Send + Sync>> + Send + Sync + 'static,
+        T: FnOnce(Self) -> Result<(), BoxedError> + Send + Sync + 'static,
     {
         let this_tx_ctx = Arc::new(TransactionContext::new(tag));
         let this_tx_ctx_clone = this_tx_ctx.clone();
@@ -157,11 +158,10 @@ impl Counter {
             counter_clone.tx_ctx = this_tx_ctx_clone.clone();
             match tx_func(counter_clone) {
                 Ok(_) => Ok(()),
-                Err(e) => Err(DatatypeError::FailedTransaction(e.to_string())),
+                Err(e) => Err(DatatypeError::FailedTransaction(e)),
             }
         };
-        self.datatype
-            .do_transaction(this_tx_ctx, do_tx_func)
+        self.datatype.do_transaction(this_tx_ctx, do_tx_func)
     }}
 }
 

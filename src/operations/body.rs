@@ -91,7 +91,7 @@ mod tests_operation_body {
     fn can_display_and_debug() {
         let body = OperationBody::CounterIncrease(CounterIncreaseBody::new(123));
         info!("{body} vs. {body:?}");
-        let s = body.to_string();
+        let s = format!("{body}");
         assert!(s.starts_with("CounterIncrease(") && s.ends_with(')'));
     }
 

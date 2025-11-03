@@ -44,5 +44,6 @@ mod tests {
         assert_eq!(format!("{}", DataType::Counter), "Counter");
         assert_eq!(format!("{}", DataType::Variable), "Variable");
         assert_eq!(format!("{}", DataType::Map), "Map");
+        assert_eq!(DataType::Counter as i32, 0)
     }
 }
