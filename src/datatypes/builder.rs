@@ -88,6 +88,27 @@ impl<'c> DatatypeBuilder<'c> {
         Ok(c)
     }
 
+    /// Configures the maximum memory size for the push buffer.
+    ///
+    /// The push buffer stores pending operations before they are synchronized.
+    /// When the buffer exceeds this limit, further write operations will fail
+    /// until pending operations are synchronized.
+    ///
+    /// # Arguments
+    ///
+    /// * `size` - Maximum memory size in bytes (will be clamped to allowed range)
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use syncyam::Client;
+    /// let client = Client::builder("doc-example", "push-buffer-test").build();
+    /// let counter = client
+    ///     .create_datatype("my-counter")
+    ///     .with_max_memory_size_of_push_buffer(20_000_000) // 20MB
+    ///     .build_counter()
+    ///     .unwrap();
+    /// ```
     pub fn with_max_memory_size_of_push_buffer(mut self, size: u64) -> Self {
         let option = DatatypeOption::new(size);
         self.option = option;

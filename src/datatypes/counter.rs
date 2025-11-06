@@ -47,8 +47,8 @@ impl Counter {
     /// # use syncyam::{Client, Counter, DatatypeState};
     /// let client = Client::builder("doc-example", "increase_by-test").build();
     /// let counter = client.create_datatype("test-counter").build_counter().unwrap();
-    /// assert_eq!(counter.increase_by(5), 5);
-    /// assert_eq!(counter.increase_by(-2), 3);
+    /// assert_eq!(counter.increase_by(5).unwrap(), 5);
+    /// assert_eq!(counter.increase_by(-2).unwrap(), 3);
     /// ```
     pub fn increase_by(&self, delta: i64) -> Result<i64, DatatypeError> {
         let op = Operation::new_counter_increase(delta);
@@ -76,8 +76,8 @@ impl Counter {
     /// # use syncyam::{Client, Counter, DatatypeState};
     /// let client = Client::builder("doc-example", "increase-test").build();
     /// let counter = client.create_datatype("test-counter").build_counter().unwrap();
-    /// assert_eq!(counter.increase(), 1);
-    /// assert_eq!(counter.increase(), 2);
+    /// assert_eq!(counter.increase().unwrap(), 1);
+    /// assert_eq!(counter.increase().unwrap(), 2);
     /// ```
     pub fn increase(&self) -> Result<i64, DatatypeError> {
         self.increase_by(1)
