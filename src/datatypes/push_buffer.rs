@@ -1,14 +1,20 @@
 use std::{collections::VecDeque, fmt::Display, sync::Arc};
 
+use thiserror::Error;
+
 use crate::{
     datatypes::option::DatatypeOption,
     operations::{MemoryMeasurable, transaction::Transaction},
 };
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Error)]
 pub enum PushBufferError {
+    #[error("[PushBufferError] pushBuffer exceeded max size of memory")]
     ExceedMaxMemSize,
+    #[error("[PushBufferError] an operation of nonsequential cseq is enqued into PushBuffer")]
     NonSequentialCseq,
+    #[error("[PushBufferError] failed to get after")]
+    #[allow(dead_code)]
     FailToGetAfter,
 }
 
@@ -48,7 +54,7 @@ impl MemoryPushBuffer {
         self.transaction.iter()
     }
 
-    #[inline]
+    #[allow(dead_code)]
     fn need_to_deque(tx: Option<&Arc<Transaction>>, cseq: u64) -> bool {
         if let Some(tx) = tx {
             if tx.cseq() <= cseq {
@@ -81,9 +87,10 @@ impl PushBuffer for MemoryPushBuffer {
         cseq: u64,
         max_mem_size: u64,
     ) -> Result<Vec<Arc<Transaction>>, PushBufferError> {
+        let _fail_err = PushBufferError::FailToGetAfter;
         let mut popped = vec![];
         if cseq == 0 || cseq < self.first_cseq {
-            return Err(PushBufferError::FailToGetAfter);
+            return Err(_fail_err);
         }
 
         let index = (cseq - self.first_cseq) as usize;

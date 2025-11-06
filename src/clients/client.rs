@@ -82,10 +82,15 @@ impl Client {
         r#type: DataType,
         state: DatatypeState,
         option: DatatypeOption,
+        is_readonly: bool,
     ) -> Result<DatatypeSet, ClientError> {
-        self.datatypes
-            .write()
-            .subscribe_or_create_datatype(&key, r#type, state, option)
+        self.datatypes.write().subscribe_or_create_datatype(
+            &key,
+            r#type,
+            state,
+            option,
+            is_readonly,
+        )
     }
 
     /// Returns an existing datatype by `key`, if it has been created or
@@ -108,7 +113,7 @@ impl Client {
     ///
     /// The `Datatype` built by this builder will be marked
     /// with [`DatatypeState::DueToSubscribe`].
-    pub fn subscribe_datatype(&self, key: impl IntoString) -> DatatypeBuilder {
+    pub fn subscribe_datatype(&self, key: impl IntoString) -> DatatypeBuilder<'_> {
         DatatypeBuilder::new(self, key.into(), DatatypeState::DueToSubscribe)
     }
 
@@ -116,7 +121,7 @@ impl Client {
     ///
     /// The `Datatype` built by this builder will be marked
     /// with [`DatatypeState::DueToCreate`].
-    pub fn create_datatype(&self, key: impl IntoString) -> DatatypeBuilder {
+    pub fn create_datatype(&self, key: impl IntoString) -> DatatypeBuilder<'_> {
         DatatypeBuilder::new(self, key.into(), DatatypeState::DueToCreate)
     }
 
@@ -124,7 +129,7 @@ impl Client {
     ///
     /// The `Datatype` built by this builder will be marked
     /// with [`DatatypeState::DueToSubscribeOrCreate`].
-    pub fn subscribe_or_create_datatype(&self, key: impl IntoString) -> DatatypeBuilder {
+    pub fn subscribe_or_create_datatype(&self, key: impl IntoString) -> DatatypeBuilder<'_> {
         DatatypeBuilder::new(self, key.into(), DatatypeState::DueToSubscribeOrCreate)
     }
 }

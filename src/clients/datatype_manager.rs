@@ -33,6 +33,7 @@ impl DatatypeManager {
         r#type: DataType,
         state: DatatypeState,
         option: DatatypeOption,
+        is_readonly: bool,
     ) -> Result<DatatypeSet, ClientError> {
         match self.datatypes.entry(key.to_owned()) {
             Entry::Occupied(entry) => {
@@ -49,7 +50,8 @@ impl DatatypeManager {
                 Ok(existing.clone())
             }
             Entry::Vacant(entry) => {
-                let dt = DatatypeSet::new(r#type, key, state, self.common.clone(), option);
+                let dt =
+                    DatatypeSet::new(r#type, key, state, self.common.clone(), option, is_readonly);
                 entry.insert(dt.clone());
                 Ok(dt)
             }
@@ -72,6 +74,7 @@ mod tests_datatype_manager {
             DataType::Counter,
             DatatypeState::DueToCreate,
             Default::default(),
+            false,
         );
         assert!(res1.is_ok());
         let dt1 = res1.unwrap();
@@ -83,6 +86,7 @@ mod tests_datatype_manager {
             DataType::Map,
             DatatypeState::DueToCreate,
             Default::default(),
+            false,
         );
         assert_eq!(
             res2.err().unwrap(),
@@ -94,6 +98,7 @@ mod tests_datatype_manager {
             DataType::Counter,
             DatatypeState::DueToSubscribeOrCreate,
             Default::default(),
+            false,
         );
         assert_eq!(
             res3.err().unwrap(),
@@ -105,6 +110,7 @@ mod tests_datatype_manager {
             DataType::Counter,
             DatatypeState::DueToCreate,
             Default::default(),
+            false,
         );
         assert!(res4.is_ok());
         let dt4 = res4.unwrap();

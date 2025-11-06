@@ -120,11 +120,36 @@ impl TransactionalDatatype {
         }
     }
 
+    /// Checks whether this datatype is writable based on its readonly flag and state.
+    ///
+    /// Returns an error if:
+    /// - The datatype is marked as readonly
+    /// - The datatype state does not allow writes
+    pub fn check_writable(&self) -> Result<(), DatatypeError> {
+        use crate::errors::with_err_out;
+
+        if self.attr.is_readonly {
+            return Err(with_err_out!(DatatypeError::FailedToWrite(format!(
+                "Datatype '{}' is readonly",
+                self.attr.key
+            ))));
+        }
+        let state = self.get_state();
+        if !state.is_read_writable() {
+            return Err(with_err_out!(DatatypeError::FailedToWrite(format!(
+                "Datatype '{}' is not in writable state: {:?}",
+                self.attr.key, state
+            ))));
+        }
+        Ok(())
+    }
+
     pub fn execute_local_operation_as_tx(
         &self,
         tx_ctx: Arc<TransactionContext>,
         op: Operation,
     ) -> Result<ReturnType, DatatypeError> {
+        self.check_writable()?;
         let mut _defer_guard = None;
         let mut retries = 0;
         loop {
@@ -169,7 +194,7 @@ impl TransactionalDatatype {
         self.tx_mutex.unlock();
     }
 
-    fn begin_transaction(&self, tx_ctx: Arc<TransactionContext>) -> BeginTransactionResult {
+    fn begin_transaction(&self, tx_ctx: Arc<TransactionContext>) -> BeginTransactionResult<'_> {
         let mut self_tx_ctx = self.tx_ctx.write();
         // self.tx_ctx defaults to None when no transaction is active.
         // Once a transaction begins, self.tx_ctx is set to the current transaction context.

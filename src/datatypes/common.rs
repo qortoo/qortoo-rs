@@ -47,6 +47,7 @@ pub struct Attribute {
     pub duid: Duid,
     pub client_common: Arc<ClientCommon>,
     pub option: Arc<DatatypeOption>,
+    pub is_readonly: bool,
 }
 
 impl Debug for Attribute {
@@ -67,6 +68,7 @@ impl Attribute {
         r#type: DataType,
         client_common: Arc<ClientCommon>,
         option: DatatypeOption,
+        is_readonly: bool,
     ) -> Self {
         Self {
             key,
@@ -74,6 +76,7 @@ impl Attribute {
             duid: Duid::new(),
             client_common,
             option: Arc::new(option),
+            is_readonly,
         }
     }
 
@@ -101,6 +104,7 @@ impl Attribute {
             duid: Duid::new(),
             client_common,
             option: Default::default(),
+            is_readonly: false,
         })
     }
 }

@@ -6,7 +6,8 @@ use tokio::sync::oneshot;
 use tracing::{Instrument, error, instrument};
 
 use crate::{
-    DatatypeError, datatypes::wired::WiredDatatype, observability::macros::add_span_event,
+    DatatypeError, datatypes::wired::WiredDatatype, errors::with_err_out,
+    observability::macros::add_span_event,
 };
 
 #[derive(Display)]
@@ -112,10 +113,9 @@ impl EventLoop {
     }
 
     fn send_to_unbounded(&self, ev: Event) -> Result<(), DatatypeError> {
-        self.unbounded_tx.try_send(ev).map_err(|e| {
-            crate::errors::with_err_out!(DatatypeError::FailureInEventLoop(Box::new(e)))
-        })?;
-        Ok(())
+        self.unbounded_tx
+            .try_send(ev)
+            .map_err(|e| with_err_out!(DatatypeError::FailureInEventLoop(Box::new(e))))
     }
 
     fn send_to_bounded(&self, ev: Event) -> Result<(), DatatypeError> {

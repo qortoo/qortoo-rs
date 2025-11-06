@@ -41,12 +41,14 @@ impl DatatypeSet {
         state: DatatypeState,
         client_common: Arc<ClientCommon>,
         option: DatatypeOption,
+        is_readonly: bool,
     ) -> Self {
         let attr = Arc::new(Attribute::new(
             key.to_owned(),
             r#type,
             client_common,
             option,
+            is_readonly,
         ));
         let datatype = TransactionalDatatype::new_arc(attr, state);
         match r#type {
@@ -55,6 +57,12 @@ impl DatatypeSet {
                 todo!()
             }
         }
+    }
+}
+
+impl From<Counter> for DatatypeSet {
+    fn from(value: Counter) -> Self {
+        Self::Counter(value)
     }
 }
 
@@ -80,6 +88,7 @@ mod tests_datatype_set {
             DatatypeState::DueToCreate,
             new_client_common!(),
             Default::default(),
+            false,
         );
         let ds2 = ds1.clone();
         let DatatypeSet::Counter(cnt1) = ds1;
@@ -91,7 +100,7 @@ mod tests_datatype_set {
 
         // Verify the cloned Counter operates correctly and shares state
         assert_eq!(0, cnt1.get_value());
-        assert_eq!(2, cnt2.increase_by(2));
+        assert_eq!(2, cnt2.increase_by(2).unwrap());
         assert_eq!(2, cnt1.get_value());
 
         // Verify the cloned Counter is different from the original

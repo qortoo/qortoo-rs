@@ -50,14 +50,15 @@ impl Counter {
     /// assert_eq!(counter.increase_by(5), 5);
     /// assert_eq!(counter.increase_by(-2), 3);
     /// ```
-    pub fn increase_by(&self, delta: i64) -> i64 {
+    pub fn increase_by(&self, delta: i64) -> Result<i64, DatatypeError> {
         let op = Operation::new_counter_increase(delta);
-        match self
+
+        let ret = self
             .datatype
-            .execute_local_operation_as_tx(self.tx_ctx.clone(), op)
-        {
-            Ok(ReturnType::Counter(c)) => c,
-            _ => self.get_value(),
+            .execute_local_operation_as_tx(self.tx_ctx.clone(), op)?;
+        match ret {
+            ReturnType::Counter(cv) => Ok(cv),
+            _ => Err(DatatypeError::FailedToExecuteOperation("unexpected return type".into()))
         }
     }}
 
@@ -78,7 +79,7 @@ impl Counter {
     /// assert_eq!(counter.increase(), 1);
     /// assert_eq!(counter.increase(), 2);
     /// ```
-    pub fn increase(&self) -> i64 {
+    pub fn increase(&self) -> Result<i64, DatatypeError> {
         self.increase_by(1)
     }
 
@@ -151,6 +152,7 @@ impl Counter {
     where
         T: FnOnce(Self) -> Result<(), BoxedError> + Send + Sync + 'static,
     {
+        self.datatype.check_writable()?;
         let this_tx_ctx = Arc::new(TransactionContext::new(tag));
         let this_tx_ctx_clone = this_tx_ctx.clone();
         let do_tx_func = move || {
@@ -209,8 +211,8 @@ mod tests_counter {
             new_attribute!(DataType::Counter),
             Default::default(),
         ));
-        assert_eq!(1, counter.increase());
-        assert_eq!(11, counter.increase_by(10));
+        assert_eq!(1, counter.increase().unwrap());
+        assert_eq!(11, counter.increase_by(10).unwrap());
         assert_eq!(11, counter.get_value());
     }
 
@@ -222,16 +224,16 @@ mod tests_counter {
             Default::default(),
         ));
         let result1 = counter.transaction("success", |c| {
-            c.increase_by(1);
-            c.increase_by(2);
+            c.increase_by(1).unwrap();
+            c.increase_by(2).unwrap();
             Ok(())
         });
         assert!(result1.is_ok());
         assert_eq!(3, counter.get_value());
 
         let result2 = counter.transaction("failure", |c| {
-            c.increase_by(11);
-            c.increase_by(22);
+            c.increase_by(11).unwrap();
+            c.increase_by(22).unwrap();
             Err("failed".into())
         });
         assert!(result2.is_err());
@@ -257,7 +259,7 @@ mod tests_counter {
                 let _g1 = thread_span.enter();
                 let tag = format!("tag:{i}");
                 counter.transaction(tag, move |c| {
-                    c.increase_by(i);
+                    c.increase_by(i).unwrap();
                     Ok(())
                 })
             }));

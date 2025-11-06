@@ -61,7 +61,7 @@ impl Transaction {
         self.operations.push(op);
     }
 
-    pub fn iter(&self) -> std::slice::Iter<Operation> {
+    pub fn iter(&self) -> std::slice::Iter<'_, Operation> {
         self.operations.iter()
     }
 }
