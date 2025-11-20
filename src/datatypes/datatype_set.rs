@@ -74,7 +74,7 @@ mod tests_datatype_set {
         Counter, DataType, Datatype, DatatypeState,
         clients::common::new_client_common,
         datatypes::{
-            datatype::DatatypeBlanket, datatype_set::DatatypeSet,
+            common::new_attribute, datatype::DatatypeBlanket, datatype_set::DatatypeSet,
             transactional::TransactionalDatatype,
         },
     };
@@ -112,5 +112,16 @@ mod tests_datatype_set {
         let ptr1: *const TransactionalDatatype = cnt1.get_core();
         let ptr2: *const TransactionalDatatype = cnt2.get_core();
         assert_eq!(ptr1, ptr2);
+    }
+
+    #[test]
+    #[instrument]
+    fn can_verify_from_into() {
+        let counter = Counter::new(TransactionalDatatype::new_arc(
+            new_attribute!(DataType::Counter),
+            Default::default(),
+        ));
+        fn assert_datatype_set(_ds: DatatypeSet) {}
+        assert_datatype_set(counter.into());
     }
 }

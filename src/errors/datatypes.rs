@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::errors::BoxedError;
+use crate::errors::{BoxedError, connectivity::ConnectivityError};
 
 /// Errors that can occur while working with SyncYam datatypes.
 ///
@@ -42,6 +42,8 @@ pub enum DatatypeError {
     FailureInEventLoop(BoxedError) = 205,
     #[error("[DatatypeError] not allowed to write")]
     FailedToWrite(String) = 206,
+    #[error("[DatatypeError] failed to push and pull: {0}")]
+    FailedToPushPull(ConnectivityError) = 207,
 }
 
 impl PartialEq for DatatypeError {

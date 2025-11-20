@@ -93,14 +93,26 @@ impl Datatype for TransactionalDatatype {
     fn get_state(&self) -> DatatypeState {
         self.mutable.read().state
     }
+
+    fn get_server_version(&self) -> u64 {
+        self.mutable.read().checkpoint.sseq
+    }
+
+    fn get_client_version(&self) -> u64 {
+        self.mutable.read().op_id.cseq
+    }
+
+    fn get_synced_client_version(&self) -> u64 {
+        self.mutable.read().op_id.cseq
+    }
 }
 
 impl TransactionalDatatype {
     pub fn new_arc(attr: Arc<Attribute>, state: DatatypeState) -> Arc<Self> {
-        let event_loop = EventLoop::new_arc();
+        let event_loop = EventLoop::new_arc(attr.client_common.connectivity.clone());
         let arc_td = Arc::new(Self {
-            attr: attr.clone(),
-            mutable: Arc::new(RwLock::new(MutableDatatype::new(attr, state))),
+            mutable: Arc::new(RwLock::new(MutableDatatype::new(attr.clone(), state))),
+            attr,
             event_loop: event_loop.clone(),
             tx_ctx: Default::default(),
             op_mutex: Default::default(),
@@ -113,11 +125,11 @@ impl TransactionalDatatype {
         arc_td
     }
 
-    fn get_wired_datatype(&self) -> WiredDatatype {
-        WiredDatatype {
+    fn get_wired_datatype(&self) -> Arc<WiredDatatype> {
+        Arc::new(WiredDatatype {
             mutable: self.mutable.clone(),
             attr: self.attr.clone(),
-        }
+        })
     }
 
     /// Checks whether this datatype is writable based on its readonly flag and state.

@@ -27,6 +27,9 @@ pub trait Datatype {
     fn get_type(&self) -> DataType;
     /// returns a [`DatatypeState`] indicating the current lifecycle/status of this datatype.
     fn get_state(&self) -> DatatypeState;
+    fn get_server_version(&self) -> u64;
+    fn get_client_version(&self) -> u64;
+    fn get_synced_client_version(&self) -> u64;
 }
 
 pub trait DatatypeBlanket {
@@ -47,6 +50,18 @@ where
 
     fn get_state(&self) -> DatatypeState {
         self.get_core().get_state()
+    }
+
+    fn get_server_version(&self) -> u64 {
+        self.get_core().get_server_version()
+    }
+
+    fn get_client_version(&self) -> u64 {
+        self.get_core().get_client_version()
+    }
+
+    fn get_synced_client_version(&self) -> u64 {
+        self.get_core().get_synced_client_version()
     }
 }
 
@@ -70,5 +85,8 @@ mod tests_datatype_trait {
         assert_eq!(data.get_key(), key);
         assert_eq!(data.get_type(), DataType::Counter);
         assert_eq!(data.get_state(), DatatypeState::DueToCreate);
+        assert_eq!(data.get_server_version(), 0);
+        assert_eq!(data.get_client_version(), 0);
+        assert_eq!(data.get_synced_client_version(), 0);
     }
 }

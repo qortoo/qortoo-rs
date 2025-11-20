@@ -14,7 +14,7 @@ pub enum ClientError {
     /// Returned when a request to subscribe or create a datatype is
     /// incompatible with an existing instance for the same key (for
     /// example, mismatched type or datatype state).
-    #[error("[ClientError] Cannot subscribe or create datatype: {0}")]
+    #[error("[ClientError] cannot subscribe or create datatype: {0}")]
     FailedToSubscribeOrCreateDatatype(String) = 101,
 }
 

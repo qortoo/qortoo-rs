@@ -179,7 +179,7 @@ mod tests_counter {
     use tracing_opentelemetry::OpenTelemetrySpanExt;
 
     use crate::{
-        DataType,
+        DataType, DatatypeState,
         datatypes::{
             common::new_attribute, counter::Counter, datatype::Datatype,
             transactional::TransactionalDatatype,
@@ -209,7 +209,7 @@ mod tests_counter {
     fn can_use_counter_operations() {
         let counter = Counter::new(TransactionalDatatype::new_arc(
             new_attribute!(DataType::Counter),
-            Default::default(),
+            DatatypeState::DueToCreate,
         ));
         assert_eq!(1, counter.increase().unwrap());
         assert_eq!(11, counter.increase_by(10).unwrap());

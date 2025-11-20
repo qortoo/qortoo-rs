@@ -7,17 +7,17 @@ use crate::{
     datatypes::{
         common::{Attribute, ReturnType},
         crdts::Crdt,
-        push_buffer::{MemoryPushBuffer, PushBuffer, PushBufferError},
+        push_buffer::{MemoryPushBuffer, PushBuffer},
         rollback::Rollback,
     },
+    errors::push_pull::ClientPushPullError,
     operations::{Operation, transaction::Transaction},
     types::{checkpoint::CheckPoint, operation_id::OperationId},
 };
 
 #[derive(Debug)]
 pub struct MutableDatatype {
-    #[allow(dead_code)]
-    attr: Arc<Attribute>,
+    pub attr: Arc<Attribute>,
     pub crdt: Crdt,
     pub state: DatatypeState,
     pub op_id: OperationId,
@@ -63,10 +63,10 @@ impl MutableDatatype {
                 let tx = Arc::new(tx);
                 if *tx.cuid() == self.op_id.cuid {
                     if let Err(err) = self.push_buffer.enque(tx.clone()) {
-                        if err == PushBufferError::ExceedMaxMemSize {
+                        if err == ClientPushPullError::ExceedMaxMemSize {
                             todo!("should reduce the push buffer size");
                         }
-                        if err == PushBufferError::NonSequentialCseq {
+                        if err == ClientPushPullError::NonSequentialCseq {
                             unreachable!("this should not happen");
                         }
                     }

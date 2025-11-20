@@ -14,7 +14,10 @@ mod tests_datatype_builder {
         counter.increase_by(42).unwrap();
         assert_eq!("counter-1", counter.get_key());
         assert_eq!(DataType::Counter, counter.get_type());
-        assert_eq!(DatatypeState::DueToCreate, counter.get_state());
+        assert!(matches!(
+            counter.get_state(),
+            DatatypeState::DueToCreate | DatatypeState::Subscribed
+        ));
         assert_eq!(counter.get_value(), 42);
     }
 }

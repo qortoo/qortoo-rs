@@ -10,6 +10,11 @@ impl CheckPoint {
     pub fn new(sseq: u64, cseq: u64) -> Self {
         Self { sseq, cseq }
     }
+
+    pub fn check_with(&mut self, other: &CheckPoint) {
+        self.cseq = self.cseq.max(other.cseq);
+        self.sseq = self.sseq.max(other.sseq);
+    }
 }
 
 impl Display for CheckPoint {
@@ -26,12 +31,15 @@ mod tests_checkpoint {
 
     #[test]
     fn can_use_checkpoint() {
-        let cp1 = CheckPoint::default();
+        let mut cp1 = CheckPoint::default();
         let cp2 = CheckPoint::new(100, 101);
         info!("{cp1}, {cp2:?}");
         assert_eq!(cp1.to_string(), "(s:0, c:0)");
         assert_eq!(cp2.to_string(), "(s:100, c:101)");
         assert_eq!(cp1, cp1);
         assert_ne!(cp1, cp2);
+
+        cp1.check_with(&cp2);
+        assert_eq!(cp1, cp2);
     }
 }

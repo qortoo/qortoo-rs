@@ -38,16 +38,13 @@ impl DatatypeManager {
         match self.datatypes.entry(key.to_owned()) {
             Entry::Occupied(entry) => {
                 let existing = entry.get();
-                if existing.get_type() != r#type || existing.get_state() != state {
-                    return Err(with_err_out!(
-                        ClientError::FailedToSubscribeOrCreateDatatype(format!(
-                            "{type:?} '{key}' was demanded as {state:?}, but the client already has {:?} '{key}' as {:?}",
-                            existing.get_type(),
-                            existing.get_state()
-                        ))
-                    ));
-                }
-                Ok(existing.clone())
+                Err(with_err_out!(
+                    ClientError::FailedToSubscribeOrCreateDatatype(format!(
+                        "{type:?} '{key}' was demanded as {state:?}, but the client already has {:?} '{key}' as {:?}",
+                        existing.get_type(),
+                        existing.get_state()
+                    ))
+                ))
             }
             Entry::Vacant(entry) => {
                 let dt =
@@ -78,8 +75,8 @@ mod tests_datatype_manager {
         );
         assert!(res1.is_ok());
         let dt1 = res1.unwrap();
-        assert_eq!(dt1.get_type(), DataType::Counter);
         assert_eq!(dt1.get_state(), DatatypeState::DueToCreate);
+        assert_eq!(dt1.get_type(), DataType::Counter);
 
         let res2 = dm.subscribe_or_create_datatype(
             "k1",
@@ -104,16 +101,5 @@ mod tests_datatype_manager {
             res3.err().unwrap(),
             ClientError::FailedToSubscribeOrCreateDatatype("".into())
         );
-
-        let res4 = dm.subscribe_or_create_datatype(
-            "k1",
-            DataType::Counter,
-            DatatypeState::DueToCreate,
-            Default::default(),
-            false,
-        );
-        assert!(res4.is_ok());
-        let dt4 = res4.unwrap();
-        assert_eq!(dt4.get_state(), DatatypeState::DueToCreate);
     }
 }

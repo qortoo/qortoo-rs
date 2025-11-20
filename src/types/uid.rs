@@ -4,6 +4,7 @@ use nanoid::nanoid;
 
 pub type Cuid = Uid;
 pub type Duid = Uid;
+pub type BoxedUid = Box<str>;
 
 pub const UID_LEN: usize = 16;
 
@@ -23,6 +24,10 @@ impl Uid {
         s.len() == UID_LEN
             && s.chars()
                 .all(|c| c == '-' || c == '_' || c.is_ascii_alphanumeric())
+    }
+
+    pub fn as_boxed_str(&self) -> BoxedUid {
+        self.0.to_owned().into_boxed_str()
     }
 }
 

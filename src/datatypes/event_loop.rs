@@ -6,8 +6,8 @@ use tokio::sync::oneshot;
 use tracing::{Instrument, error, instrument};
 
 use crate::{
-    DatatypeError, datatypes::wired::WiredDatatype, errors::with_err_out,
-    observability::macros::add_span_event,
+    DatatypeError, connectivity::Connectivity, datatypes::wired::WiredDatatype,
+    errors::with_err_out, observability::macros::add_span_event,
 };
 
 #[derive(Display)]
@@ -20,6 +20,7 @@ pub enum Event {
 
 #[derive(Debug)]
 pub struct EventLoop {
+    connectivity: Arc<dyn Connectivity>,
     bounded_tx: Sender<Event>,
     bounded_rx: Receiver<Event>,
     unbounded_tx: Sender<Event>,
@@ -27,10 +28,11 @@ pub struct EventLoop {
 }
 
 impl EventLoop {
-    pub fn new_arc() -> Arc<Self> {
+    pub fn new_arc(connectivity: Arc<dyn Connectivity>) -> Arc<Self> {
         let (unbounded_tx, unbounded_rx) = crossbeam_channel::unbounded::<Event>();
         let (bounded_tx, bounded_rx) = crossbeam_channel::bounded::<Event>(0);
         Arc::new(Self {
+            connectivity,
             unbounded_rx,
             unbounded_tx,
             bounded_tx,
@@ -40,22 +42,23 @@ impl EventLoop {
 
     #[instrument(skip_all, name="datatype_event_loop", 
         fields(
-            syncyam.col=%wd.attr.client_common.collection,
-            syncyam.cl=%wd.attr.client_common.alias,
-            syncyam.cuid=%wd.attr.client_common.cuid,
-            syncyam.dt=%wd.attr.key,
-            syncyam.duid=%wd.attr.duid,
+            syncyam.col=%wired.attr.client_common.collection,
+            syncyam.cl=%wired.attr.client_common.alias,
+            syncyam.cuid=%wired.attr.client_common.cuid,
+            syncyam.dt=%wired.attr.key,
+            syncyam.duid=%wired.attr.duid,
         )
     )]
-    pub fn run(&self, wd: WiredDatatype) {
+    pub fn run(&self, wired: Arc<WiredDatatype>) {
         let unbounded_rx = self.unbounded_rx.clone();
         let bounded_rx = self.bounded_rx.clone();
-        let rt_handle = wd.attr.client_common.handle.clone();
+        let rt_handle = wired.attr.client_common.handle.clone();
 
         rt_handle.spawn(
             async move {
                 add_span_event!("start event_loop");
                 loop {
+                    wired.push_if_needed();
                     let event = crossbeam_channel::select! {
                         recv(unbounded_rx) -> msg => {
                             match msg {
@@ -86,7 +89,9 @@ impl EventLoop {
                         }
                         Event::PushTransaction => {
                             add_span_event!("receive PushTransaction");
-                            wd.push_pull();
+                            if let Err(e) = wired.push_pull() {
+                                error!("push_pull failed: {e}");
+                            }
                         }
                     }
                 }
@@ -129,6 +134,9 @@ impl EventLoop {
     }
 
     pub fn send_push_transaction(&self) {
+        if !self.connectivity.is_realtime() {
+            return;
+        }
         self.send_to_bounded(Event::PushTransaction)
             .unwrap_or_default();
     }

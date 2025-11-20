@@ -43,6 +43,11 @@ impl ClientBuilder {
             common,
         }
     }
+
+    pub fn with_connectivity(mut self, connectivity: Arc<dyn Connectivity>) -> Self {
+        self.connectivity = connectivity;
+        self
+    }
 }
 
 /// Facade for creating and subscribing to SyncYam datatypes.

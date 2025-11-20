@@ -61,7 +61,7 @@ pub enum DataType {
 /// assert_eq!(counter3.get_state(), DatatypeState::DueToCreate);
 /// assert!(counter3.increase().is_err()); // read-only despite writable state
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, strum_macros::Display)]
 #[repr(i32)]
 pub enum DatatypeState {
     /// The datatype is scheduled to be created on the server (writable).

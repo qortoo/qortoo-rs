@@ -7,6 +7,7 @@ pub mod datatype_set;
 pub mod event_loop;
 mod mutable;
 pub mod option;
+pub mod pull_handler;
 pub mod push_buffer;
 mod rollback;
 mod transactional;

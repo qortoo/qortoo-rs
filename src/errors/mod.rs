@@ -1,5 +1,7 @@
 pub mod clients;
+pub mod connectivity;
 pub mod datatypes;
+pub mod push_pull;
 
 pub type BoxedError = Box<dyn std::error::Error + Send + Sync>;
 

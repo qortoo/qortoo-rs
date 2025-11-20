@@ -80,6 +80,10 @@ impl Attribute {
         }
     }
 
+    pub fn resource_id(&self) -> String {
+        format!("{}/{}", self.client_common.collection, self.key)
+    }
+
     #[cfg(test)]
     pub fn new_for_test(
         mut paths: std::collections::VecDeque<String>,
@@ -147,6 +151,10 @@ mod tests_attribute {
         assert_eq!(
             attr.client_common.collection.to_string(),
             caller_path.pop_back().unwrap()
+        );
+        assert_eq!(
+            format!("{}/{}", attr.client_common.collection, attr.key),
+            attr.resource_id()
         );
     }
 }
