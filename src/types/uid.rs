@@ -1,23 +1,29 @@
-use std::fmt::{Display, Formatter};
+use std::{
+    fmt::{Debug, Display, Formatter},
+    hash::{Hash, Hasher},
+    ops::Deref,
+    sync::Arc,
+};
 
 use nanoid::nanoid;
 
+use crate::types::common::ArcStr;
+
 pub type Cuid = Uid;
 pub type Duid = Uid;
-pub type BoxedUid = Box<str>;
 
 pub const UID_LEN: usize = 16;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
-pub struct Uid(String);
+#[derive(Clone, PartialEq, PartialOrd, Eq, Ord)]
+pub struct Uid(ArcStr);
 
 impl Uid {
     pub fn new() -> Self {
-        Self(nanoid!(UID_LEN))
+        Self(nanoid!(UID_LEN).into())
     }
 
     pub fn new_nil() -> Self {
-        Self("0000000000000000".to_string())
+        Self(Arc::from("0000000000000000"))
     }
 
     fn validate(s: &str) -> bool {
@@ -25,9 +31,11 @@ impl Uid {
             && s.chars()
                 .all(|c| c == '-' || c == '_' || c.is_ascii_alphanumeric())
     }
+}
 
-    pub fn as_boxed_str(&self) -> BoxedUid {
-        self.0.to_owned().into_boxed_str()
+impl Debug for Uid {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Uid").field(&self.0).finish()
     }
 }
 
@@ -43,11 +51,17 @@ impl Display for Uid {
     }
 }
 
+impl Hash for Uid {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
+    }
+}
+
 impl TryFrom<String> for Uid {
     type Error = &'static str;
     fn try_from(value: String) -> Result<Self, Self::Error> {
         if Self::validate(&value) {
-            Ok(Self(value))
+            Ok(Self(value.into()))
         } else {
             Err("Invalid UID format")
         }
@@ -59,7 +73,7 @@ impl TryFrom<&str> for Uid {
 
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         if Self::validate(value) {
-            Ok(Self(value.to_string()))
+            Ok(Self(Arc::from(value)))
         } else {
             Err("Invalid UID format")
         }
@@ -69,6 +83,14 @@ impl TryFrom<&str> for Uid {
 impl AsRef<str> for Uid {
     fn as_ref(&self) -> &str {
         &self.0
+    }
+}
+
+impl Deref for Uid {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.deref()
     }
 }
 

@@ -33,11 +33,8 @@ impl ClientBuilder {
     ///
     /// It initializes client metadata and datatype management structures.
     pub fn build(self) -> Client {
-        let common = ClientCommon::new_arc(
-            self.collection.into_boxed_str(),
-            self.alias.into_boxed_str(),
-            self.connectivity,
-        );
+        let common =
+            ClientCommon::new_arc(self.collection.into(), self.alias.into(), self.connectivity);
         Client {
             datatypes: RwLock::new(DatatypeManager::new(common.clone())),
             common,

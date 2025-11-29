@@ -80,8 +80,8 @@ mod tests_datatype_trait {
     #[instrument]
     fn can_call_datatype_trait_functions() {
         let attr = new_attribute!(DataType::Counter);
-        let key = attr.key.clone();
-        let data = TransactionalDatatype::new_arc(attr, DatatypeState::DueToCreate);
+        let key = attr.key.as_ref();
+        let data = TransactionalDatatype::new_arc(attr.clone(), DatatypeState::DueToCreate);
         assert_eq!(data.get_key(), key);
         assert_eq!(data.get_type(), DataType::Counter);
         assert_eq!(data.get_state(), DatatypeState::DueToCreate);

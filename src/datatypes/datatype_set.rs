@@ -4,6 +4,7 @@ use crate::{
     Counter, DataType, Datatype, DatatypeState,
     clients::common::ClientCommon,
     datatypes::{common::Attribute, option::DatatypeOption, transactional::TransactionalDatatype},
+    types::common::ArcStr,
 };
 
 /// A typed wrapper for concrete datatypes managed by the client.
@@ -37,14 +38,14 @@ impl DatatypeSet {
     /// a concrete datatype variant tied to a specific client context.
     pub(crate) fn new(
         r#type: DataType,
-        key: &str,
+        key: ArcStr,
         state: DatatypeState,
         client_common: Arc<ClientCommon>,
         option: DatatypeOption,
         is_readonly: bool,
     ) -> Self {
         let attr = Arc::new(Attribute::new(
-            key.to_owned(),
+            key,
             r#type,
             client_common,
             option,
@@ -84,7 +85,7 @@ mod tests_datatype_set {
     fn can_clone_datatype_set() {
         let ds1 = DatatypeSet::new(
             DataType::Counter,
-            "k1",
+            "k1".into(),
             DatatypeState::DueToCreate,
             new_client_common!(),
             Default::default(),

@@ -7,22 +7,22 @@ use tokio::runtime::Handle;
 
 use crate::{
     connectivity::Connectivity,
-    types::uid::Cuid,
+    types::{common::ArcStr, uid::Cuid},
     utils::runtime::{get_or_init_runtime_handle, reserve_to_shutdown_runtime},
 };
 
 pub struct ClientCommon {
-    pub collection: Box<str>,
+    pub collection: ArcStr,
     pub cuid: Cuid,
-    pub alias: Box<str>,
+    pub alias: ArcStr,
     pub handle: Handle,
     pub connectivity: Arc<dyn Connectivity>,
 }
 
 impl ClientCommon {
     pub fn new_arc(
-        collection: Box<str>,
-        alias: Box<str>,
+        collection: ArcStr,
+        alias: ArcStr,
         connectivity: Arc<dyn Connectivity>,
     ) -> Arc<Self> {
         let cuid = Cuid::new();
@@ -41,11 +41,8 @@ impl ClientCommon {
         use crate::connectivity::null_connectivity::NullConnectivity;
 
         paths.pop_back();
-        let alias = paths
-            .pop_back()
-            .unwrap_or("collection".into())
-            .into_boxed_str();
-        let collection = paths.pop_back().unwrap_or("client".into()).into_boxed_str();
+        let alias = paths.pop_back().unwrap_or("collection".into()).into();
+        let collection = paths.pop_back().unwrap_or("client".into()).into();
         Self::new_arc(collection, alias, Arc::new(NullConnectivity::new()))
     }
 }

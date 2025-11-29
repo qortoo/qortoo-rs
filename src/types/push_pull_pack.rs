@@ -5,14 +5,18 @@ use crate::{
     datatypes::common::Attribute,
     errors::push_pull::ServerPushPullError,
     operations::transaction::Transaction,
-    types::{checkpoint::CheckPoint, uid::BoxedUid},
+    types::{
+        checkpoint::CheckPoint,
+        common::ArcStr,
+        uid::{Cuid, Duid},
+    },
 };
 
 pub struct PushPullPack {
-    pub collection: Box<str>,
-    pub cuid: BoxedUid,
-    pub duid: BoxedUid,
-    pub key: Box<str>,
+    pub collection: ArcStr,
+    pub cuid: Cuid,
+    pub duid: Duid,
+    pub key: ArcStr,
     pub r#type: DataType,
     pub state: DatatypeState,
     pub checkpoint: CheckPoint,
@@ -27,9 +31,9 @@ impl PushPullPack {
     pub fn new(attr: &Attribute, state: DatatypeState) -> Self {
         Self {
             collection: attr.client_common.collection.clone(),
-            cuid: attr.client_common.cuid.as_boxed_str(),
-            duid: attr.duid.as_boxed_str(),
-            key: attr.key.clone().into_boxed_str(),
+            cuid: attr.client_common.cuid.clone(),
+            duid: attr.duid.clone(),
+            key: attr.key.clone(),
             r#type: attr.r#type.to_owned(),
             state,
             checkpoint: CheckPoint::default(),

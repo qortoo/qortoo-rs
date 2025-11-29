@@ -8,11 +8,12 @@ use crate::{
     clients::common::ClientCommon,
     datatypes::{datatype_set::DatatypeSet, option::DatatypeOption},
     errors::with_err_out,
+    types::common::ArcStr,
 };
 
 pub struct DatatypeManager {
     common: Arc<ClientCommon>,
-    datatypes: HashMap<String, DatatypeSet>,
+    datatypes: HashMap<ArcStr, DatatypeSet>,
 }
 
 impl DatatypeManager {
@@ -35,7 +36,8 @@ impl DatatypeManager {
         option: DatatypeOption,
         is_readonly: bool,
     ) -> Result<DatatypeSet, ClientError> {
-        match self.datatypes.entry(key.to_owned()) {
+        let arc_key: ArcStr = key.into();
+        match self.datatypes.entry(arc_key.clone()) {
             Entry::Occupied(entry) => {
                 let existing = entry.get();
                 Err(with_err_out!(
@@ -47,8 +49,14 @@ impl DatatypeManager {
                 ))
             }
             Entry::Vacant(entry) => {
-                let dt =
-                    DatatypeSet::new(r#type, key, state, self.common.clone(), option, is_readonly);
+                let dt = DatatypeSet::new(
+                    r#type,
+                    arc_key,
+                    state,
+                    self.common.clone(),
+                    option,
+                    is_readonly,
+                );
                 entry.insert(dt.clone());
                 Ok(dt)
             }
