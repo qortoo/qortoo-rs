@@ -53,9 +53,11 @@ impl EventLoop {
         let unbounded_rx = self.unbounded_rx.clone();
         let bounded_rx = self.bounded_rx.clone();
         let rt_handle = wired.attr.client_common.handle.clone();
-
+        let unbounded_tx = self.unbounded_tx.clone();
         rt_handle.spawn(
             async move {
+                let connectivity = wired.attr.client_common.connectivity.clone();
+                connectivity.register(wired.clone(), unbounded_tx);
                 add_span_event!("start event_loop");
                 loop {
                     wired.push_if_needed();

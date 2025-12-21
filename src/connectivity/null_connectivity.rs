@@ -1,6 +1,11 @@
+use std::sync::Arc;
+
+use crossbeam_channel::Sender;
+
 use crate::{
     DatatypeState,
     connectivity::Connectivity,
+    datatypes::{event_loop::Event, wired::WiredDatatype},
     errors::{connectivity::ConnectivityError, push_pull::ServerPushPullError},
     types::push_pull_pack::PushPullPack,
 };
@@ -25,8 +30,8 @@ impl NullConnectivity {
 }
 
 impl Connectivity for NullConnectivity {
-    fn is_realtime(&self) -> bool {
-        true
+    fn register(&self, _wired: Arc<WiredDatatype>, _ender: Sender<Event>) {
+        // do nothing
     }
 
     fn push_and_pull(&self, pushed: &PushPullPack) -> Result<PushPullPack, ConnectivityError> {
@@ -69,6 +74,10 @@ impl Connectivity for NullConnectivity {
             }
         }
         Ok(pulled)
+    }
+
+    fn is_realtime(&self) -> bool {
+        true
     }
 }
 

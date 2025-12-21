@@ -6,7 +6,10 @@ use std::{
 use crate::{
     DataType,
     datatypes::option::DatatypeOption,
-    types::{common::ArcStr, uid::Duid},
+    types::{
+        common::{ArcStr, ResourceID},
+        uid::{Cuid, Duid},
+    },
 };
 
 macro_rules! datatype_instrument {
@@ -84,7 +87,7 @@ impl Attribute {
         }
     }
 
-    pub fn resource_id(&self) -> String {
+    pub fn resource_id(&self) -> ResourceID {
         format!("{}/{}", self.client_common.collection, self.key)
     }
 
@@ -108,6 +111,10 @@ impl Attribute {
             option: Default::default(),
             is_readonly: false,
         })
+    }
+
+    pub fn cuid(&self) -> Cuid {
+        self.client_common.cuid.clone()
     }
 }
 

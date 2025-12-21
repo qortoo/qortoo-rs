@@ -1,4 +1,7 @@
-use std::{fmt::Display, sync::Arc};
+use std::{
+    fmt::{Debug, Display},
+    sync::Arc,
+};
 
 use crate::{
     DataType, DatatypeState,
@@ -7,11 +10,12 @@ use crate::{
     operations::transaction::Transaction,
     types::{
         checkpoint::CheckPoint,
-        common::ArcStr,
+        common::{ArcStr, ResourceID},
         uid::{Cuid, Duid},
     },
 };
 
+#[derive(PartialEq, Eq)]
 pub struct PushPullPack {
     pub collection: ArcStr,
     pub cuid: Cuid,
@@ -45,7 +49,7 @@ impl PushPullPack {
         }
     }
 
-    pub fn resource_id(&self) -> String {
+    pub fn resource_id(&self) -> ResourceID {
         format!("{}/{}", self.collection, self.key)
     }
 
@@ -75,6 +79,15 @@ impl PushPullPack {
             error: None,
         }
     }
+
+    #[cfg(test)]
+    pub fn add_test_transactions(&mut self, cuid: &Cuid, from_cseq: u64, tx_size: usize) {
+        for cseq in from_cseq..from_cseq + tx_size as u64 {
+            let tx = Transaction::new_arc_for_test(cuid, cseq);
+            self.transactions.push(tx);
+            self.checkpoint.cseq = cseq;
+        }
+    }
 }
 
 impl Display for PushPullPack {
@@ -91,22 +104,28 @@ impl Display for PushPullPack {
         }
 
         if let Some(e) = self.error.as_ref() {
-            attr.push_str(&format!("|{e}"));
+            attr.push_str(&format!("|({e})"));
         }
 
         write!(
             f,
-            "[{:?}/{}/{} {}:{}:{} {} {} tx {}]",
+            "[{:?}/{}/{} {}:{}:{} {} tx:{} {}]",
             self.r#type,
             self.key,
             self.duid,
             self.checkpoint.sseq,
             self.checkpoint.cseq,
             self.safe_sseq,
-            self.transactions.len(),
             attr,
+            self.transactions.len(),
             self.state
         )
+    }
+}
+
+impl Debug for PushPullPack {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.to_string().as_str())
     }
 }
 
@@ -121,15 +140,20 @@ mod tests_push_pull_pack {
     };
 
     #[test]
-    fn can_display_push_pull_pack() {
+    fn can_use_push_pull_pack() {
         let attr = new_attribute!(DataType::Counter);
         let mut ppp = PushPullPack::new(&attr, DatatypeState::DueToCreate);
+        info!("{}", ppp.resource_id());
+        assert_eq!(ppp.resource_id(), format!("{}/{}", attr.client_common.collection, attr.key));
+        assert_eq!(format!("{ppp}"), format!("{ppp:?}"));
         info!("{ppp}");
         ppp.error = Some(ServerPushPullError::IllegalPushRequest(
             "some error".to_owned(),
         ));
+        assert_eq!(format!("{ppp}"), format!("{ppp:?}"));
         info!("{ppp}");
         ppp.has_snapshot = true;
-        info!("{ppp}");
+        assert_eq!(format!("{ppp}"), format!("{ppp:?}"));
+        info!("{ppp:?}");
     }
 }

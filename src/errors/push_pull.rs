@@ -5,8 +5,12 @@ use crate::ConnectivityError;
 #[repr(i32)]
 #[derive(Debug, Error, Eq)]
 pub enum ServerPushPullError {
-    #[error("[ServerPushPullError] illegal push request: {0}")]
+    #[error("[ServerPushPullError] illegal push request - {0}")]
     IllegalPushRequest(String) = 301,
+    #[error("[ServerPushPull] fail to create - {0}")]
+    FailedToCreate(String) = 302,
+    #[error("[ServerPushPull] fail to subscribe - {0}")]
+    FailedToSubscribe(String) = 303,
 }
 
 impl PartialEq for ServerPushPullError {

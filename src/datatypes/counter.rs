@@ -255,7 +255,10 @@ mod tests_counter {
             let parent_span = parent_span.clone();
             join_handles.push(tokio::spawn(async move {
                 let thread_span = info_span!("run_transaction", i = i);
-                thread_span.set_parent(parent_span.context()).unwrap();
+                // Only set parent if the span is enabled to avoid SpanDisabled error
+                if !parent_span.is_disabled() {
+                    let _ = thread_span.set_parent(parent_span.context());
+                }
                 let _g1 = thread_span.enter();
                 let tag = format!("tag:{i}");
                 counter.transaction(tag, move |c| {

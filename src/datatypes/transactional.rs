@@ -364,7 +364,9 @@ mod tests_transactional {
             let parent_span = parent_span.clone();
             join_handles.push(tokio::spawn(async move {
                 let thread_span = info_span!("thread", i = i);
-                thread_span.set_parent(parent_span.context()).unwrap();
+                if !parent_span.is_disabled() {
+                    let _ = thread_span.set_parent(parent_span.context());
+                }
                 let _g_thread_span = thread_span.enter();
                 let tx_ctx = Arc::new(TransactionContext::new(format!("test_tx_{i}")));
                 tx_dt.clone().do_transaction(tx_ctx.clone(), move || {
@@ -401,7 +403,9 @@ mod tests_transactional {
                 let executions = executions.clone();
                 join_handles.push(tokio::spawn(async move {
                     let thread_span = info_span!("thread_with_tag", i = i);
-                    thread_span.set_parent(parent_span.context()).unwrap();
+                    if !parent_span.is_disabled() {
+                        let _ = thread_span.set_parent(parent_span.context());
+                    }
                     let _g_thread_span = thread_span.enter();
                     tx_dt.execute_local_operation_as_tx(tx_ctx, op).unwrap();
                     executions.lock().push(-(i + 1));
@@ -416,7 +420,9 @@ mod tests_transactional {
                 let executions = executions.clone();
                 join_handles.push(tokio::spawn(async move {
                     let thread_span = info_span!("thread_with_no_tag", i = i);
-                    thread_span.set_parent(parent_span.context()).unwrap();
+                    if !parent_span.is_disabled() {
+                        let _ = thread_span.set_parent(parent_span.context());
+                    }
                     let _g_thread_span = thread_span.enter();
                     tx_dt.execute_local_operation_as_tx(tx_ctx, op).unwrap();
                     executions.lock().push(i + 1);

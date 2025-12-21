@@ -12,7 +12,7 @@ use crate::{
     defaults,
     errors::push_pull::ClientPushPullError,
     observability::macros::add_span_event,
-    types::push_pull_pack::PushPullPack,
+    types::{push_pull_pack::PushPullPack, uid::Cuid},
 };
 
 pub struct WiredDatatype {
@@ -21,6 +21,14 @@ pub struct WiredDatatype {
 }
 
 impl WiredDatatype {
+    #[cfg(test)]
+    pub fn new_arc_for_test(attr: Arc<Attribute>, state: DatatypeState) -> Arc<Self> {
+        Arc::new(Self {
+            mutable: Arc::new(RwLock::new(MutableDatatype::new(attr.clone(), state))),
+            attr,
+        })
+    }
+
     pub fn push_if_needed(&self) {
         if !self.attr.client_common.connectivity.is_realtime() || !self.mutable.read().need_push() {
             return;
@@ -43,6 +51,10 @@ impl WiredDatatype {
 
         let mut pull_handler = PullHandler::new(&mut pulled_ppp, &mut mutable);
         pull_handler.apply()
+    }
+
+    pub fn cuid(&self) -> Cuid {
+        self.attr.cuid()
     }
 }
 

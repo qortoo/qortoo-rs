@@ -4,7 +4,7 @@ use derive_more::Display;
 
 use crate::operations::MemoryMeasurable;
 
-#[derive(Clone, Display)]
+#[derive(Clone, Display, PartialEq, Eq)]
 pub enum OperationBody {
     #[cfg(test)]
     #[display("Delay4Test")]
@@ -30,7 +30,7 @@ impl MemoryMeasurable for OperationBody {
 }
 
 #[cfg(test)]
-#[derive(Debug, Clone, Display)]
+#[derive(Debug, Clone, Display, PartialEq, Eq)]
 #[display("")]
 pub struct Delay4TestBody {
     duration_ms: u64,
@@ -60,7 +60,7 @@ impl MemoryMeasurable for Delay4TestBody {
     }
 }
 
-#[derive(Debug, Clone, Display)]
+#[derive(Debug, Clone, Display, PartialEq, Eq)]
 #[display("(delta={delta})")]
 pub struct CounterIncreaseBody {
     pub delta: i64,

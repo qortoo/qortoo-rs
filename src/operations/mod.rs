@@ -12,7 +12,7 @@ use crate::operations::body::{CounterIncreaseBody, OperationBody};
 pub mod body;
 pub mod transaction;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Operation {
     pub lamport: u64,
     pub body: OperationBody,

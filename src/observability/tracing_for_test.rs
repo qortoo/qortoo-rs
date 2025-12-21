@@ -14,6 +14,7 @@ use crate::{
 };
 
 static PROVIDER: OnceLock<Mutex<SdkTracerProvider>> = OnceLock::new();
+static TRACING_INITIALIZED: OnceLock<()> = OnceLock::new();
 
 extern "C" fn shutdown_provider() {
     let provider = PROVIDER.get().unwrap();
@@ -25,6 +26,13 @@ extern "C" fn shutdown_provider() {
 }
 
 pub fn init(level: LevelFilter) {
+    // Ensure initialization happens only once across all tests
+    TRACING_INITIALIZED.get_or_init(|| {
+        init_once(level);
+    });
+}
+
+fn init_once(level: LevelFilter) {
     let handle = get_or_init_runtime_handle("observability");
 
     handle.block_on(async move {

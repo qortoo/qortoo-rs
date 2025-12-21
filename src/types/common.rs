@@ -14,3 +14,5 @@ pub trait IntoString: Into<String> + Debug {}
 impl<T: Into<String> + Debug> IntoString for T {}
 
 pub type ArcStr = Arc<str>;
+
+pub type ResourceID = String;

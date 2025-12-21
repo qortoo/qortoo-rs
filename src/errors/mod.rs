@@ -53,7 +53,7 @@ mod tests_datatype_errors {
 
     use crossbeam_channel::TrySendError;
 
-    use crate::{ClientError, DatatypeError, datatypes::event_loop::Event, errors::with_err_out};
+    use crate::{ClientError, DatatypeError, datatypes::event_loop::Event};
 
     #[test]
     fn can_assert_error() {
