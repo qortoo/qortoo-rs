@@ -1,4 +1,6 @@
 use std::fmt::{Debug, Display, Formatter};
+#[cfg(test)]
+use std::sync::Arc;
 
 use crate::{
     operations::{MemoryMeasurable, Operation},
@@ -14,6 +16,7 @@ const TRANSACTION_CONSTANT_SIZE: u64 = (size_of::<Vec<Operation>>() // operation
     + size_of::<bool>())  // event
     as u64;
 
+#[derive(PartialEq, Eq)]
 pub struct Transaction {
     cuid: Cuid,
     cseq: u64,
@@ -24,10 +27,6 @@ pub struct Transaction {
 }
 
 impl Transaction {
-    pub fn cuid(&self) -> &Cuid {
-        &self.cuid
-    }
-
     pub fn new(op_id: &mut OperationId) -> Self {
         Self {
             cuid: op_id.cuid.clone(),
@@ -37,6 +36,14 @@ impl Transaction {
             event: false,
             operations: vec![],
         }
+    }
+
+    pub fn cseq(&self) -> u64 {
+        self.cseq
+    }
+
+    pub fn cuid(&self) -> &Cuid {
+        &self.cuid
     }
 
     pub fn get_op_id(&self) -> OperationId {
@@ -57,8 +64,21 @@ impl Transaction {
         self.operations.push(op);
     }
 
-    pub fn iter(&self) -> std::slice::Iter<Operation> {
+    pub fn iter(&self) -> std::slice::Iter<'_, Operation> {
         self.operations.iter()
+    }
+
+    #[cfg(test)]
+    pub fn new_arc_for_test(cuid: &Cuid, cseq: u64) -> Arc<Self> {
+        let operations = Vec::new();
+        Arc::new(Self {
+            cuid: cuid.clone(),
+            cseq,
+            sseq: 0,
+            tag: None,
+            event: false,
+            operations,
+        })
     }
 }
 
@@ -67,6 +87,7 @@ impl Debug for Transaction {
         write!(f, "{self}")
     }
 }
+
 impl Display for Transaction {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         let tag_arg = match &self.tag {
@@ -78,8 +99,9 @@ impl Display for Transaction {
         if !self.operations.is_empty() {
             let first = &self.operations[0];
             if self.operations.len() > 1 {
-                let last = self.operations.last().unwrap();
-                lamport_arg = format!("[{}-{}]", first, last)
+                if let Some(last) = self.operations.last() {
+                    lamport_arg = format!("[{}-{}]", first, last)
+                }
             } else {
                 lamport_arg = format!("[{}]", first)
             }

@@ -1,16 +1,14 @@
-use std::{error::Error, sync::Arc};
+use std::sync::Arc;
 
 use crate::{
-    DataType, DatatypeError, DatatypeState, IntoString,
-    clients::client::ClientInfo,
+    DatatypeError, IntoString,
     datatypes::{
-        common::ReturnType,
+        common::{ReturnType, datatype_instrument},
         crdts::Crdt,
         datatype::DatatypeBlanket,
-        datatype_instrument,
-        option::DatatypeOption,
         transactional::{TransactionContext, TransactionalDatatype},
     },
+    errors::BoxedError,
     operations::Operation,
 };
 
@@ -22,20 +20,9 @@ pub struct Counter {
 }
 
 impl Counter {
-    pub(crate) fn new(
-        key: String,
-        state: DatatypeState,
-        client_info: Arc<ClientInfo>,
-        option: DatatypeOption,
-    ) -> Self {
+    pub(crate) fn new(datatype: Arc<TransactionalDatatype>) -> Self {
         Counter {
-            datatype: Arc::new(TransactionalDatatype::new(
-                &key,
-                DataType::Counter,
-                state,
-                client_info,
-                option,
-            )),
+            datatype,
             tx_ctx: Default::default(),
         }
     }
@@ -58,19 +45,20 @@ impl Counter {
     ///
     /// ```
     /// # use syncyam::{Client, Counter, DatatypeState};
-    /// let client = Client::builder("test-collection", "test-client").build();
+    /// let client = Client::builder("doc-example", "increase_by-test").build();
     /// let counter = client.create_datatype("test-counter").build_counter().unwrap();
-    /// assert_eq!(counter.increase_by(5), 5);
-    /// assert_eq!(counter.increase_by(-2), 3);
+    /// assert_eq!(counter.increase_by(5).unwrap(), 5);
+    /// assert_eq!(counter.increase_by(-2).unwrap(), 3);
     /// ```
-    pub fn increase_by(&self, delta: i64) -> i64 {
+    pub fn increase_by(&self, delta: i64) -> Result<i64, DatatypeError> {
         let op = Operation::new_counter_increase(delta);
-        match self
+
+        let ret = self
             .datatype
-            .execute_local_operation_as_tx(self.tx_ctx.clone(), op)
-        {
-            Ok(ReturnType::Counter(c)) => c,
-            _ => self.get_value(),
+            .execute_local_operation_as_tx(self.tx_ctx.clone(), op)?;
+        match ret {
+            ReturnType::Counter(cv) => Ok(cv),
+            _ => Err(DatatypeError::FailedToExecuteOperation("unexpected return type".into()))
         }
     }}
 
@@ -86,12 +74,12 @@ impl Counter {
     ///
     /// ```
     /// # use syncyam::{Client, Counter, DatatypeState};
-    /// let client = Client::builder("test-collection", "test-client").build();
+    /// let client = Client::builder("doc-example", "increase-test").build();
     /// let counter = client.create_datatype("test-counter").build_counter().unwrap();
-    /// assert_eq!(counter.increase(), 1);
-    /// assert_eq!(counter.increase(), 2);
+    /// assert_eq!(counter.increase().unwrap(), 1);
+    /// assert_eq!(counter.increase().unwrap(), 2);
     /// ```
-    pub fn increase(&self) -> i64 {
+    pub fn increase(&self) -> Result<i64, DatatypeError> {
         self.increase_by(1)
     }
 
@@ -105,7 +93,7 @@ impl Counter {
     ///
     /// ```
     /// # use syncyam::{Client, Counter, DatatypeState};
-    /// let client = Client::builder("test-collection", "test-client").build();
+    /// let client = Client::builder("doc-example", "get_value-test").build();
     /// let counter = client.create_datatype("test-counter").build_counter().unwrap();
     /// assert_eq!(counter.get_value(), 0);
     /// counter.increase();
@@ -136,7 +124,7 @@ impl Counter {
     ///
     /// ```
     /// # use syncyam::{Client, Counter, DatatypeState};
-    /// let client = Client::builder("test-collection", "test-client").build();
+    /// let client = Client::builder("doc-example", "transaction-test").build();
     /// let counter = client.create_datatype("test-counter").build_counter().unwrap();
     ///
     /// // Successful transaction
@@ -162,8 +150,9 @@ impl Counter {
         tx_func: T,
     ) -> Result<(), DatatypeError>
     where
-        T: FnOnce(Self) -> Result<(), Box<dyn Error + Send + Sync>> + Send + Sync + 'static,
+        T: FnOnce(Self) -> Result<(), BoxedError> + Send + Sync + 'static,
     {
+        self.datatype.check_writable()?;
         let this_tx_ctx = Arc::new(TransactionContext::new(tag));
         let this_tx_ctx_clone = this_tx_ctx.clone();
         let do_tx_func = move || {
@@ -171,11 +160,10 @@ impl Counter {
             counter_clone.tx_ctx = this_tx_ctx_clone.clone();
             match tx_func(counter_clone) {
                 Ok(_) => Ok(()),
-                Err(e) => Err(DatatypeError::FailedTransaction(e.to_string())),
+                Err(e) => Err(DatatypeError::FailedTransaction(e)),
             }
         };
-        self.datatype
-            .do_transaction(this_tx_ctx, do_tx_func)
+        self.datatype.do_transaction(this_tx_ctx, do_tx_func)
     }}
 }
 
@@ -191,8 +179,11 @@ mod tests_counter {
     use tracing_opentelemetry::OpenTelemetrySpanExt;
 
     use crate::{
-        DataType,
-        datatypes::{counter::Counter, datatype::Datatype},
+        DataType, DatatypeState,
+        datatypes::{
+            common::new_attribute, counter::Counter, datatype::Datatype,
+            transactional::TransactionalDatatype,
+        },
     };
 
     #[test]
@@ -204,51 +195,45 @@ mod tests_counter {
     #[test]
     #[instrument]
     fn can_call_public_blanket_trait_methods() {
-        let counter = Counter::new(
-            module_path!().to_owned(),
-            Default::default(),
-            Default::default(),
-            Default::default(),
-        );
+        let attr = new_attribute!(DataType::Counter);
+        let key = attr.key.to_string();
+        let transactional = TransactionalDatatype::new_arc(attr, Default::default());
+        let counter = Counter::new(transactional);
         assert_eq!(counter.get_type(), DataType::Counter);
-        assert_eq!(counter.get_key(), module_path!().to_string());
+        assert_eq!(counter.get_key(), key);
         assert_eq!(counter.get_state(), Default::default());
     }
 
     #[test]
     #[instrument]
     fn can_use_counter_operations() {
-        let counter = Counter::new(
-            module_path!().to_owned(),
-            Default::default(),
-            Default::default(),
-            Default::default(),
-        );
-        assert_eq!(1, counter.increase());
-        assert_eq!(11, counter.increase_by(10));
+        let counter = Counter::new(TransactionalDatatype::new_arc(
+            new_attribute!(DataType::Counter),
+            DatatypeState::DueToCreate,
+        ));
+        assert_eq!(1, counter.increase().unwrap());
+        assert_eq!(11, counter.increase_by(10).unwrap());
         assert_eq!(11, counter.get_value());
     }
 
     #[test]
     #[instrument]
     fn can_use_transaction() {
-        let counter = Counter::new(
-            module_path!().to_owned(),
+        let counter = Counter::new(TransactionalDatatype::new_arc(
+            new_attribute!(DataType::Counter),
             Default::default(),
-            Default::default(),
-            Default::default(),
-        );
+        ));
         let result1 = counter.transaction("success", |c| {
-            c.increase_by(1);
-            c.increase_by(2);
+            c.increase_by(1).unwrap();
+            c.increase_by(2).unwrap();
             Ok(())
         });
         assert!(result1.is_ok());
         assert_eq!(3, counter.get_value());
 
         let result2 = counter.transaction("failure", |c| {
-            c.increase_by(11);
-            c.increase_by(22);
+            c.increase_by(11).unwrap();
+            c.increase_by(22).unwrap();
             Err("failed".into())
         });
         assert!(result2.is_err());
@@ -258,12 +243,10 @@ mod tests_counter {
     #[tokio::test(flavor = "multi_thread", worker_threads = 10)]
     #[instrument]
     async fn can_run_transactions_concurrently() {
-        let counter = Counter::new(
-            module_path!().to_owned(),
+        let counter = Counter::new(TransactionalDatatype::new_arc(
+            new_attribute!(DataType::Counter),
             Default::default(),
-            Default::default(),
-            Default::default(),
-        );
+        ));
         let mut join_handles = vec![];
         let parent_span = Span::current();
 
@@ -272,11 +255,14 @@ mod tests_counter {
             let parent_span = parent_span.clone();
             join_handles.push(tokio::spawn(async move {
                 let thread_span = info_span!("run_transaction", i = i);
-                thread_span.set_parent(parent_span.context());
+                // Only set parent if the span is enabled to avoid SpanDisabled error
+                if !parent_span.is_disabled() {
+                    let _ = thread_span.set_parent(parent_span.context());
+                }
                 let _g1 = thread_span.enter();
                 let tag = format!("tag:{i}");
                 counter.transaction(tag, move |c| {
-                    c.increase_by(i);
+                    c.increase_by(i).unwrap();
                     Ok(())
                 })
             }));

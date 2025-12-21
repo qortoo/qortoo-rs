@@ -4,10 +4,10 @@ use parking_lot::RwLock;
 
 use crate::{
     DataType, DatatypeBuilder, DatatypeState, IntoString,
-    clients::datatype_manager::DatatypeManager,
-    datatypes::{DatatypeSet, option::DatatypeOption},
+    clients::{common::ClientCommon, datatype_manager::DatatypeManager},
+    connectivity::{Connectivity, null_connectivity::NullConnectivity},
+    datatypes::{datatype_set::DatatypeSet, option::DatatypeOption},
     errors::clients::ClientError,
-    types::uid::Cuid,
 };
 
 /// A builder for constructing a [`Client`].
@@ -18,14 +18,14 @@ use crate::{
 /// # Examples
 /// ```
 /// use syncyam::Client;
-/// let client = Client::builder("test-collection", "test-app").build();
-/// assert_eq!(client.get_collection(), "test-collection");
-/// assert_eq!(client.get_alias(), "test-app");
+/// let client = Client::builder("doc-example", "ClientBuilder-test").build();
+/// assert_eq!(client.get_collection(), "doc-example");
+/// assert_eq!(client.get_alias(), "ClientBuilder-test");
 /// ```
 pub struct ClientBuilder {
     collection: String,
     alias: String,
-    cuid: Cuid,
+    connectivity: Arc<dyn Connectivity>,
 }
 
 impl ClientBuilder {
@@ -33,24 +33,18 @@ impl ClientBuilder {
     ///
     /// It initializes client metadata and datatype management structures.
     pub fn build(self) -> Client {
-        let client_info = Arc::new(ClientInfo {
-            collection: self.collection.into_boxed_str(),
-            cuid: self.cuid,
-            alias: self.alias.into_boxed_str(),
-        });
-
+        let common =
+            ClientCommon::new_arc(self.collection.into(), self.alias.into(), self.connectivity);
         Client {
-            info: client_info.clone(),
-            datatypes: RwLock::new(DatatypeManager::new(client_info.clone())),
+            datatypes: RwLock::new(DatatypeManager::new(common.clone())),
+            common,
         }
     }
-}
 
-#[derive(Default)]
-pub struct ClientInfo {
-    pub collection: Box<str>,
-    pub cuid: Cuid,
-    pub alias: Box<str>,
+    pub fn with_connectivity(mut self, connectivity: Arc<dyn Connectivity>) -> Self {
+        self.connectivity = connectivity;
+        self
+    }
 }
 
 /// Facade for creating and subscribing to SyncYam datatypes.
@@ -59,10 +53,10 @@ pub struct ClientInfo {
 /// are propagated into tracing metadata and used to associate created
 /// datatypes with their owner.
 ///
-/// Use [`Client::builder`] to construct a client and the `create_datatype` / `subscribe_datatype` / `subscribe_or_create_datatype`
+/// Use [`Client::builder`] to construct a client, and the `create_datatype` / `subscribe_datatype` / `subscribe_or_create_datatype`
 /// helpers to get specific datatypes.
 pub struct Client {
-    info: Arc<ClientInfo>,
+    common: Arc<ClientCommon>,
     datatypes: RwLock<DatatypeManager>,
 }
 
@@ -80,7 +74,7 @@ impl Client {
         ClientBuilder {
             collection: collection.into(),
             alias: alias.into(),
-            cuid: Cuid::new(),
+            connectivity: Arc::new(NullConnectivity::new()),
         }
     }
 
@@ -90,10 +84,15 @@ impl Client {
         r#type: DataType,
         state: DatatypeState,
         option: DatatypeOption,
+        is_readonly: bool,
     ) -> Result<DatatypeSet, ClientError> {
-        self.datatypes
-            .write()
-            .subscribe_or_create_datatype(&key, r#type, state, option)
+        self.datatypes.write().subscribe_or_create_datatype(
+            &key,
+            r#type,
+            state,
+            option,
+            is_readonly,
+        )
     }
 
     /// Returns an existing datatype by `key`, if it has been created or
@@ -104,19 +103,19 @@ impl Client {
 
     /// Returns the collection name this client is associated with.
     pub fn get_collection(&self) -> &str {
-        &self.info.collection
+        &self.common.collection
     }
 
     /// Returns the alias (application/client name) for this client.
     pub fn get_alias(&self) -> &str {
-        &self.info.alias
+        &self.common.alias
     }
 
     /// Get `DatatypeBuilder` to subscribe a `Datatype` identified by `key`.
     ///
     /// The `Datatype` built by this builder will be marked
     /// with [`DatatypeState::DueToSubscribe`].
-    pub fn subscribe_datatype(&self, key: impl IntoString) -> DatatypeBuilder {
+    pub fn subscribe_datatype(&self, key: impl IntoString) -> DatatypeBuilder<'_> {
         DatatypeBuilder::new(self, key.into(), DatatypeState::DueToSubscribe)
     }
 
@@ -124,7 +123,7 @@ impl Client {
     ///
     /// The `Datatype` built by this builder will be marked
     /// with [`DatatypeState::DueToCreate`].
-    pub fn create_datatype(&self, key: impl IntoString) -> DatatypeBuilder {
+    pub fn create_datatype(&self, key: impl IntoString) -> DatatypeBuilder<'_> {
         DatatypeBuilder::new(self, key.into(), DatatypeState::DueToCreate)
     }
 
@@ -132,14 +131,18 @@ impl Client {
     ///
     /// The `Datatype` built by this builder will be marked
     /// with [`DatatypeState::DueToSubscribeOrCreate`].
-    pub fn subscribe_or_create_datatype(&self, key: impl IntoString) -> DatatypeBuilder {
+    pub fn subscribe_or_create_datatype(&self, key: impl IntoString) -> DatatypeBuilder<'_> {
         DatatypeBuilder::new(self, key.into(), DatatypeState::DueToSubscribeOrCreate)
     }
 }
 
 #[cfg(test)]
 mod tests_client {
-    use crate::{Datatype, DatatypeState, clients::client::Client};
+    use tracing::instrument;
+
+    use crate::{
+        Datatype, DatatypeState, clients::client::Client, utils::path::get_test_func_name,
+    };
 
     #[test]
     fn can_assert_send_and_sync_traits() {
@@ -148,6 +151,7 @@ mod tests_client {
     }
 
     #[test]
+    #[instrument]
     fn can_build_client() {
         let client = Client::builder("collection1", "alias1").build();
         assert_eq!(client.get_collection(), "collection1");
@@ -155,8 +159,9 @@ mod tests_client {
     }
 
     #[test]
+    #[instrument]
     fn can_use_counter_from_client() {
-        let client1 = Client::builder(module_path!(), module_path!()).build();
+        let client1 = Client::builder(module_path!(), get_test_func_name!()).build();
 
         assert!(client1.get_datatype("k1").is_none());
 

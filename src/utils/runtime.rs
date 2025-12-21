@@ -1,41 +1,53 @@
 use std::{
     collections::HashMap,
+    num::NonZeroUsize,
     sync::{Arc, OnceLock},
+    thread::available_parallelism,
 };
 
 use parking_lot::Mutex;
-use tokio::runtime::{Builder, Runtime};
+use tokio::runtime::{Builder, Handle, Runtime};
 
-type RuntimeMap = HashMap<String, Arc<Runtime>>;
+use crate::{defaults, observability::macros::add_span_event};
+
+type RuntimeMap = HashMap<String, Runtime>;
 type SharedRuntimeMap = Arc<Mutex<RuntimeMap>>;
 
 static RUNTIME_MAP: OnceLock<SharedRuntimeMap> = OnceLock::new();
 
-pub fn get_or_init_runtime(group: &str) -> Arc<Runtime> {
+pub fn get_or_init_runtime_handle(group: &str) -> Handle {
     const THREAD_PREFIX: &str = "syncyam-";
     let map = RUNTIME_MAP.get_or_init(|| Arc::new(Mutex::new(HashMap::new())));
     let mut map_guard = map.lock();
     match map_guard.get(group) {
-        Some(rt) => rt.clone(),
+        Some(rt) => rt.handle().clone(),
         None => {
-            let rt = Arc::new(
-                Builder::new_multi_thread()
-                    .enable_all()
-                    .thread_name(format!("{THREAD_PREFIX}{group}"))
-                    .build()
-                    .unwrap(),
-            );
-            map_guard.insert(group.to_string(), rt.clone());
-            rt
+            let num_of_workers: usize = available_parallelism()
+                .unwrap_or(NonZeroUsize::new(defaults::DEFAULT_THREAD_WORKERS).unwrap())
+                .into();
+            let rt = Builder::new_multi_thread()
+                .enable_all()
+                .worker_threads(num_of_workers)
+                .thread_name(format!("{THREAD_PREFIX}{group}"))
+                .build()
+                .unwrap();
+            let handle = rt.handle().clone();
+            map_guard.insert(group.to_string(), rt);
+            handle
         }
     }
 }
 
 #[allow(dead_code)]
-pub fn close_runtime(group: &str) {
+pub fn reserve_to_shutdown_runtime(group: &str) {
     if let Some(map) = RUNTIME_MAP.get() {
         let mut map_guard = map.lock();
-        map_guard.remove(group);
+        let rt = map_guard.remove(group);
+        if let Some(rt) = rt {
+            let tasks = rt.metrics().num_alive_tasks();
+            rt.shutdown_background();
+            add_span_event!("shutdown runtime", "group"=>group, "tasks"=> tasks);
+        }
     }
 }
 
@@ -43,28 +55,46 @@ pub fn close_runtime(group: &str) {
 mod tests_runtime {
     use std::{
         sync::Arc,
+        thread,
         time::{Duration, Instant},
     };
 
     use parking_lot::Mutex;
+    use tokio::time::sleep;
+    use tracing::info;
 
-    use crate::utils::runtime::{close_runtime, get_or_init_runtime};
+    use crate::utils::runtime::{get_or_init_runtime_handle, reserve_to_shutdown_runtime};
 
     #[test]
-    fn can_return_same_runtime_for_same_group() {
-        let rt1 = get_or_init_runtime("test_group");
-        let rt2 = get_or_init_runtime("test_group");
-        assert!(Arc::ptr_eq(&rt1, &rt2));
-        close_runtime("test_group");
+    fn can_show_how_to_work_runtime_in_sync_function() {
+        let h1 = get_or_init_runtime_handle("sync_group");
+        let h2 = get_or_init_runtime_handle("sync_group");
+        h1.spawn(async {
+            info!("h1 thread in {:?}", thread::current());
+        });
+        h2.spawn(async {
+            info!("h2 thread in {:?}", thread::current());
+        });
+        h2.spawn(async {
+            sleep(Duration::from_secs(1)).await;
+        });
+        reserve_to_shutdown_runtime("sync_group");
     }
 
-    #[test]
-    fn can_return_different_runtime_for_different_groups() {
-        let rt1 = get_or_init_runtime("group1");
-        let rt2 = get_or_init_runtime("group2");
-        assert!(!Arc::ptr_eq(&rt1, &rt2));
-        close_runtime("group1");
-        close_runtime("group2");
+    #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+    async fn can_show_how_to_work_runtime_in_async_function() {
+        let h1 = get_or_init_runtime_handle("async_group");
+        let h2 = get_or_init_runtime_handle("async_group");
+        h1.spawn(async {
+            info!("h1 thread in {:?}", thread::current());
+        });
+        h2.spawn(async {
+            info!("h2 thread in {:?}", thread::current());
+        });
+        h2.spawn(async {
+            sleep(Duration::from_secs(1)).await;
+        });
+        reserve_to_shutdown_runtime("async_group");
     }
 
     #[test]
@@ -74,9 +104,9 @@ mod tests_runtime {
         let cnt = Arc::new(Mutex::new(0));
 
         {
-            let rt = get_or_init_runtime("test_runtime1");
+            let handle = get_or_init_runtime_handle("test_runtime1");
             let cnt = cnt.clone();
-            rt.spawn(async move {
+            handle.spawn(async move {
                 for _i in 0..10 {
                     tokio::time::sleep(sleep_duration).await;
                     let mut cnt = cnt.lock();
@@ -86,9 +116,9 @@ mod tests_runtime {
         }
 
         {
-            let rt = get_or_init_runtime("test_runtime2");
+            let handle = get_or_init_runtime_handle("test_runtime2");
             let cnt = cnt.clone();
-            rt.spawn(async move {
+            handle.spawn(async move {
                 for _i in 0..20 {
                     tokio::time::sleep(sleep_duration).await;
                     let mut cnt = cnt.lock();
@@ -104,8 +134,8 @@ mod tests_runtime {
                 let cnt = cnt.lock();
                 *cnt >= 20 // meet this condition only in one sec;
             });
-        close_runtime("test_runtime1");
-        close_runtime("test_runtime2");
+        reserve_to_shutdown_runtime("test_runtime1");
+        reserve_to_shutdown_runtime("test_runtime2");
 
         assert!(start.elapsed().as_secs() < 2);
     }

@@ -14,7 +14,7 @@ use crate::{DataType, DatatypeState, datatypes::transactional::TransactionalData
 /// use syncyam::Client;
 /// use syncyam::{Counter, Datatype};
 /// use syncyam::{DatatypeState, DataType};
-/// let client = Client::builder("test-collection", "test-client").build();
+/// let client = Client::builder("doc-example", "Datatype-trait").build();
 /// let counter = client.create_datatype("test-counter".to_string()).build_counter().unwrap();
 /// assert_eq!(counter.get_key(), "test-counter");
 /// assert_eq!(counter.get_type(), DataType::Counter);
@@ -27,6 +27,9 @@ pub trait Datatype {
     fn get_type(&self) -> DataType;
     /// returns a [`DatatypeState`] indicating the current lifecycle/status of this datatype.
     fn get_state(&self) -> DatatypeState;
+    fn get_server_version(&self) -> u64;
+    fn get_client_version(&self) -> u64;
+    fn get_synced_client_version(&self) -> u64;
 }
 
 pub trait DatatypeBlanket {
@@ -48,27 +51,42 @@ where
     fn get_state(&self) -> DatatypeState {
         self.get_core().get_state()
     }
+
+    fn get_server_version(&self) -> u64 {
+        self.get_core().get_server_version()
+    }
+
+    fn get_client_version(&self) -> u64 {
+        self.get_core().get_client_version()
+    }
+
+    fn get_synced_client_version(&self) -> u64 {
+        self.get_core().get_synced_client_version()
+    }
 }
 
 #[cfg(test)]
 mod tests_datatype_trait {
+    use tracing::instrument;
+
     use crate::{
         DataType, DatatypeState,
-        datatypes::{datatype::Datatype, transactional::TransactionalDatatype},
+        datatypes::{
+            common::new_attribute, datatype::Datatype, transactional::TransactionalDatatype,
+        },
     };
 
     #[test]
+    #[instrument]
     fn can_call_datatype_trait_functions() {
-        let key = module_path!();
-        let data = TransactionalDatatype::new(
-            key,
-            DataType::Counter,
-            Default::default(),
-            Default::default(),
-            Default::default(),
-        );
+        let attr = new_attribute!(DataType::Counter);
+        let key = attr.key.as_ref();
+        let data = TransactionalDatatype::new_arc(attr.clone(), DatatypeState::DueToCreate);
         assert_eq!(data.get_key(), key);
         assert_eq!(data.get_type(), DataType::Counter);
         assert_eq!(data.get_state(), DatatypeState::DueToCreate);
+        assert_eq!(data.get_server_version(), 0);
+        assert_eq!(data.get_client_version(), 0);
+        assert_eq!(data.get_synced_client_version(), 0);
     }
 }

@@ -1,10 +1,6 @@
 use std::fmt::Debug;
 
-use crate::{
-    DatatypeState,
-    datatypes::{crdts::Crdt, mutable::OperationalDatatype},
-    types::operation_id::OperationId,
-};
+use crate::{DatatypeState, datatypes::crdts::Crdt, types::operation_id::OperationId};
 
 pub struct Rollback {
     pub shadow_crdt: Crdt,
@@ -20,13 +16,6 @@ impl Rollback {
             state,
         }
     }
-
-    pub fn get_operational_datatype(&mut self) -> OperationalDatatype {
-        OperationalDatatype {
-            crdt: &mut self.shadow_crdt,
-            op_id: &mut self.op_id,
-        }
-    }
 }
 
 impl Debug for Rollback {
@@ -40,6 +29,8 @@ impl Debug for Rollback {
 
 #[cfg(test)]
 mod tests_rollback {
+    use tracing::info;
+
     use crate::{
         DataType,
         datatypes::{crdts::Crdt, rollback::Rollback},
@@ -52,6 +43,6 @@ mod tests_rollback {
             Default::default(),
             Default::default(),
         );
-        println!("{:?}", rollback);
+        info!("{:?}", rollback);
     }
 }

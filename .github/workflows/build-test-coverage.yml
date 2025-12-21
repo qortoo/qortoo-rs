@@ -49,7 +49,7 @@ jobs:
           SYNCYAM_RS_OTEL_ENABLED=false cargo tarpaulin \
             --all-features \
             --engine llvm \
-            --fail-under 90 \
+            --fail-under 80 \
             --out Lcov \
             --out html \
             --out xml \

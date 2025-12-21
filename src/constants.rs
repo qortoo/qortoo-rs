@@ -2,7 +2,10 @@ use std::{env, sync::OnceLock};
 
 pub(crate) const SDK_VER: &str = env!("CARGO_PKG_VERSION");
 pub(crate) const SDK_NAME: &str = env!("CARGO_PKG_NAME");
-pub(crate) const SDK_HASH: &str = env!("GIT_HASH");
+pub(crate) const SDK_HASH: &str = match option_env!("GIT_HASH") {
+    Some(hash) => hash,
+    None => "unknown",
+};
 
 static AGENT: OnceLock<String> = OnceLock::new();
 pub fn get_agent() -> &'static str {

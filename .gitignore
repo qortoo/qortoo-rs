@@ -16,6 +16,7 @@ target
 .idea
 .vscode
 .cursor
+.claude
 coverage
 AGENTS.md
 GEMINI.md
