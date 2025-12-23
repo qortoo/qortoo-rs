@@ -44,7 +44,7 @@ impl Counter {
     /// # Examples
     ///
     /// ```
-    /// # use syncyam::{Client, Counter, DatatypeState};
+    /// # use qortoo::{Client, Counter, DatatypeState};
     /// let client = Client::builder("doc-example", "increase_by-test").build();
     /// let counter = client.create_datatype("test-counter").build_counter().unwrap();
     /// assert_eq!(counter.increase_by(5).unwrap(), 5);
@@ -73,7 +73,7 @@ impl Counter {
     /// # Examples
     ///
     /// ```
-    /// # use syncyam::{Client, Counter, DatatypeState};
+    /// # use qortoo::{Client, Counter, DatatypeState};
     /// let client = Client::builder("doc-example", "increase-test").build();
     /// let counter = client.create_datatype("test-counter").build_counter().unwrap();
     /// assert_eq!(counter.increase().unwrap(), 1);
@@ -92,7 +92,7 @@ impl Counter {
     /// # Examples
     ///
     /// ```
-    /// # use syncyam::{Client, Counter, DatatypeState};
+    /// # use qortoo::{Client, Counter, DatatypeState};
     /// let client = Client::builder("doc-example", "get_value-test").build();
     /// let counter = client.create_datatype("test-counter").build_counter().unwrap();
     /// assert_eq!(counter.get_value(), 0);
@@ -123,7 +123,7 @@ impl Counter {
     /// # Examples
     ///
     /// ```
-    /// # use syncyam::{Client, Counter, DatatypeState};
+    /// # use qortoo::{Client, Counter, DatatypeState};
     /// let client = Client::builder("doc-example", "transaction-test").build();
     /// let counter = client.create_datatype("test-counter").build_counter().unwrap();
     ///

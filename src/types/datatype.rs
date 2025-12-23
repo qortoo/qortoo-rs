@@ -8,7 +8,7 @@ use derive_more::Display;
 /// # Examples
 ///
 /// ```
-/// use syncyam::{Client, DataType, Datatype};
+/// use qortoo::{Client, DataType, Datatype};
 ///
 /// let client = Client::builder("doc-example", "datatype-test").build();
 /// let counter = client.create_datatype("my-counter").build_counter().unwrap();
@@ -42,7 +42,7 @@ pub enum DataType {
 /// # Examples
 ///
 /// ```
-/// use syncyam::{Client, DatatypeState, Datatype};
+/// use qortoo::{Client, DatatypeState, Datatype};
 ///
 /// let client = Client::builder("doc-example", "state-test").build();
 ///
@@ -96,7 +96,7 @@ impl DatatypeState {
     /// # Examples
     ///
     /// ```
-    /// # use syncyam::DatatypeState;
+    /// # use qortoo::DatatypeState;
     /// assert!(DatatypeState::DueToCreate.is_read_writable());
     /// assert!(DatatypeState::Subscribed.is_read_writable());
     /// assert!(!DatatypeState::DueToSubscribe.is_read_writable());
@@ -118,7 +118,7 @@ impl DatatypeState {
     /// # Examples
     ///
     /// ```
-    /// # use syncyam::DatatypeState;
+    /// # use qortoo::DatatypeState;
     /// assert!(!DatatypeState::DueToCreate.is_readonly());
     /// assert!(DatatypeState::DueToSubscribe.is_readonly());
     /// assert!(DatatypeState::Disabled.is_readonly());

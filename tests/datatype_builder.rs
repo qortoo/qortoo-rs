@@ -1,5 +1,5 @@
 mod tests_datatype_builder {
-    use syncyam::{Client, DataType, Datatype, DatatypeState};
+    use qortoo::{Client, DataType, Datatype, DatatypeState};
     use tracing::instrument;
 
     #[test]

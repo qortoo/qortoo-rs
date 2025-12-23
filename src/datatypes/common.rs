@@ -17,11 +17,11 @@ macro_rules! datatype_instrument {
         $(#[$attr])*
         #[tracing::instrument(skip_all,
             fields(
-                syncyam.col=%self.datatype.attr.client_common.collection,
-                syncyam.cl=%self.datatype.attr.client_common.alias,
-                syncyam.cuid=%self.datatype.attr.client_common.cuid,
-                syncyam.dt=%self.datatype.attr.key,
-                syncyam.duid=%self.datatype.attr.duid,
+                qortoo.col=%self.datatype.attr.client_common.collection,
+                qortoo.cl=%self.datatype.attr.client_common.alias,
+                qortoo.cuid=%self.datatype.attr.client_common.cuid,
+                qortoo.dt=%self.datatype.attr.key,
+                qortoo.duid=%self.datatype.attr.duid,
             )
         )]
         $vis fn $name $($rest)*
@@ -34,11 +34,11 @@ macro_rules! internal_datatype_instrument {
         #[tracing::instrument(skip_all,
             name = $span_name,
             fields(
-                syncyam.col=%self.attr.client_common.collection,
-                syncyam.cl=%self.attr.client_common.alias,
-                syncyam.cuid=%self.attr.client_common.cuid,
-                syncyam.dt=%self.attr.key,
-                syncyam.duid=%self.attr.duid,
+                qortoo.col=%self.attr.client_common.collection,
+                qortoo.cl=%self.attr.client_common.alias,
+                qortoo.cuid=%self.attr.client_common.cuid,
+                qortoo.dt=%self.attr.key,
+                qortoo.duid=%self.attr.duid,
             )
         )]
         $vis fn $name $($rest)*

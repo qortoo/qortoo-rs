@@ -1,5 +1,5 @@
 [package]
-name = "syncyam"
+name = "qortoo"
 version = "0.1.0"
 edition = "2024"
 # Except for the first time, the rust version will be kept at least one year behind the latest release and update it quarterly.

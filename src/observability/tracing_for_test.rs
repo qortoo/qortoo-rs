@@ -9,7 +9,7 @@ use tracing::metadata::LevelFilter;
 use tracing_subscriber::{Registry, layer::SubscriberExt};
 
 use crate::{
-    constants, observability::tracing_layer::SyncYamTracingLayer,
+    constants, observability::tracing_layer::QortooTracingLayer,
     utils::runtime::get_or_init_runtime_handle,
 };
 
@@ -68,17 +68,17 @@ fn init_once(level: LevelFilter) {
             let tracer = provider.tracer(constants::get_agent());
             let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
             let filter = tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("syncyam=trace".parse().unwrap())
+                .add_directive("qortoo=trace".parse().unwrap())
                 .add_directive("integration=trace".parse().unwrap());
 
             let subscriber = Registry::default()
                 .with(telemetry)
                 .with(filter)
-                .with(SyncYamTracingLayer { opt: Some(level) });
+                .with(QortooTracingLayer { opt: Some(level) });
             tracing::subscriber::set_global_default(subscriber)
                 .expect("failed to set global default subscriber");
         } else {
-            let subscriber = Registry::default().with(SyncYamTracingLayer { opt: Some(level) });
+            let subscriber = Registry::default().with(QortooTracingLayer { opt: Some(level) });
             tracing::subscriber::set_global_default(subscriber)
                 .expect("failed to set global default subscriber");
         }
@@ -124,11 +124,11 @@ mod tests_tracing {
     }
 
     #[instrument(name = "level1", skip(_st),
-        fields(syncyam.cl =_st.client,
-        syncyam.cuid = _st.cuid,
-        syncyam.duid = _st.duid,
-        syncyam.dt = _st.datatype,
-        syncyam.col = _st.collection
+        fields(qortoo.cl =_st.client,
+        qortoo.cuid = _st.cuid,
+        qortoo.duid = _st.duid,
+        qortoo.dt = _st.datatype,
+        qortoo.col = _st.collection
         ))]
     fn do_something_level1(_st: SpanType) {
         info!("info do_something_level1");
@@ -150,11 +150,11 @@ mod tests_tracing {
         info!("end can_log_spans");
     }
 
-    #[instrument(skip_all, name = "client1", fields(syncyam.cuid=_cuid))]
+    #[instrument(skip_all, name = "client1", fields(qortoo.cuid=_cuid))]
     fn client_level(_cuid: &str) {
-        let x = span!(Level::INFO, "client_level", syncyam.cuid = "1");
+        let x = span!(Level::INFO, "client_level", qortoo.cuid = "1");
         let _g = x.enter();
-        info!(syncyam.cuid = "🙊", "begin client_level");
+        info!(qortoo.cuid = "🙊", "begin client_level");
         client_level2();
         info!("end client_level");
     }
@@ -165,14 +165,14 @@ mod tests_tracing {
         info!("end client_level2");
     }
 
-    #[instrument(name = "datatype1", fields(syncyam.dt="🙈"))]
+    #[instrument(name = "datatype1", fields(qortoo.dt="🙈"))]
     fn datatype_level() {
         info!("begin datatype_level");
         datatype_level2();
         info!("end datatype_level");
     }
 
-    #[instrument(name = "datatype2", fields(syncyam.dt="😘"))]
+    #[instrument(name = "datatype2", fields(qortoo.dt="😘"))]
     fn datatype_level2() {
         info!("begin datatype_level2");
         info!("end datatype_level2");

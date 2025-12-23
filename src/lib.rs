@@ -1,6 +1,6 @@
-//! SyncYam - Conflict-free datatypes with distributed synchronization
+//! Qortoo - Conflict-free datatypes with distributed synchronization
 //!
-//! SyncYam is a Rust SDK for building applications with conflict-free replicated data types (CRDTs)
+//! Qortoo is a Rust SDK for building applications with conflict-free replicated data types (CRDTs)
 //! that automatically synchronize across distributed systems.
 //!
 //! # Features
@@ -15,7 +15,7 @@
 //! # Quick Start
 //!
 //! ```
-//! use syncyam::Client;
+//! use qortoo::Client;
 //!
 //! // Create a client
 //! let client = Client::builder("my-collection", "my-client").build();

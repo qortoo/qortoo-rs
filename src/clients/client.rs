@@ -17,7 +17,7 @@ use crate::{
 ///
 /// # Examples
 /// ```
-/// use syncyam::Client;
+/// use qortoo::Client;
 /// let client = Client::builder("doc-example", "ClientBuilder-test").build();
 /// assert_eq!(client.get_collection(), "doc-example");
 /// assert_eq!(client.get_alias(), "ClientBuilder-test");
@@ -47,7 +47,7 @@ impl ClientBuilder {
     }
 }
 
-/// Facade for creating and subscribing to SyncYam datatypes.
+/// Facade for creating and subscribing to Qortoo datatypes.
 ///
 /// A `Client` is scoped by a logical `collection` and an `alias` that
 /// are propagated into tracing metadata and used to associate created
@@ -66,7 +66,7 @@ impl Client {
     ///
     /// # Examples
     /// ```
-    /// use syncyam::Client;
+    /// use qortoo::Client;
     /// let client = Client::builder("col", "alias").build();
     /// assert_eq!(client.get_alias(), "alias");
     /// ```

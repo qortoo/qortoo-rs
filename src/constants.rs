@@ -13,11 +13,11 @@ pub fn get_agent() -> &'static str {
 }
 
 #[cfg(feature = "tracing")]
-static SYNCYAM_RS_OTEL_ENABLED: OnceLock<String> = OnceLock::new();
+static QORTOO_RS_OTEL_ENABLED: OnceLock<String> = OnceLock::new();
 #[cfg(feature = "tracing")]
 pub fn is_otel_enabled() -> bool {
-    let enabled = SYNCYAM_RS_OTEL_ENABLED
-        .get_or_init(|| env::var("SYNCYAM_RS_OTEL_ENABLED").unwrap_or_else(|_| "".to_string()));
+    let enabled = QORTOO_RS_OTEL_ENABLED
+        .get_or_init(|| env::var("QORTOO_RS_OTEL_ENABLED").unwrap_or_else(|_| "".to_string()));
     !enabled.is_empty()
 }
 

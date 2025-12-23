@@ -46,7 +46,7 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          SYNCYAM_RS_OTEL_ENABLED=false cargo tarpaulin \
+          QORTOO_RS_OTEL_ENABLED=false cargo tarpaulin \
             --all-features \
             --engine llvm \
             --fail-under 80 \
@@ -67,7 +67,7 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage/lcov.info, ./coverage/cobertura.xml, ./coverage/tarpaulin-report.xml
-          slug: syncyam-io/syncyam-rs
+          slug: qortoo/qortoo-rs
           verbose: true
 
       - name: Comment PR with coverage

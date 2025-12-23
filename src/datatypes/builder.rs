@@ -3,7 +3,7 @@ use crate::{
     datatypes::{datatype_set::DatatypeSet, option::DatatypeOption},
 };
 
-/// A builder for constructing SyncYam datatypes with configurable options.
+/// A builder for constructing Qortoo datatypes with configurable options.
 ///
 /// `DatatypeBuilder` is obtained from a [`Client`] via one of:
 /// - [`Client::subscribe_datatype`] — subscribe to an existing datatype by key
@@ -19,7 +19,7 @@ use crate::{
 /// The builder preserves the intended lifecycle state based on how it was
 /// obtained from [`Client`]. For example:
 /// ```
-/// use syncyam::{Client, DatatypeState, Datatype};
+/// use qortoo::{Client, DatatypeState, Datatype};
 /// let client = Client::builder("docs-example", "DatatypeBuilder-test").build();
 /// assert_eq!(
 ///     client.subscribe_datatype("k1").build_counter().unwrap().get_state(),
@@ -68,7 +68,7 @@ impl<'c> DatatypeBuilder<'c> {
     ///
     /// # Examples
     /// ```
-    /// use syncyam::Client;
+    /// use qortoo::Client;
     /// let client = Client::builder("doc-example", "build_counter-test").build();
     /// let counter = client
     ///     .create_datatype("counter-1")
@@ -101,7 +101,7 @@ impl<'c> DatatypeBuilder<'c> {
     /// # Examples
     ///
     /// ```
-    /// use syncyam::Client;
+    /// use qortoo::Client;
     /// let client = Client::builder("doc-example", "push-buffer-test").build();
     /// let counter = client
     ///     .create_datatype("my-counter")
@@ -124,7 +124,7 @@ impl<'c> DatatypeBuilder<'c> {
     /// # Examples
     ///
     /// ```
-    /// use syncyam::Client;
+    /// use qortoo::Client;
     /// let client = Client::builder("doc-example", "readonly-test").build();
     /// let counter = client
     ///     .subscribe_datatype("read-only-counter")
