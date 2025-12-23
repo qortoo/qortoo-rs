@@ -10,12 +10,12 @@ lint:
 
 .PHONY: tarpaulin
 tarpaulin:
-	SYNCYAM_RS_OTEL_ENABLED=true cargo tarpaulin -o html -o xml -o Lcov --tests --all-features --engine Llvm --fail-under 90 --output-dir ./coverage
+	QORTOO_RS_OTEL_ENABLED=true cargo tarpaulin -o html -o xml -o Lcov --tests --all-features --engine Llvm --fail-under 90 --output-dir ./coverage
 	open coverage/tarpaulin-report.html
 
 .PHONY: enable-jaeger
 enable-jaeger:
-	export SYNCYAM_RS_OTEL_ENABLED=true
+	export QORTOO_RS_OTEL_ENABLED=true
 	docker run --rm -d --name jaeger \
       -e COLLECTOR_ZIPKIN_HOST_PORT=:9411 -e COLLECTOR_OTLP_ENABLED=true -p 16686:16686 \
       -p 14268:14268 -p 4317:4317 \

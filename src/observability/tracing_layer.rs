@@ -9,13 +9,13 @@ use tracing::{
 };
 use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 
-use crate::observability::visitor::SyncYamVisitor;
+use crate::observability::visitor::QortooVisitor;
 
-pub struct SyncYamTracingLayer {
+pub struct QortooTracingLayer {
     pub opt: Option<LevelFilter>,
 }
 
-impl SyncYamTracingLayer {
+impl QortooTracingLayer {
     #[inline]
     fn level_str_into(level: &Level, buf: &mut Vec<u8>) {
         buf.extend_from_slice(match *level {
@@ -65,13 +65,13 @@ impl SyncYamTracingLayer {
         buffer.extend_from_slice(buf.format(metadata.line().unwrap_or_default()).as_bytes());
     }
 
-    fn process_context<S>(ctx: Context<'_, S>, current_visitor: &mut SyncYamVisitor)
+    fn process_context<S>(ctx: Context<'_, S>, current_visitor: &mut QortooVisitor)
     where
         S: Subscriber + for<'lookup> LookupSpan<'lookup>,
     {
         if let Some(span) = ctx.lookup_current() {
             for span in span.scope() {
-                if let Some(visitor) = span.extensions().get::<SyncYamVisitor>() {
+                if let Some(visitor) = span.extensions().get::<QortooVisitor>() {
                     if !current_visitor.merge(visitor) {
                         return;
                     }
@@ -81,7 +81,7 @@ impl SyncYamTracingLayer {
     }
 }
 
-impl<S> Layer<S> for SyncYamTracingLayer
+impl<S> Layer<S> for QortooTracingLayer
 where
     S: Subscriber + for<'lookup> LookupSpan<'lookup>,
 {
@@ -94,7 +94,7 @@ where
 
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
         let span = ctx.span(id).expect("failed to get span");
-        let mut v = SyncYamVisitor::new();
+        let mut v = QortooVisitor::new();
         attrs.record(&mut v);
         span.extensions_mut().insert(v);
     }
@@ -112,7 +112,7 @@ where
             Self::ts_into(&mut buffer);
             Self::level_str_into(event.metadata().level(), &mut buffer);
 
-            let mut visitor = SyncYamVisitor::new();
+            let mut visitor = QortooVisitor::new();
             event.record(&mut visitor);
             visitor.message_into(&mut buffer);
 

@@ -43,7 +43,7 @@ mod tests_path {
     #[test]
     fn can_use_path_macros() {
         let path_parts = split_module_path(module_path!());
-        assert_eq!(path_parts, vec!["syncyam", "utils", "path", "tests_path"]);
+        assert_eq!(path_parts, vec!["qortoo", "utils", "path", "tests_path"]);
         let caller = caller_path!();
         info!("{caller:?}");
         let func_name = get_test_func_name!();

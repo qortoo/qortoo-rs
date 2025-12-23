@@ -16,7 +16,7 @@ type SharedRuntimeMap = Arc<Mutex<RuntimeMap>>;
 static RUNTIME_MAP: OnceLock<SharedRuntimeMap> = OnceLock::new();
 
 pub fn get_or_init_runtime_handle(group: &str) -> Handle {
-    const THREAD_PREFIX: &str = "syncyam-";
+    const THREAD_PREFIX: &str = "qortoo-";
     let map = RUNTIME_MAP.get_or_init(|| Arc::new(Mutex::new(HashMap::new())));
     let mut map_guard = map.lock();
     match map_guard.get(group) {

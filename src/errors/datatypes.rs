@@ -2,7 +2,7 @@ use thiserror::Error;
 
 use crate::errors::{BoxedError, connectivity::ConnectivityError};
 
-/// Errors that can occur while working with SyncYam datatypes.
+/// Errors that can occur while working with Qortoo datatypes.
 ///
 /// This enum is shared across datatype implementations (e.g., `Counter`) to surface
 /// recoverable failures to API callers. Each variant carries a short, human-readable

@@ -3,14 +3,14 @@ use std::{fmt::Debug, io::Write};
 use tracing::field::{Field, Visit};
 
 const MESSAGE_FIELD: &str = "message";
-const COLLECTION_FIELD: &str = "syncyam.col";
-const CLIENT_FIELD: &str = "syncyam.cl";
-const CUID_FIELD: &str = "syncyam.cuid";
-const DATATYPE_FIELD: &str = "syncyam.dt";
-const DUID_FIELD: &str = "syncyam.duid";
+const COLLECTION_FIELD: &str = "qortoo.col";
+const CLIENT_FIELD: &str = "qortoo.cl";
+const CUID_FIELD: &str = "qortoo.cuid";
+const DATATYPE_FIELD: &str = "qortoo.dt";
+const DUID_FIELD: &str = "qortoo.duid";
 
 #[derive(Default, Debug)]
-pub struct SyncYamVisitor {
+pub struct QortooVisitor {
     msg: Vec<u8>,
     collection: Vec<u8>,
     client: Vec<u8>,
@@ -19,7 +19,7 @@ pub struct SyncYamVisitor {
     duid: Vec<u8>,
 }
 
-impl SyncYamVisitor {
+impl QortooVisitor {
     pub fn new() -> Self {
         Self {
             ..Default::default()
@@ -84,7 +84,7 @@ impl SyncYamVisitor {
     }
 }
 
-impl Visit for SyncYamVisitor {
+impl Visit for QortooVisitor {
     fn record_str(&mut self, field: &Field, value: &str) {
         match field.name() {
             MESSAGE_FIELD => self.msg.extend_from_slice(value.as_bytes()),

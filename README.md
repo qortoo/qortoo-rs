@@ -1,11 +1,11 @@
-# SyncYam rust SDK
+# Qortoo rust SDK
 
-[![codecov](https://codecov.io/gh/syncyam-io/syncyam-rs/branch/main/graph/badge.svg)](https://codecov.io/gh/syncyam-io/syncyam-rs)
-[![CI](https://github.com/syncyam-io/syncyam-rs/actions/workflows/coverage.yml/badge.svg)](https://github.com/syncyam-io/syncyam-rs/actions/workflows/coverage.yml)
-![GitHub commit activity](https://img.shields.io/github/commit-activity/w/syncyam-io/syncyam-rs)
-![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/syncyam-io/syncyam-rs/build-test-coverage.yml)
+[![codecov](https://codecov.io/gh/qortoo/qortoo-rs/branch/main/graph/badge.svg)](https://codecov.io/gh/qortoo/qortoo-rs)
+[![CI](https://github.com/qortoo/qortoo-rs/actions/workflows/coverage.yml/badge.svg)](https://github.com/qortoo/qortoo-rs/actions/workflows/coverage.yml)
+![GitHub commit activity](https://img.shields.io/github/commit-activity/w/qortoo/qortoo-rs)
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/qortoo/qortoo-rs/build-test-coverage.yml)
 
-SyncYam is a Rust SDK for conflict-free datatypes with distributed synchronization capabilities.
+Qortoo is a Rust SDK for conflict-free datatypes with distributed synchronization capabilities.
 
 ## Features
 
@@ -23,7 +23,7 @@ SyncYam is a Rust SDK for conflict-free datatypes with distributed synchronizati
 ## Quick Start
 
 ```rust
-use syncyam::Client;
+use qortoo::Client;
 
 // Create a client
 let client = Client::builder("my-collection", "my-client").build();

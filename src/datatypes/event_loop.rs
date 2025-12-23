@@ -42,11 +42,11 @@ impl EventLoop {
 
     #[instrument(skip_all, name="datatype_event_loop", 
         fields(
-            syncyam.col=%wired.attr.client_common.collection,
-            syncyam.cl=%wired.attr.client_common.alias,
-            syncyam.cuid=%wired.attr.client_common.cuid,
-            syncyam.dt=%wired.attr.key,
-            syncyam.duid=%wired.attr.duid,
+            qortoo.col=%wired.attr.client_common.collection,
+            qortoo.cl=%wired.attr.client_common.alias,
+            qortoo.cuid=%wired.attr.client_common.cuid,
+            qortoo.dt=%wired.attr.key,
+            qortoo.duid=%wired.attr.duid,
         )
     )]
     pub fn run(&self, wired: Arc<WiredDatatype>) {

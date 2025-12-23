@@ -11,9 +11,9 @@ use crate::{DataType, DatatypeState, datatypes::transactional::TransactionalData
 ///
 /// # Example
 /// ```
-/// use syncyam::Client;
-/// use syncyam::{Counter, Datatype};
-/// use syncyam::{DatatypeState, DataType};
+/// use qortoo::Client;
+/// use qortoo::{Counter, Datatype};
+/// use qortoo::{DatatypeState, DataType};
 /// let client = Client::builder("doc-example", "Datatype-trait").build();
 /// let counter = client.create_datatype("test-counter".to_string()).build_counter().unwrap();
 /// assert_eq!(counter.get_key(), "test-counter");
