@@ -179,7 +179,7 @@ mod tests_local_datatype_server {
             DatatypeState::DueToCreate,
             Some(ServerPushPullError::FailedToCreate("".to_string())),
         );
-        assert_eq!(false, server.created);
+        assert!(!server.created);
 
         // normal DUE_TO_CREATE case
         pushed.is_readonly = false;

@@ -14,6 +14,7 @@ use crate::{
     types::{common::ResourceID, push_pull_pack::PushPullPack},
 };
 
+#[allow(dead_code)]
 pub struct LocalConnectivity {
     datatype_servers: RwLock<HashMap<ResourceID, Arc<RwLock<LocalDatatypeServer>>>>,
 }
@@ -57,7 +58,7 @@ impl Connectivity for LocalConnectivity {
                 .entry(resource_id)
                 .or_insert_with(|| Arc::new(RwLock::new(LocalDatatypeServer::new(&attr))))
                 .clone()
-        }; 
+        };
 
         server.write().insert_client_item(wired, sender);
     }
@@ -69,7 +70,7 @@ impl Connectivity for LocalConnectivity {
         let mut local_datatype_server = local_datatype_server_with_lock.write();
         let pulled = match pushed.state {
             DatatypeState::DueToCreate => local_datatype_server.process_due_to_create(pushed)?,
-            _ => todo!()
+            _ => todo!(),
         };
         Ok(pulled)
     }
@@ -81,9 +82,10 @@ impl Connectivity for LocalConnectivity {
 
 #[cfg(test)]
 mod tests_local_connectivity {
-    use crate::Client;
-    use crate::connectivity::local_connectivity::LocalConnectivity;
-    use crate::utils::path::get_test_func_name;
+    use crate::{
+        Client, connectivity::local_connectivity::LocalConnectivity,
+        utils::path::get_test_func_name,
+    };
 
     #[test]
     fn can_use_local_connectivity() {
