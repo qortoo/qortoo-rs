@@ -3,9 +3,7 @@ use tracing::instrument;
 use crate::{
     DatatypeState,
     datatypes::mutable::MutableDatatype,
-    errors::{
-        push_pull::{ClientPushPullError, ServerPushPullError},
-    },
+    errors::push_pull::{ClientPushPullError, ServerPushPullError},
     observability::macros::add_span_event,
     types::push_pull_pack::PushPullPack,
 };
@@ -154,9 +152,12 @@ mod tests_push_handlers {
         assert_eq!(counter.get_server_version(), 0);
         counter.increase_by(1).unwrap();
         counter.increase().unwrap();
-        awaitility::at_most(Duration::from_secs(1)).until(|| {
-            counter.get_state() == DatatypeState::Subscribed && counter.get_server_version() == 2
-        });
+        awaitility::at_most(Duration::from_secs(1))
+            .poll_interval(Duration::from_micros(100))
+            .until(|| {
+                counter.get_state() == DatatypeState::Subscribed
+                    && counter.get_server_version() == 2
+            });
         assert_eq!(counter.get_server_version(), counter.get_client_version());
         assert_eq!(
             counter.get_client_version(),
@@ -166,10 +167,12 @@ mod tests_push_handlers {
         counter.increase_by(2).unwrap();
         counter.increase_by(3).unwrap();
 
-        awaitility::at_most(Duration::from_secs(2)).until(|| {
-            let v = counter.get_server_version();
-            info!("server version: {}", v);
-            v == 4
-        });
+        awaitility::at_most(Duration::from_secs(1))
+            .poll_interval(Duration::from_micros(100))
+            .until(|| {
+                let v = counter.get_server_version();
+                info!("server version: {}", v);
+                v == 4
+            });
     }
 }

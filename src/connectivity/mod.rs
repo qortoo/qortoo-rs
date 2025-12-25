@@ -8,6 +8,7 @@ use crate::{
     types::push_pull_pack::PushPullPack,
 };
 
+#[allow(dead_code)]
 pub mod local_connectivity;
 pub mod local_datatype_server;
 pub mod null_connectivity;

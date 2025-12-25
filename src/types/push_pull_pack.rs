@@ -144,7 +144,10 @@ mod tests_push_pull_pack {
         let attr = new_attribute!(DataType::Counter);
         let mut ppp = PushPullPack::new(&attr, DatatypeState::DueToCreate);
         info!("{}", ppp.resource_id());
-        assert_eq!(ppp.resource_id(), format!("{}/{}", attr.client_common.collection, attr.key));
+        assert_eq!(
+            ppp.resource_id(),
+            format!("{}/{}", attr.client_common.collection, attr.key)
+        );
         assert_eq!(format!("{ppp}"), format!("{ppp:?}"));
         info!("{ppp}");
         ppp.error = Some(ServerPushPullError::IllegalPushRequest(
