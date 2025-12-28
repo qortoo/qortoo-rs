@@ -10,7 +10,6 @@ pub struct OperationId {
     pub lamport: u64,
     pub cuid: Cuid,
     pub cseq: u64,
-    pub sseq: u64,
 }
 
 impl OperationId {

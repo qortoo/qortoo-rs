@@ -92,33 +92,35 @@ impl PushPullPack {
 
 impl Display for PushPullPack {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut attr = String::new();
+        let mut attr = String::new();        
         if self.is_readonly {
             attr.push_str("ro");
         } else {
             attr.push_str("rw");
-        };
+        }
 
         if self.has_snapshot {
             attr.push_str("|sn");
         }
 
+        let mut err = String::new();
         if let Some(e) = self.error.as_ref() {
-            attr.push_str(&format!("|({e})"));
+            err.push_str(&format!("err:{e}"));
         }
 
         write!(
             f,
-            "[{:?}/{}/{} {}:{}:{} {} tx:{} {}]",
+            "[{:?}/{}/{} {} {} tx:{} {}:{}:{} {}]",
             self.r#type,
             self.key,
             self.duid,
+            self.state,
+            attr,
+            self.transactions.len(),
             self.checkpoint.sseq,
             self.checkpoint.cseq,
             self.safe_sseq,
-            attr,
-            self.transactions.len(),
-            self.state
+            err
         )
     }
 }
