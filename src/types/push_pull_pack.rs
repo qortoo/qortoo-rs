@@ -92,7 +92,7 @@ impl PushPullPack {
 
 impl Display for PushPullPack {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut attr = String::new();        
+        let mut attr = String::new();
         if self.is_readonly {
             attr.push_str("ro");
         } else {

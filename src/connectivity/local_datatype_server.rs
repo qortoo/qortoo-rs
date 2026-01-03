@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, fmt::Display, sync::Arc};
 
 use crossbeam_channel::Sender;
 
@@ -25,6 +25,19 @@ pub struct LocalDatatypeServer {
     sseq: u64,
     cseq_map: HashMap<Cuid, CheckPoint>,
     history: Vec<Arc<Transaction>>,
+}
+
+impl Display for LocalDatatypeServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!(
+            "{} '{}' subscribed by {} clients, sseq: {} created: {}",
+            self.r#type,
+            self.key,
+            self.wired_map.len(),
+            self.sseq,
+            self.created
+        ))
+    }
 }
 
 impl LocalDatatypeServer {

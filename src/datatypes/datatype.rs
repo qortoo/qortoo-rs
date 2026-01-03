@@ -30,6 +30,7 @@ pub trait Datatype {
     fn get_server_version(&self) -> u64;
     fn get_client_version(&self) -> u64;
     fn get_synced_client_version(&self) -> u64;
+    fn sync(&self);
 }
 
 pub trait DatatypeBlanket {
@@ -62,6 +63,10 @@ where
 
     fn get_synced_client_version(&self) -> u64 {
         self.get_core().get_synced_client_version()
+    }
+
+    fn sync(&self) {
+        self.get_core().sync();
     }
 }
 
