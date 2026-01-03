@@ -105,6 +105,10 @@ impl Datatype for TransactionalDatatype {
     fn get_synced_client_version(&self) -> u64 {
         self.mutable.read().op_id.cseq
     }
+
+    fn sync(&self) {
+        self.event_loop.send_push_transaction_with_guarantee();
+    }
 }
 
 impl TransactionalDatatype {
@@ -200,7 +204,7 @@ impl TransactionalDatatype {
     fn end_transaction(&self, tag: Option<String>, committed: bool) {
         let mut mutable = self.mutable.write();
         if mutable.end_transaction(tag, committed) {
-            self.event_loop.send_push_transaction();
+            self.event_loop.send_push_transaction_with_best_effort();
         }
         self.tx_ctx.write().take();
         self.tx_mutex.unlock();
@@ -454,7 +458,6 @@ mod tests_transactional {
                 in_negative_block = false;
             }
         }
-
         true
     }
 }

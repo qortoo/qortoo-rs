@@ -135,11 +135,16 @@ impl EventLoop {
         Ok(())
     }
 
-    pub fn send_push_transaction(&self) {
+    pub fn send_push_transaction_with_best_effort(&self) {
         if !self.connectivity.is_realtime() {
             return;
         }
         self.send_to_bounded(Event::PushTransaction)
+            .unwrap_or_default();
+    }
+
+    pub fn send_push_transaction_with_guarantee(&self) {
+        self.send_to_unbounded(Event::PushTransaction)
             .unwrap_or_default();
     }
 }

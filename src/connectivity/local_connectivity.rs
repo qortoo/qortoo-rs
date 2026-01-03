@@ -1,7 +1,10 @@
 use std::{
     collections::HashMap,
     fmt::{Debug, Formatter},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use crossbeam_channel::Sender;
@@ -17,12 +20,14 @@ use crate::{
 #[allow(dead_code)]
 pub struct LocalConnectivity {
     datatype_servers: RwLock<HashMap<ResourceID, Arc<RwLock<LocalDatatypeServer>>>>,
+    is_realtime: AtomicBool,
 }
 
 impl LocalConnectivity {
     pub fn new_arc() -> Arc<Self> {
         Arc::new(Self {
             datatype_servers: RwLock::new(HashMap::new()),
+            is_realtime: AtomicBool::new(true),
         })
     }
 
@@ -36,6 +41,10 @@ impl LocalConnectivity {
             .cloned()
             .ok_or(ConnectivityError::ResourceNotFound)?;
         Ok(local_datatype_server)
+    }
+
+    pub fn set_realtime(&self, tf: bool) {
+        self.is_realtime.store(tf, Ordering::Relaxed);
     }
 }
 
@@ -70,28 +79,60 @@ impl Connectivity for LocalConnectivity {
         let mut local_datatype_server = local_datatype_server_with_lock.write();
         let pulled = match pushed.state {
             DatatypeState::DueToCreate => local_datatype_server.process_due_to_create(pushed)?,
+            DatatypeState::DueToSubscribe => {
+                local_datatype_server.process_due_to_subscribe(pushed)?
+            }
             _ => todo!(),
         };
         Ok(pulled)
     }
 
     fn is_realtime(&self) -> bool {
-        true
+        self.is_realtime.load(Ordering::Relaxed)
     }
 }
 
 #[cfg(test)]
 mod tests_local_connectivity {
+    use std::time::Duration;
+
+    use tracing::instrument;
+
     use crate::{
-        Client, connectivity::local_connectivity::LocalConnectivity,
+        Client, Datatype, DatatypeState, connectivity::local_connectivity::LocalConnectivity,
         utils::path::get_test_func_name,
     };
 
     #[test]
-    fn can_use_local_connectivity() {
-        let lc = LocalConnectivity::new_arc();
-        Client::builder(get_test_func_name!(), "local_connectivity_test")
-            .with_connectivity(lc)
+    #[instrument]
+    fn can_compare_manual_and_realtime_local_connectivity() {
+        let lc_manual = LocalConnectivity::new_arc();
+        lc_manual.set_realtime(false);
+        let client_manual = Client::builder(get_test_func_name!(), "local_connectivity_test")
+            .with_connectivity(lc_manual)
             .build();
+        let counter_manual = client_manual
+            .create_datatype("manual")
+            .build_counter()
+            .unwrap();
+
+        let lc_realtime = LocalConnectivity::new_arc();
+        let client_realtime = Client::builder(get_test_func_name!(), "local_connectivity_test")
+            .with_connectivity(lc_realtime)
+            .build();
+        let counter_realtime = client_realtime
+            .create_datatype("realtime")
+            .build_counter()
+            .unwrap();
+
+        awaitility::at_most(Duration::from_secs(1))
+            .poll_interval(Duration::from_micros(100))
+            .until(|| counter_realtime.get_state() == DatatypeState::Subscribed);
+        assert_ne!(counter_realtime.get_state(), counter_manual.get_state());
+
+        counter_manual.sync();
+        awaitility::at_most(Duration::from_secs(1))
+            .poll_interval(Duration::from_micros(100))
+            .until(|| counter_manual.get_state() == DatatypeState::Subscribed);
     }
 }
