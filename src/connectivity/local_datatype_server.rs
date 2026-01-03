@@ -174,7 +174,7 @@ mod tests_local_datatype_server {
         let attr = new_attribute!(DataType::Counter);
 
         let mut server = LocalDatatypeServer::new(&attr);
-
+        info!("{server}");
         let cuid = attr.cuid();
         let wired = WiredDatatype::new_arc_for_test(attr.clone(), DatatypeState::DueToCreate);
         let (sender, _receiver) = crossbeam_channel::unbounded();
@@ -233,5 +233,6 @@ mod tests_local_datatype_server {
                 "already exist".to_string(),
             )),
         );
+        info!("{server}");
     }
 }
