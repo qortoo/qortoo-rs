@@ -92,17 +92,15 @@ impl Attribute {
     }
 
     #[cfg(test)]
-    pub fn new_for_test(
+    pub fn new_for_test_with_connectivity(
         mut paths: std::collections::VecDeque<String>,
         r#type: DataType,
+        connectivity: Arc<dyn crate::connectivity::Connectivity>,
     ) -> Arc<Self> {
-        use crate::connectivity::null_connectivity::NullConnectivity;
-
         let key = paths.pop_back().unwrap_or(format!("{type}")).into();
         let client_alias = paths.pop_back().unwrap_or("client".into()).into();
         let collection = paths.pop_back().unwrap_or("collection".to_owned()).into();
-        let client_common =
-            ClientCommon::new_arc(collection, client_alias, Arc::new(NullConnectivity::new()));
+        let client_common = ClientCommon::new_arc(collection, client_alias, connectivity);
         Arc::new(Self {
             key,
             r#type,
@@ -111,6 +109,15 @@ impl Attribute {
             option: Default::default(),
             is_readonly: false,
         })
+    }
+
+    #[cfg(test)]
+    pub fn new_for_test(paths: std::collections::VecDeque<String>, r#type: DataType) -> Arc<Self> {
+        Self::new_for_test_with_connectivity(
+            paths,
+            r#type,
+            Arc::new(crate::connectivity::null_connectivity::NullConnectivity::new()),
+        )
     }
 
     pub fn cuid(&self) -> Cuid {
@@ -127,7 +134,21 @@ macro_rules! new_attribute {
 }
 
 #[cfg(test)]
+macro_rules! new_attribute_with_connectivity {
+    ($enum_variant:path, $connectivity:expr) => {{
+        let paths = crate::utils::path::caller_path!();
+        crate::datatypes::common::Attribute::new_for_test_with_connectivity(
+            paths,
+            $enum_variant,
+            $connectivity,
+        )
+    }};
+}
+
+#[cfg(test)]
 pub(crate) use new_attribute;
+#[cfg(test)]
+pub(crate) use new_attribute_with_connectivity;
 
 use crate::clients::common::ClientCommon;
 
@@ -138,6 +159,7 @@ pub enum ReturnType {
 
 #[cfg(test)]
 mod tests_attribute {
+
     use tracing::info;
 
     use crate::{DataType, utils::path::caller_path};

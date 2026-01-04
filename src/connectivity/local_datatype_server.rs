@@ -67,11 +67,11 @@ impl LocalDatatypeServer {
             .or_insert(CheckPoint::new(0, 0));
 
         for tx in pushed.transactions.iter() {
-            if tx.cseq() <= client_cp.cseq {
+            if tx.cseq <= client_cp.cseq {
                 continue;
             }
             self.history.push(tx.clone());
-            client_cp.cseq = tx.cseq();
+            client_cp.cseq = tx.cseq;
             self.sseq += 1;
         }
         client_cp.sseq = self.sseq;
@@ -138,101 +138,137 @@ impl LocalDatatypeServer {
 
 #[cfg(test)]
 mod tests_local_datatype_server {
-    use tracing::info;
+    use tracing::{info, instrument};
 
     use crate::{
         DataType, DatatypeState,
-        connectivity::local_datatype_server::LocalDatatypeServer,
-        datatypes::{common::new_attribute, wired::WiredDatatype},
-        errors::push_pull::ServerPushPullError,
+        connectivity::{Connectivity, local_connectivity::LocalConnectivity},
+        datatypes::{
+            common::new_attribute_with_connectivity, wired::WiredDatatype,
+            wired_interceptor::WiredInterceptor,
+        },
+        errors::push_pull::{ClientPushPullError, ServerPushPullError},
         types::{checkpoint::CheckPoint, push_pull_pack::PushPullPack, uid::Duid},
     };
 
-    fn assert_pulled_push_pull_pack(
-        pushed: &PushPullPack,
+    fn assert_push_pull_pack(
         pulled: &PushPullPack,
         is_readonly: bool,
         cp: CheckPoint,
         state: DatatypeState,
         error: Option<ServerPushPullError>,
     ) {
-        info!("Pushed: {pushed}");
-        info!("Pulled: {pulled}");
-
-        let mut expected_pulled = pushed.get_pulled_stub();
-        expected_pulled.is_readonly = is_readonly;
-        expected_pulled.checkpoint = cp;
-        expected_pulled.state = state;
-        expected_pulled.error = error;
-
-        info!("Expect: {expected_pulled}");
-        assert_eq!(*pulled, expected_pulled);
+        assert_eq!(pulled.is_readonly, is_readonly);
+        assert_eq!(pulled.checkpoint, cp);
+        assert_eq!(pulled.state, state);
+        assert_eq!(pulled.error, error);
     }
 
     #[test]
+    #[instrument]
     fn can_process_due_to_create() {
-        let attr = new_attribute!(DataType::Counter);
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let attr = new_attribute_with_connectivity!(DataType::Counter, connectivity.clone());
 
-        let mut server = LocalDatatypeServer::new(&attr);
-        info!("{server}");
-        let cuid = attr.cuid();
-        let wired = WiredDatatype::new_arc_for_test(attr.clone(), DatatypeState::DueToCreate);
+        // let cuid = attr.cuid();
         let (sender, _receiver) = crossbeam_channel::unbounded();
-        server.insert_client_item(wired, sender);
+
+        let wired_interceptor = WiredInterceptor::new_arc();
+        let wired1 = WiredDatatype::new_arc_for_test(
+            attr.clone(),
+            DatatypeState::DueToCreate,
+            wired_interceptor.clone(),
+        );
+        connectivity.register(wired1.clone(), sender);
+        let server = connectivity
+            .get_local_datatype_server(&attr.resource_id())
+            .unwrap();
 
         // readonly client should fail
-        let mut pushed = PushPullPack::new(&attr, DatatypeState::DueToCreate);
-        pushed.is_readonly = true;
-        let pulled = server.process_due_to_create(&pushed).unwrap();
-        assert_pulled_push_pull_pack(
-            &pushed,
-            &pulled,
-            true,
-            CheckPoint::new(0, 0),
-            DatatypeState::DueToCreate,
-            Some(ServerPushPullError::FailedToCreate("".to_string())),
-        );
-        assert!(!server.created);
+        wired_interceptor
+            .set_before_push(|push| {
+                push.is_readonly = true;
+                info!("PUSH:{push}");
+            })
+            .set_after_pull(|pull| {
+                info!("PULL:{pull}");
+                assert_push_pull_pack(
+                    pull,
+                    true,
+                    CheckPoint::new(0, 0),
+                    DatatypeState::DueToCreate,
+                    Some(ServerPushPullError::FailedToCreate("".to_string())),
+                );
+                Err(ClientPushPullError::FailToGetAfter)
+            });
+        let _ = wired1.push_pull();
+        assert!(!server.read().created);
 
         // normal DUE_TO_CREATE case
-        pushed.is_readonly = false;
-        pushed.add_test_transactions(&cuid, 1, 10);
-        let pulled = server.process_due_to_create(&pushed).unwrap();
-        assert_pulled_push_pull_pack(
-            &pushed,
-            &pulled,
-            false,
-            CheckPoint::new(10, 10),
-            DatatypeState::DueToCreate,
-            None,
-        );
-        assert_eq!(server.history.len(), 10);
+        wired_interceptor
+            .set_before_push(|push| {
+                push.add_test_transactions(&push.cuid.clone(), 1, 10);
+                info!("PUSH:{push}");
+            })
+            .set_after_pull(|pull| {
+                info!("PULL:{pull}");
+                assert_push_pull_pack(
+                    pull,
+                    false,
+                    CheckPoint::new(10, 10),
+                    DatatypeState::DueToCreate,
+                    None,
+                );
+                Err(ClientPushPullError::FailToGetAfter)
+            });
+        let _ = wired1.push_pull();
+        assert!(server.read().created);
+        assert_eq!(server.read().history.len(), 10);
 
-        // duplicated push
-        let pulled = server.process_due_to_create(&pushed).unwrap();
-        assert_pulled_push_pull_pack(
-            &pushed,
-            &pulled,
-            false,
-            CheckPoint::new(10, 10),
-            DatatypeState::DueToCreate,
-            None,
-        );
-        assert_eq!(server.history.len(), 10);
+        // duplicated DUE_TO_CREATE case
+        wired_interceptor
+            .set_before_push(|push| {
+                push.add_test_transactions(&push.cuid.clone(), 1, 10);
+                info!("PUSH:{push}");
+            })
+            .set_after_pull(|pull| {
+                info!("PULL:{pull}");
+                assert_push_pull_pack(
+                    pull,
+                    false,
+                    CheckPoint::new(10, 10),
+                    DatatypeState::DueToCreate,
+                    None,
+                );
+                Err(ClientPushPullError::FailToGetAfter)
+            });
+
+        let _ = wired1.push_pull();
+        assert!(server.read().created);
+        assert_eq!(server.read().history.len(), 10);
 
         // already-created case
-        pushed.duid = Duid::new();
-        let pulled = server.process_due_to_create(&pushed).unwrap();
-        assert_pulled_push_pull_pack(
-            &pushed,
-            &pulled,
-            false,
-            CheckPoint::new(0, 0),
-            DatatypeState::DueToCreate,
-            Some(ServerPushPullError::FailedToCreate(
-                "already exist".to_string(),
-            )),
-        );
-        info!("{server}");
+        wired_interceptor
+            .set_before_push(|push| {
+                push.duid = Duid::new();
+                info!("PUSH:{push}");
+            })
+            .set_after_pull(|pull| {
+                info!("PULL:{pull}");
+                assert_push_pull_pack(
+                    pull,
+                    false,
+                    CheckPoint::new(0, 0),
+                    DatatypeState::DueToCreate,
+                    Some(ServerPushPullError::FailedToCreate(
+                        "already exist".to_string(),
+                    )),
+                );
+                Err(ClientPushPullError::FailToGetAfter)
+            });
+        let _ = wired1.push_pull();
+        assert!(server.read().created);
+        info!("{}", server.read());
     }
 }

@@ -130,10 +130,7 @@ impl TransactionalDatatype {
     }
 
     fn get_wired_datatype(&self) -> Arc<WiredDatatype> {
-        Arc::new(WiredDatatype {
-            mutable: self.mutable.clone(),
-            attr: self.attr.clone(),
-        })
+        Arc::new(WiredDatatype::new(self.mutable.clone(), self.attr.clone()))
     }
 
     /// Checks whether this datatype is writable based on its readonly flag and state.
