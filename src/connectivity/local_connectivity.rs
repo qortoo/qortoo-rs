@@ -31,7 +31,7 @@ impl LocalConnectivity {
         })
     }
 
-    fn get_local_datatype_server(
+    pub(crate) fn get_local_datatype_server(
         &self,
         resource_id: &str,
     ) -> Result<Arc<RwLock<LocalDatatypeServer>>, ConnectivityError> {

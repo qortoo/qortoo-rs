@@ -57,7 +57,7 @@ impl PushPullPack {
         self.checkpoint.cseq = self
             .transactions
             .last()
-            .map(|tx| tx.cseq())
+            .map(|tx| tx.cseq)
             .unwrap_or(cp.cseq);
         self.checkpoint.sseq = cp.sseq;
         self.safe_sseq = safe_sseq;

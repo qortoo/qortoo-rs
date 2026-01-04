@@ -3,6 +3,8 @@ use std::sync::Arc;
 use parking_lot::RwLock;
 use tracing::{error, instrument};
 
+#[cfg(test)]
+use crate::datatypes::wired_interceptor::WiredInterceptor;
 use crate::{
     DatatypeState,
     datatypes::{
@@ -18,14 +20,30 @@ use crate::{
 pub struct WiredDatatype {
     pub mutable: Arc<RwLock<MutableDatatype>>,
     pub attr: Arc<Attribute>,
+    #[cfg(test)]
+    interceptor: Arc<WiredInterceptor>,
 }
 
 impl WiredDatatype {
+    pub fn new(mutable: Arc<RwLock<MutableDatatype>>, attr: Arc<Attribute>) -> Self {
+        Self {
+            mutable,
+            attr,
+            #[cfg(test)]
+            interceptor: WiredInterceptor::new_arc(),
+        }
+    }
+
     #[cfg(test)]
-    pub fn new_arc_for_test(attr: Arc<Attribute>, state: DatatypeState) -> Arc<Self> {
+    pub fn new_arc_for_test(
+        attr: Arc<Attribute>,
+        state: DatatypeState,
+        interceptor: Arc<WiredInterceptor>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             mutable: Arc::new(RwLock::new(MutableDatatype::new(attr.clone(), state))),
             attr,
+            interceptor,
         })
     }
 
@@ -43,10 +61,19 @@ impl WiredDatatype {
         let connectivity = &self.attr.client_common.connectivity;
 
         let mut mutable = self.mutable.write();
-        let pushing_ppp = mutable.create_push_pull_pack()?;
+        #[cfg_attr(not(test), allow(unused_mut))]
+        let mut pushing_ppp = mutable.create_push_pull_pack()?;
+
+        #[cfg(test)]
+        self.interceptor.before_push(&mut pushing_ppp);
 
         add_span_event!("send PUSH PushPullPack", "ppp"=> pushing_ppp.to_string());
+        #[cfg_attr(not(test), allow(unused_mut))]
         let mut pulled_ppp = connectivity.push_and_pull(&pushing_ppp)?;
+
+        #[cfg(test)]
+        self.interceptor.after_pull(&mut pulled_ppp)?;
+
         add_span_event!("recv PULL PushPullPack", "ppp"=> pulled_ppp.to_string());
 
         let mut pull_handler = PullHandler::new(&mut pulled_ppp, &mut mutable);

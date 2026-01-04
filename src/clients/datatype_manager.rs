@@ -66,12 +66,15 @@ impl DatatypeManager {
 
 #[cfg(test)]
 mod tests_datatype_manager {
+    use tracing::instrument;
+
     use crate::{
         ClientError, DataType, DatatypeState,
         clients::{common::new_client_common, datatype_manager::DatatypeManager},
     };
 
     #[test]
+    #[instrument]
     fn can_use_subscribe_or_create_datatype() {
         let mut dm = DatatypeManager::new(new_client_common!());
         let res1 = dm.subscribe_or_create_datatype(

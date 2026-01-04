@@ -1,6 +1,4 @@
 use std::fmt::{Debug, Display, Formatter};
-#[cfg(test)]
-use std::sync::Arc;
 
 use crate::{
     operations::{MemoryMeasurable, Operation},
@@ -16,13 +14,13 @@ const TRANSACTION_CONSTANT_SIZE: u64 = (size_of::<Vec<Operation>>() // operation
     + size_of::<bool>())  // event
     as u64;
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Default)]
 pub struct Transaction {
-    cuid: Cuid,
-    cseq: u64,
-    sseq: u64,
-    tag: Option<String>,
-    event: bool,
+    pub cuid: Cuid,
+    pub cseq: u64,
+    pub sseq: u64,
+    pub tag: Option<String>,
+    pub event: bool,
     operations: Vec<Operation>,
 }
 
@@ -38,12 +36,12 @@ impl Transaction {
         }
     }
 
-    pub fn cseq(&self) -> u64 {
-        self.cseq
-    }
-
-    pub fn cuid(&self) -> &Cuid {
-        &self.cuid
+    pub fn new_with_cuid(cuid: &Cuid) -> Self {
+        Self {
+            cuid: cuid.clone(),
+            operations: vec![],
+            ..Default::default()
+        }
     }
 
     pub fn get_op_id(&self) -> OperationId {
@@ -69,9 +67,9 @@ impl Transaction {
     }
 
     #[cfg(test)]
-    pub fn new_arc_for_test(cuid: &Cuid, cseq: u64) -> Arc<Self> {
-        let operations = Vec::new();
-        Arc::new(Self {
+    pub fn new_arc_for_test(cuid: &Cuid, cseq: u64) -> std::sync::Arc<Self> {
+        let operations = vec![Operation::new_counter_increase(1)];
+        std::sync::Arc::new(Self {
             cuid: cuid.clone(),
             cseq,
             sseq: 0,

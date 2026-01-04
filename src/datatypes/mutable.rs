@@ -61,7 +61,7 @@ impl MutableDatatype {
             if let Some(mut tx) = self.transaction.take() {
                 tx.set_tag(tag);
                 let tx = Arc::new(tx);
-                if *tx.cuid() == self.op_id.cuid {
+                if tx.cuid == self.op_id.cuid {
                     if let Err(err) = self.push_buffer.enque(tx.clone()) {
                         if err == ClientPushPullError::ExceedMaxMemSize {
                             todo!("should reduce the push buffer size");
@@ -94,7 +94,7 @@ impl MutableDatatype {
 
     fn replay_push_buffer(&mut self) {
         for tx in self.push_buffer.iter() {
-            if *tx.cuid() == self.op_id.cuid {
+            if tx.cuid == self.op_id.cuid {
                 let mut op_id = tx.get_op_id();
                 tx.iter().for_each(|op| {
                     op_id.lamport = op.lamport;

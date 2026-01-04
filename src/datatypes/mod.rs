@@ -12,3 +12,5 @@ pub mod push_buffer;
 mod rollback;
 mod transactional;
 pub mod wired;
+#[cfg(test)]
+pub mod wired_interceptor;

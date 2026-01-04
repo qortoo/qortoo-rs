@@ -45,7 +45,7 @@ impl MemoryPushBuffer {
     #[allow(dead_code)]
     fn need_to_deque(tx: Option<&Arc<Transaction>>, cseq: u64) -> bool {
         if let Some(tx) = tx {
-            if tx.cseq() <= cseq {
+            if tx.cseq <= cseq {
                 return true;
             }
         }
@@ -55,16 +55,16 @@ impl MemoryPushBuffer {
 
 impl PushBuffer for MemoryPushBuffer {
     fn enque(&mut self, tx: Arc<Transaction>) -> Result<(), ClientPushPullError> {
-        if self.last_cseq != 0 && self.last_cseq + 1 != tx.cseq() {
+        if self.last_cseq != 0 && self.last_cseq + 1 != tx.cseq {
             return Err(ClientPushPullError::NonSequentialCseq);
         }
         if self.mem_size + tx.size() > self.option.max_mem_size_of_push_buffer {
             return Err(ClientPushPullError::ExceedMaxMemSize);
         }
         if self.first_cseq == 0 {
-            self.first_cseq = tx.cseq();
+            self.first_cseq = tx.cseq;
         }
-        self.last_cseq = tx.cseq();
+        self.last_cseq = tx.cseq;
         self.mem_size += tx.size();
         self.transaction.push_back(tx);
         Ok(())
@@ -118,7 +118,7 @@ impl PushBuffer for MemoryPushBuffer {
             ret.push(tx);
 
             self.first_cseq = if let Some(front) = self.transaction.front() {
-                front.cseq()
+                front.cseq
             } else {
                 self.last_cseq = 0;
                 0
@@ -223,12 +223,12 @@ mod tests_push_buffer {
         info!("push_buffer: {push_buffer} {push_tx_size}");
         assert_eq!(push_transactions.len(), 51);
         assert_eq!(push_tx_size, tx_size * 51);
-        assert_eq!(push_transactions.first().unwrap().cseq(), 50);
+        assert_eq!(push_transactions.first().unwrap().cseq, 50);
 
         let (push_transactions, push_tx_size) = push_buffer.get_after(50, tx_size * 10).unwrap();
         assert_eq!(push_transactions.len(), 10);
         assert_eq!(push_tx_size, tx_size * 10);
-        assert_eq!(push_transactions.first().unwrap().cseq(), 50);
+        assert_eq!(push_transactions.first().unwrap().cseq, 50);
 
         let (push_transactions, push_tx_size) = push_buffer.get_after(101, MAX_PUSH_SIZE).unwrap();
         assert_eq!(push_transactions.len(), 0);
