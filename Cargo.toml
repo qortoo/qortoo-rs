@@ -18,7 +18,7 @@ tracing = [
 
 [dependencies]
 # optional
-libc = { version = "^0.2.178", optional = true }
+libc = { version = "^0.2.179", optional = true }
 once_cell = { version = "^1.21.3", optional = true }
 tracing-subscriber = { version = "^0.3.22", features = [
     "json",
@@ -33,15 +33,15 @@ ctor = { version = "^0.6.3", optional = true }
 
 tracing = "^0.1.44"
 nanoid = "^0.4.0"
-tokio = { version = "^1.48.0", features = ["full"] }
+tokio = { version = "^1.49.0", features = ["full"] }
 parking_lot = "^0.12.5"
 time = { version = "^0.3.44", features = [
     "formatting",
     "local-offset",
     "macros",
 ] }
-itoa = "^1.0.15"
-derive_more = { version = "^2.1.0", features = ["display", "debug"] }
+itoa = "^1.0.17"
+derive_more = { version = "^2.1.1", features = ["display", "debug"] }
 chrono = "^0.4.42"
 thiserror = "^2.0.17"
 opentelemetry = { version = "^0.31.0" }
