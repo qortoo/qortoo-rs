@@ -14,6 +14,7 @@ use crate::{
     defaults,
     errors::push_pull::ClientPushPullError,
     observability::macros::add_span_event,
+    operations::transaction::Transaction,
     types::{push_pull_pack::PushPullPack, uid::Cuid},
 };
 
@@ -60,9 +61,11 @@ impl WiredDatatype {
     pub fn push_pull(&self) -> Result<(), ClientPushPullError> {
         let connectivity = &self.attr.client_common.connectivity;
 
-        let mut mutable = self.mutable.write();
         #[cfg_attr(not(test), allow(unused_mut))]
-        let mut pushing_ppp = mutable.create_push_pull_pack()?;
+        let mut pushing_ppp = {
+            let mut mutable = self.mutable.write();
+            mutable.create_push_pull_pack()?
+        };
 
         #[cfg(test)]
         self.interceptor.before_push(&mut pushing_ppp);
@@ -76,12 +79,22 @@ impl WiredDatatype {
 
         add_span_event!("recv PULL PushPullPack", "ppp"=> pulled_ppp.to_string());
 
+        let mut mutable = self.mutable.write();
         let mut pull_handler = PullHandler::new(&mut pulled_ppp, &mut mutable);
         pull_handler.apply()
     }
 
     pub fn cuid(&self) -> Cuid {
         self.attr.cuid()
+    }
+
+    pub fn get_subscribe_snapshot(&self) -> Transaction {
+        let m = self.mutable.write();
+        let snap_op = m.new_snapshot_operation();
+        let mut tx = Transaction::new_with_cuid(&self.cuid());
+        tx.push_operation(snap_op);
+        tx.sseq = m.checkpoint.sseq;
+        tx
     }
 }
 

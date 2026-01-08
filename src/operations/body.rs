@@ -11,6 +11,8 @@ pub enum OperationBody {
     Delay4Test(Delay4TestBody),
     #[display("CounterIncrease{_0}")]
     CounterIncrease(CounterIncreaseBody),
+    #[display("Snapshot{_0}")]
+    Snapshot(SnapshotBody),
 }
 
 impl Debug for OperationBody {
@@ -25,6 +27,7 @@ impl MemoryMeasurable for OperationBody {
             #[cfg(test)]
             OperationBody::Delay4Test(body) => body.size(),
             OperationBody::CounterIncrease(body) => body.size(),
+            OperationBody::Snapshot(body) => body.size(),
         }
     }
 }
@@ -75,6 +78,24 @@ impl CounterIncreaseBody {
 impl MemoryMeasurable for CounterIncreaseBody {
     fn size(&self) -> u64 {
         size_of::<i64>() as u64
+    }
+}
+
+#[derive(Debug, Clone, Display, PartialEq, Eq)]
+#[display("(size:{})", data.len())]
+pub struct SnapshotBody {
+    pub data: Box<[u8]>,
+}
+
+impl SnapshotBody {
+    pub fn new(data: Box<[u8]>) -> Self {
+        Self { data }
+    }
+}
+
+impl MemoryMeasurable for SnapshotBody {
+    fn size(&self) -> u64 {
+        self.data.len() as u64
     }
 }
 

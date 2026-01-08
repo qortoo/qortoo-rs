@@ -22,6 +22,7 @@ pub struct LocalDatatypeServer {
     r#type: DataType,
     duid: Duid,
     created: bool,
+    creator: Cuid,
     sseq: u64,
     cseq_map: HashMap<Cuid, CheckPoint>,
     history: Vec<Arc<Transaction>>,
@@ -46,6 +47,8 @@ impl LocalDatatypeServer {
             wired_map: HashMap::new(),
             sender_map: HashMap::new(),
             created: false,
+            // creator is temporarily assigned; it should be reassigned when this datatype is created
+            creator: attr.cuid(),
             sseq: 0,
             cseq_map: HashMap::new(),
             history: Vec::new(),
@@ -98,6 +101,7 @@ impl LocalDatatypeServer {
         }
         pulled.state = DatatypeState::DueToCreate;
         self.created = true;
+        self.creator = pushed.cuid.clone();
         self.duid = pushed.duid.clone();
         let cseq = self.push_transactions(pushed);
         pulled.checkpoint.sseq = self.sseq;
@@ -127,10 +131,27 @@ impl LocalDatatypeServer {
             )));
             return Ok(pulled);
         }
-        pulled.duid = self.duid.clone();
-        self.pull_transactions();
+        if !pushed.transactions.is_empty() {
+            pulled.error = Some(ServerPushPullError::IllegalPushRequest(
+                "cannot push transactions when subscribing".to_string(),
+            ));
+            return Ok(pulled);
+        }
 
+        pulled.duid = self.duid.clone();
+        let creator_wired = self
+            .get_creator_wired_datatype()
+            .ok_or(ConnectivityError::ResourceNotFound(pushed.resource_id()))?;
+        let tx = creator_wired.get_subscribe_snapshot();
+        pulled.checkpoint.sseq = tx.sseq;
+        pulled.transactions.push(Arc::new(tx));
+        pulled.has_snapshot = true;
+        self.pull_transactions();
         Ok(pulled)
+    }
+
+    fn get_creator_wired_datatype(&self) -> Option<Arc<WiredDatatype>> {
+        self.wired_map.get(&self.creator).cloned()
     }
 
     pub fn pull_transactions(&self) {}
@@ -170,8 +191,6 @@ mod tests_local_datatype_server {
         let connectivity = LocalConnectivity::new_arc();
         connectivity.set_realtime(false);
         let attr = new_attribute_with_connectivity!(DataType::Counter, connectivity.clone());
-
-        // let cuid = attr.cuid();
         let (sender, _receiver) = crossbeam_channel::unbounded();
 
         let wired_interceptor = WiredInterceptor::new_arc();
@@ -270,5 +289,49 @@ mod tests_local_datatype_server {
         let _ = wired1.push_pull();
         assert!(server.read().created);
         info!("{}", server.read());
+    }
+
+    #[test]
+    #[instrument]
+    fn can_process_due_to_subscribe() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let attr = new_attribute_with_connectivity!(DataType::Counter, connectivity.clone());
+
+        let wired_interceptor1 = WiredInterceptor::new_arc();
+        let wired1 = WiredDatatype::new_arc_for_test(
+            attr.clone(),
+            DatatypeState::DueToCreate,
+            wired_interceptor1.clone(),
+        );
+        let (sender1, _receiver1) = crossbeam_channel::unbounded();
+        connectivity.register(wired1.clone(), sender1);
+        let server = connectivity
+            .get_local_datatype_server(&attr.resource_id())
+            .unwrap();
+
+        let wired_interceptor2 = WiredInterceptor::new_arc();
+        let wired2 = WiredDatatype::new_arc_for_test(
+            attr.clone(),
+            DatatypeState::DueToSubscribe,
+            wired_interceptor2.clone(),
+        );
+        let (sender2, _receiver2) = crossbeam_channel::unbounded();
+        connectivity.register(wired2.clone(), sender2);
+
+        let _ = wired1.push_pull();
+        assert!(server.read().created);
+        assert_eq!(wired1.mutable.read().state, DatatypeState::Subscribed);
+
+        wired_interceptor2
+            .set_before_push(|push| {
+                info!("{push}");
+            })
+            .set_after_pull(|pull| {
+                info!("{pull}");
+                Ok(())
+            });
+        let _ = wired2.push_pull();
+        // TODO: continue to test after implement DUE_TO_SUBSCRIBE in PullHandler.apply
     }
 }
