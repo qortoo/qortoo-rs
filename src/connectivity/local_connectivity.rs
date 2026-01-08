@@ -39,7 +39,7 @@ impl LocalConnectivity {
         let local_datatype_server = datatypes
             .get(resource_id)
             .cloned()
-            .ok_or(ConnectivityError::ResourceNotFound)?;
+            .ok_or(ConnectivityError::ResourceNotFound(resource_id.to_string()))?;
         Ok(local_datatype_server)
     }
 

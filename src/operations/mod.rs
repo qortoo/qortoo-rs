@@ -7,7 +7,7 @@ use chrono::Local;
 
 #[cfg(test)]
 use crate::operations::body::Delay4TestBody;
-use crate::operations::body::{CounterIncreaseBody, OperationBody};
+use crate::operations::body::{CounterIncreaseBody, OperationBody, SnapshotBody};
 
 pub mod body;
 pub mod transaction;
@@ -36,6 +36,11 @@ impl Operation {
         Self::new(OperationBody::CounterIncrease(CounterIncreaseBody::new(
             delta,
         )))
+    }
+
+    pub fn new_snapshot(body: Box<[u8]>) -> Self {
+        let op_body = SnapshotBody::new(body);
+        Self::new(OperationBody::Snapshot(op_body))
     }
 
     #[cfg(test)]
@@ -88,6 +93,12 @@ mod tests_operations {
         info!("{op} vs. {op:?}");
         let s = op.to_string();
         assert_eq!(s, format!("{op:?}"));
+
+        let hello = String::from("hello");
+        let hello_bytes: Box<[u8]> = hello.into_bytes().into_boxed_slice();
+        let snap_op = Operation::new_snapshot(hello_bytes);
+        assert_eq!(format!("{snap_op}"), format!("{snap_op:?}"));
+        info!("{snap_op} vs. {snap_op:?}");
     }
 
     #[test]
