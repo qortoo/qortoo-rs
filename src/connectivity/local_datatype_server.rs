@@ -54,7 +54,7 @@ impl LocalDatatypeServer {
             history: Vec::new(),
             key: attr.key.clone(),
             r#type: attr.r#type,
-            duid: attr.duid.clone(),
+            duid: attr.get_duid(),
         }
     }
 

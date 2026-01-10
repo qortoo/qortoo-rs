@@ -36,7 +36,7 @@ impl PushPullPack {
         Self {
             collection: attr.client_common.collection.clone(),
             cuid: attr.client_common.cuid.clone(),
-            duid: attr.duid.clone(),
+            duid: attr.get_duid(),
             key: attr.key.clone(),
             r#type: attr.r#type.to_owned(),
             state,

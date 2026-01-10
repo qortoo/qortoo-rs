@@ -46,7 +46,7 @@ impl EventLoop {
             qortoo.cl=%wired.attr.client_common.alias,
             qortoo.cuid=%wired.attr.client_common.cuid,
             qortoo.dt=%wired.attr.key,
-            qortoo.duid=%wired.attr.duid,
+            qortoo.duid=%wired.attr.get_duid(),
         )
     )]
     pub fn run(&self, wired: Arc<WiredDatatype>) {
