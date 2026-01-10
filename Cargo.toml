@@ -18,7 +18,7 @@ tracing = [
 
 [dependencies]
 # optional
-libc = { version = "^0.2.179", optional = true }
+libc = { version = "^0.2.180", optional = true }
 once_cell = { version = "^1.21.3", optional = true }
 tracing-subscriber = { version = "^0.3.22", features = [
     "json",
@@ -50,7 +50,7 @@ ubyte = "^0.10.4"
 crossbeam-channel = "^0.5.15"
 futures = "^0.3.28"
 btparse = "^0.2.0"
-strum_macros = "0.27.2"
+strum_macros = "^0.27.2"
 
 [dev-dependencies]
 rstest = "^0.26.1"

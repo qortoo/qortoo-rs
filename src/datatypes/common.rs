@@ -21,7 +21,7 @@ macro_rules! datatype_instrument {
                 qortoo.cl=%self.datatype.attr.client_common.alias,
                 qortoo.cuid=%self.datatype.attr.client_common.cuid,
                 qortoo.dt=%self.datatype.attr.key,
-                qortoo.duid=%self.datatype.attr.duid,
+                qortoo.duid=%self.datatype.attr.get_duid(),
             )
         )]
         $vis fn $name $($rest)*
@@ -38,7 +38,7 @@ macro_rules! internal_datatype_instrument {
                 qortoo.cl=%self.attr.client_common.alias,
                 qortoo.cuid=%self.attr.client_common.cuid,
                 qortoo.dt=%self.attr.key,
-                qortoo.duid=%self.attr.duid,
+                qortoo.duid=%self.attr.get_duid(),
             )
         )]
         $vis fn $name $($rest)*
@@ -51,7 +51,7 @@ pub(crate) use internal_datatype_instrument;
 pub struct Attribute {
     pub key: ArcStr,
     pub r#type: DataType,
-    pub duid: Duid,
+    pub duid: RwLock<Duid>,
     pub client_common: Arc<ClientCommon>,
     pub option: Arc<DatatypeOption>,
     pub is_readonly: bool,
@@ -63,7 +63,7 @@ impl Debug for Attribute {
             .field("client", &self.client_common)
             .field("key", &self.key)
             .field("type", &self.r#type)
-            .field("duid", &self.duid.to_string())
+            .field("duid", &self.duid.read().to_string())
             .field("option", &self.option)
             .finish()
     }
@@ -80,7 +80,7 @@ impl Attribute {
         Self {
             key,
             r#type,
-            duid: Duid::new(),
+            duid: RwLock::new(Duid::new()),
             client_common,
             option: Arc::new(option),
             is_readonly,
@@ -97,6 +97,7 @@ impl Attribute {
         r#type: DataType,
         connectivity: Arc<dyn crate::connectivity::Connectivity>,
     ) -> Arc<Self> {
+
         let key = paths.pop_back().unwrap_or(format!("{type}")).into();
         let client_alias = paths.pop_back().unwrap_or("client".into()).into();
         let collection = paths.pop_back().unwrap_or("collection".to_owned()).into();
@@ -104,7 +105,7 @@ impl Attribute {
         Arc::new(Self {
             key,
             r#type,
-            duid: Duid::new(),
+            duid: RwLock::new(Duid::new()),
             client_common,
             option: Default::default(),
             is_readonly: false,
@@ -122,6 +123,14 @@ impl Attribute {
 
     pub fn cuid(&self) -> Cuid {
         self.client_common.cuid.clone()
+    }
+
+    pub fn get_duid(&self) -> Duid {
+        self.duid.read().clone()
+    }
+
+    pub fn set_duid(&self, new_duid: Duid) {
+        *self.duid.write() = new_duid;
     }
 }
 
@@ -149,6 +158,7 @@ macro_rules! new_attribute_with_connectivity {
 pub(crate) use new_attribute;
 #[cfg(test)]
 pub(crate) use new_attribute_with_connectivity;
+use parking_lot::RwLock;
 
 use crate::clients::common::ClientCommon;
 
@@ -162,7 +172,7 @@ mod tests_attribute {
 
     use tracing::info;
 
-    use crate::{DataType, utils::path::caller_path};
+    use crate::{types::uid::Duid, utils::path::caller_path, DataType};
 
     #[test]
     fn can_new_attribute_for_test() {
@@ -183,5 +193,17 @@ mod tests_attribute {
             format!("{}/{}", attr.client_common.collection, attr.key),
             attr.resource_id()
         );
+    }
+
+    #[test]
+    fn can_use_get_and_set_duid() {
+        let attr = new_attribute!(DataType::Counter);
+        let new_duid = Duid::new();
+        attr.set_duid(new_duid.clone());
+        let got_duid = attr.get_duid();
+        assert_eq!(new_duid, got_duid);
+        assert_eq!(new_duid.as_ptr(), got_duid.as_ptr());
+        info!("{}: {}", new_duid, new_duid.as_ptr() as u64);
+        info!("{}: {}", got_duid, got_duid.as_ptr() as u64);
     }
 }
