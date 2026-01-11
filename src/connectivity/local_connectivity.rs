@@ -46,6 +46,18 @@ impl LocalConnectivity {
     pub fn set_realtime(&self, tf: bool) {
         self.is_realtime.store(tf, Ordering::Relaxed);
     }
+
+    #[cfg(test)]
+    pub fn get_wired_interceptor(
+        &self,
+        resource_id: &ResourceID,
+        cuid: &crate::types::uid::Cuid,
+    ) -> Option<Arc<crate::datatypes::wired_interceptor::WiredInterceptor>> {
+        let servers = self.datatype_servers.read();
+        let server = servers.get(resource_id).cloned()?;
+        let wired_datatype = server.read().get_wired_datatype(cuid)?;
+        Some(wired_datatype.get_wired_interceptor())
+    }
 }
 
 impl Debug for LocalConnectivity {
@@ -130,9 +142,7 @@ mod tests_local_connectivity {
             .until(|| counter_realtime.get_state() == DatatypeState::Subscribed);
         assert_ne!(counter_realtime.get_state(), counter_manual.get_state());
 
-        counter_manual.sync();
-        awaitility::at_most(Duration::from_secs(1))
-            .poll_interval(Duration::from_micros(100))
-            .until(|| counter_manual.get_state() == DatatypeState::Subscribed);
+        counter_manual.sync().unwrap();
+        assert_eq!(counter_manual.get_state(), DatatypeState::Subscribed);
     }
 }

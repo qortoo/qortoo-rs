@@ -134,6 +134,11 @@ impl Client {
     pub fn subscribe_or_create_datatype(&self, key: impl IntoString) -> DatatypeBuilder<'_> {
         DatatypeBuilder::new(self, key.into(), DatatypeState::DueToSubscribeOrCreate)
     }
+
+    #[cfg(test)]
+    pub fn get_cuid(&self) -> crate::types::uid::Cuid {
+        self.common.cuid.clone()
+    }
 }
 
 #[cfg(test)]

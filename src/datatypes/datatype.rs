@@ -1,4 +1,6 @@
-use crate::{DataType, DatatypeState, datatypes::transactional::TransactionalDatatype};
+use crate::{
+    DataType, DatatypeError, DatatypeState, datatypes::transactional::TransactionalDatatype,
+};
 
 /// The `Datatype` trait defines the common interface for all
 /// conflict-free datatypes (e.g., Counter, Register, Document).
@@ -30,7 +32,7 @@ pub trait Datatype {
     fn get_server_version(&self) -> u64;
     fn get_client_version(&self) -> u64;
     fn get_synced_client_version(&self) -> u64;
-    fn sync(&self);
+    fn sync(&self) -> Result<(), DatatypeError>;
 }
 
 pub trait DatatypeBlanket {
@@ -65,8 +67,8 @@ where
         self.get_core().get_synced_client_version()
     }
 
-    fn sync(&self) {
-        self.get_core().sync();
+    fn sync(&self) -> Result<(), DatatypeError> {
+        self.get_core().sync()
     }
 }
 
@@ -75,15 +77,18 @@ mod tests_datatype_trait {
     use tracing::instrument;
 
     use crate::{
-        DataType, DatatypeState,
+        Client, DataType, DatatypeError, DatatypeState,
+        connectivity::local_connectivity::LocalConnectivity,
         datatypes::{
             common::new_attribute, datatype::Datatype, transactional::TransactionalDatatype,
         },
+        errors::push_pull::ClientPushPullError,
+        utils::path::get_test_func_name,
     };
 
     #[test]
     #[instrument]
-    fn can_call_datatype_trait_functions() {
+    fn can_call_datatype_trait_methods() {
         let attr = new_attribute!(DataType::Counter);
         let key = attr.key.as_ref();
         let data = TransactionalDatatype::new_arc(attr.clone(), DatatypeState::DueToCreate);
@@ -93,5 +98,38 @@ mod tests_datatype_trait {
         assert_eq!(data.get_server_version(), 0);
         assert_eq!(data.get_client_version(), 0);
         assert_eq!(data.get_synced_client_version(), 0);
+    }
+
+    #[test]
+    #[instrument]
+    fn can_use_sync_method() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let resource_id = format!("{}/{}", module_path!(), get_test_func_name!());
+        let client1 = Client::builder(module_path!(), module_path!())
+            .with_connectivity(connectivity.clone())
+            .build();
+        let counter1 = client1
+            .create_datatype(get_test_func_name!())
+            .build_counter()
+            .unwrap();
+
+        let interceptor1 = connectivity
+            .get_wired_interceptor(&resource_id, &client1.get_cuid())
+            .unwrap();
+
+        // produce push_pull error
+        interceptor1.set_after_pull(|_pull| Err(ClientPushPullError::ExceedMaxMemSize));
+
+        assert_eq!(
+            counter1.sync().unwrap_err(),
+            DatatypeError::FailedToSync(ClientPushPullError::ExceedMaxMemSize)
+        );
+        assert_eq!(counter1.get_state(), DatatypeState::DueToCreate);
+
+        // make a success case
+        interceptor1.set_after_pull(|_pull| Ok(()));
+        assert!(counter1.sync().is_ok());
+        assert_eq!(counter1.get_state(), DatatypeState::Subscribed);
     }
 }

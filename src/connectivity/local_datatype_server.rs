@@ -86,7 +86,8 @@ impl LocalDatatypeServer {
         pushed: &PushPullPack,
     ) -> Result<PushPullPack, ConnectivityError> {
         let mut pulled = pushed.get_pulled_stub();
-        // 이미 생성 되었다면 에러가 발생해야 하지만, 같은 DUID인 경우는 중복 전송 케이스로 간주하여 허용한다.
+        // If already created, an error should occur,
+        // but if the DUID is the same, it is considered a duplicate transmission case and is allowed.
         if self.created && self.duid != pushed.duid {
             pulled.error = Some(ServerPushPullError::FailedToCreate(
                 "already exist".to_string(),
@@ -155,6 +156,11 @@ impl LocalDatatypeServer {
     }
 
     pub fn pull_transactions(&self) {}
+
+    #[cfg(test)]
+    pub fn get_wired_datatype(&self, cuid: &Cuid) -> Option<Arc<WiredDatatype>> {
+        self.wired_map.get(cuid).cloned()
+    }
 }
 
 #[cfg(test)]

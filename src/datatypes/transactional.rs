@@ -106,8 +106,8 @@ impl Datatype for TransactionalDatatype {
         self.mutable.read().op_id.cseq
     }
 
-    fn sync(&self) {
-        self.event_loop.send_push_transaction_with_guarantee();
+    fn sync(&self) -> Result<(), DatatypeError> {
+        self.event_loop.send_push_transaction_with_guarantee()
     }
 }
 
