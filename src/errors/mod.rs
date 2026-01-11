@@ -91,7 +91,7 @@ mod tests_datatype_errors {
     }
 
     fn into_next_stack() {
-        let err = Box::new(TrySendError::Full(Event::PushTransaction));
-        let _d3 = with_err_out!(DatatypeError::FailureInEventLoop(err));
+        let err = Box::new(TrySendError::Full(Event::PushTransaction(None)));
+        let _d3 = with_err_out!(DatatypeError::FailedInEventLoop(err));
     }
 }

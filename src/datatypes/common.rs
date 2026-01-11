@@ -97,7 +97,6 @@ impl Attribute {
         r#type: DataType,
         connectivity: Arc<dyn crate::connectivity::Connectivity>,
     ) -> Arc<Self> {
-
         let key = paths.pop_back().unwrap_or(format!("{type}")).into();
         let client_alias = paths.pop_back().unwrap_or("client".into()).into();
         let collection = paths.pop_back().unwrap_or("collection".to_owned()).into();
@@ -172,7 +171,7 @@ mod tests_attribute {
 
     use tracing::info;
 
-    use crate::{types::uid::Duid, utils::path::caller_path, DataType};
+    use crate::{DataType, types::uid::Duid, utils::path::caller_path};
 
     #[test]
     fn can_new_attribute_for_test() {

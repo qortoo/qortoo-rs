@@ -15,7 +15,7 @@ pub enum Event {
     #[display("Stop")]
     Stop(oneshot::Sender<()>),
     #[display("PushTransaction")]
-    PushTransaction,
+    PushTransaction(Option<oneshot::Sender<Option<DatatypeError>>>),
 }
 
 #[derive(Debug)]
@@ -54,10 +54,10 @@ impl EventLoop {
         let bounded_rx = self.bounded_rx.clone();
         let rt_handle = wired.attr.client_common.handle.clone();
         let unbounded_tx = self.unbounded_tx.clone();
+        let connectivity = wired.attr.client_common.connectivity.clone();
+        connectivity.register(wired.clone(), unbounded_tx);
         rt_handle.spawn(
             async move {
-                let connectivity = wired.attr.client_common.connectivity.clone();
-                connectivity.register(wired.clone(), unbounded_tx);
                 add_span_event!("start event_loop");
                 loop {
                     wired.push_if_needed();
@@ -85,14 +85,21 @@ impl EventLoop {
                         Event::Stop(tx) => {
                             add_span_event!("receive STOP");
                             if tx.send(()).is_err() {
-                                error!("failed to send stop confirmation");
+                                error!("failed to respond STOP event");
                             }
                             break;
                         }
-                        Event::PushTransaction => {
+                        Event::PushTransaction(tx_opt) => {
                             add_span_event!("receive PushTransaction");
+                            let mut err_opt = None;
                             if let Err(e) = wired.push_pull() {
                                 error!("push_pull failed: {e}");
+                                err_opt = Some(DatatypeError::FailedToSync(e));
+                            }
+                            if let Some(tx) = tx_opt {
+                                if tx.send(err_opt).is_err() {
+                                    error!("failed to respond PushTransaction event");
+                                }
                             }
                         }
                     }
@@ -122,14 +129,14 @@ impl EventLoop {
     fn send_to_unbounded(&self, ev: Event) -> Result<(), DatatypeError> {
         self.unbounded_tx
             .try_send(ev)
-            .map_err(|e| with_err_out!(DatatypeError::FailureInEventLoop(Box::new(e))))
+            .map_err(|e| with_err_out!(DatatypeError::FailedInEventLoop(Box::new(e))))
     }
 
     fn send_to_bounded(&self, ev: Event) -> Result<(), DatatypeError> {
         let ev_str = format!("{ev}");
         self.bounded_tx.try_send(ev).map_err(|e| {
             add_span_event!(ev_str, "result"=>"fail");
-            DatatypeError::FailureInEventLoop(Box::new(e))
+            DatatypeError::FailedInEventLoop(Box::new(e))
         })?;
         add_span_event!(ev_str, "result"=>"succeed");
         Ok(())
@@ -139,12 +146,21 @@ impl EventLoop {
         if !self.connectivity.is_realtime() {
             return;
         }
-        self.send_to_bounded(Event::PushTransaction)
+        self.send_to_bounded(Event::PushTransaction(None))
             .unwrap_or_default();
     }
 
-    pub fn send_push_transaction_with_guarantee(&self) {
-        self.send_to_unbounded(Event::PushTransaction)
-            .unwrap_or_default();
+    pub fn send_push_transaction_with_guarantee(&self) -> Result<(), DatatypeError> {
+        let (tx, rx) = oneshot::channel();
+        self.send_to_unbounded(Event::PushTransaction(Some(tx)))?;
+        futures::executor::block_on(async {
+            match rx.await {
+                Ok(Some(err)) => Err(err),
+                Ok(None) => Ok(()),
+                Err(e) => Err(DatatypeError::FailedInEventLoop(
+                    format!("failed to receive response of sync(): {e}").into(),
+                )),
+            }
+        })
     }
 }

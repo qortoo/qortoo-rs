@@ -48,6 +48,11 @@ impl WiredDatatype {
         })
     }
 
+    #[cfg(test)]
+    pub fn get_wired_interceptor(&self) -> Arc<WiredInterceptor> {
+        self.interceptor.clone()
+    }
+
     pub fn push_if_needed(&self) {
         if !self.attr.client_common.connectivity.is_realtime() || !self.mutable.read().need_push() {
             return;

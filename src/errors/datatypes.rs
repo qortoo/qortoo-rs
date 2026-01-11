@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::errors::{BoxedError, connectivity::ConnectivityError};
+use crate::errors::{BoxedError, push_pull::ClientPushPullError};
 
 /// Errors that can occur while working with Qortoo datatypes.
 ///
@@ -39,11 +39,11 @@ pub enum DatatypeError {
     #[error("[DatatypeError] failed to execute operation: {0}")]
     FailedToExecuteOperation(String) = 204,
     #[error("[DatatypeError] failure in EventLoop")]
-    FailureInEventLoop(BoxedError) = 205,
+    FailedInEventLoop(BoxedError) = 205,
     #[error("[DatatypeError] not allowed to write")]
     FailedToWrite(String) = 206,
-    #[error("[DatatypeError] failed to push and pull: {0}")]
-    FailedToPushPull(ConnectivityError) = 207,
+    #[error("[DatatypeError] failed to sync: {0}")]
+    FailedToSync(ClientPushPullError) = 207,
 }
 
 impl PartialEq for DatatypeError {
