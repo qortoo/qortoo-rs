@@ -45,7 +45,7 @@ impl Counter {
     ///
     /// ```
     /// # use qortoo::{Client, Counter, DatatypeState};
-    /// let client = Client::builder("doc-example", "increase_by-test").build();
+    /// let client = Client::builder("doc-example", "increase_by-test").build().unwrap();
     /// let counter = client.create_datatype("test-counter").build_counter().unwrap();
     /// assert_eq!(counter.increase_by(5).unwrap(), 5);
     /// assert_eq!(counter.increase_by(-2).unwrap(), 3);
@@ -74,7 +74,7 @@ impl Counter {
     ///
     /// ```
     /// # use qortoo::{Client, Counter, DatatypeState};
-    /// let client = Client::builder("doc-example", "increase-test").build();
+    /// let client = Client::builder("doc-example", "increase-test").build().unwrap();
     /// let counter = client.create_datatype("test-counter").build_counter().unwrap();
     /// assert_eq!(counter.increase().unwrap(), 1);
     /// assert_eq!(counter.increase().unwrap(), 2);
@@ -93,7 +93,7 @@ impl Counter {
     ///
     /// ```
     /// # use qortoo::{Client, Counter, DatatypeState};
-    /// let client = Client::builder("doc-example", "get_value-test").build();
+    /// let client = Client::builder("doc-example", "get_value-test").build().unwrap();
     /// let counter = client.create_datatype("test-counter").build_counter().unwrap();
     /// assert_eq!(counter.get_value(), 0);
     /// counter.increase();
@@ -124,7 +124,7 @@ impl Counter {
     ///
     /// ```
     /// # use qortoo::{Client, Counter, DatatypeState};
-    /// let client = Client::builder("doc-example", "transaction-test").build();
+    /// let client = Client::builder("doc-example", "transaction-test").build().unwrap();
     /// let counter = client.create_datatype("test-counter").build_counter().unwrap();
     ///
     /// // Successful transaction

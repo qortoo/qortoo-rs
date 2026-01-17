@@ -138,12 +138,17 @@ mod tests_push_handlers {
 
     use tracing::{info, instrument};
 
-    use crate::{Client, Datatype, DatatypeState, utils::path::get_test_func_name};
+    use crate::{
+        Client, Datatype, DatatypeState,
+        utils::path::{get_test_collection_name, get_test_func_name},
+    };
 
     #[test]
     #[instrument]
     fn can_check_versions() {
-        let client = Client::builder(module_path!(), get_test_func_name!()).build();
+        let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .build()
+            .unwrap();
         let counter = client
             .create_datatype(get_test_func_name!())
             .build_counter()

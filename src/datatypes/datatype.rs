@@ -16,7 +16,7 @@ use crate::{
 /// use qortoo::Client;
 /// use qortoo::{Counter, Datatype};
 /// use qortoo::{DatatypeState, DataType};
-/// let client = Client::builder("doc-example", "Datatype-trait").build();
+/// let client = Client::builder("doc-example", "Datatype-trait").build().unwrap();
 /// let counter = client.create_datatype("test-counter".to_string()).build_counter().unwrap();
 /// assert_eq!(counter.get_key(), "test-counter");
 /// assert_eq!(counter.get_type(), DataType::Counter);
@@ -83,7 +83,7 @@ mod tests_datatype_trait {
             common::new_attribute, datatype::Datatype, transactional::TransactionalDatatype,
         },
         errors::push_pull::ClientPushPullError,
-        utils::path::get_test_func_name,
+        utils::path::{get_test_collection_name, get_test_func_name},
     };
 
     #[test]
@@ -105,10 +105,11 @@ mod tests_datatype_trait {
     fn can_use_sync_method() {
         let connectivity = LocalConnectivity::new_arc();
         connectivity.set_realtime(false);
-        let resource_id = format!("{}/{}", module_path!(), get_test_func_name!());
-        let client1 = Client::builder(module_path!(), module_path!())
+        let resource_id = format!("{}/{}", get_test_collection_name!(), get_test_func_name!());
+        let client1 = Client::builder(get_test_collection_name!(), get_test_collection_name!())
             .with_connectivity(connectivity.clone())
-            .build();
+            .build()
+            .unwrap();
         let counter1 = client1
             .create_datatype(get_test_func_name!())
             .build_counter()

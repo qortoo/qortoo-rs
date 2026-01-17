@@ -35,22 +35,23 @@ tracing = "^0.1.44"
 nanoid = "^0.4.0"
 tokio = { version = "^1.49.0", features = ["full"] }
 parking_lot = "^0.12.5"
-time = { version = "^0.3.44", features = [
+time = { version = "^0.3.45", features = [
     "formatting",
     "local-offset",
     "macros",
 ] }
 itoa = "^1.0.17"
 derive_more = { version = "^2.1.1", features = ["display", "debug"] }
-chrono = "^0.4.42"
+chrono = "^0.4.43"
 thiserror = "^2.0.17"
 opentelemetry = { version = "^0.31.0" }
-tracing-opentelemetry = { version = "^0.32.0" }
+tracing-opentelemetry = { version = "^0.32.1" }
 ubyte = "^0.10.4"
 crossbeam-channel = "^0.5.15"
 futures = "^0.3.28"
 btparse = "^0.2.0"
 strum_macros = "^0.27.2"
+regex = "^1.12.2"
 
 [dev-dependencies]
 rstest = "^0.26.1"

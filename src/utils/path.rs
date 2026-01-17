@@ -30,7 +30,29 @@ macro_rules! get_test_func_name {
 }
 
 #[cfg(test)]
+macro_rules! get_test_collection_name {
+    () => {{
+        let thread_name = std::thread::current()
+            .name()
+            .unwrap_or("unknown")
+            .to_string();
+        let parts: Vec<&str> = thread_name.split("::").collect();
+        let mut collection_name = if parts.len() > 1 {
+            parts[..parts.len() - 1].join("-")
+        } else {
+            "unknown".to_owned()
+        };
+        if collection_name.len() > 47 {
+            collection_name.truncate(47);
+        }
+        collection_name
+    }};
+}
+
+#[cfg(test)]
 pub(crate) use caller_path;
+#[cfg(test)]
+pub(crate) use get_test_collection_name;
 #[cfg(test)]
 pub(crate) use get_test_func_name;
 
@@ -42,12 +64,10 @@ mod tests_path {
 
     #[test]
     fn can_use_path_macros() {
-        let path_parts = split_module_path(module_path!());
-        assert_eq!(path_parts, vec!["qortoo", "utils", "path", "tests_path"]);
-        let caller = caller_path!();
-        info!("{caller:?}");
-        let func_name = get_test_func_name!();
-        info!("func_name: {func_name}");
-        assert_eq!(func_name, "can_use_path_macros");
+        let collection_name = get_test_collection_name!();
+        let document_key = get_test_func_name!();
+        info!("{collection_name} AND {document_key}");
+        assert_eq!(collection_name, "utils-path-tests_path");
+        assert_eq!(document_key, "can_use_path_macros")
     }
 }

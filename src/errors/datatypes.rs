@@ -12,6 +12,7 @@ use crate::errors::{BoxedError, push_pull::ClientPushPullError};
 /// Two `DatatypeError` values are considered equal if they are the **same variant**,
 /// regardless of their message payload. See the custom `PartialEq` implementation.
 ///
+#[non_exhaustive]
 #[repr(i32)]
 #[derive(Debug, Error)]
 pub enum DatatypeError {

@@ -112,7 +112,7 @@ mod tests_local_connectivity {
 
     use crate::{
         Client, Datatype, DatatypeState, connectivity::local_connectivity::LocalConnectivity,
-        utils::path::get_test_func_name,
+        utils::path::get_test_collection_name,
     };
 
     #[test]
@@ -120,18 +120,20 @@ mod tests_local_connectivity {
     fn can_compare_manual_and_realtime_local_connectivity() {
         let lc_manual = LocalConnectivity::new_arc();
         lc_manual.set_realtime(false);
-        let client_manual = Client::builder(get_test_func_name!(), "local_connectivity_test")
+        let client_manual = Client::builder(get_test_collection_name!(), "manual client")
             .with_connectivity(lc_manual)
-            .build();
+            .build()
+            .unwrap();
         let counter_manual = client_manual
             .create_datatype("manual")
             .build_counter()
             .unwrap();
 
         let lc_realtime = LocalConnectivity::new_arc();
-        let client_realtime = Client::builder(get_test_func_name!(), "local_connectivity_test")
+        let client_realtime = Client::builder(get_test_collection_name!(), "realtime client")
             .with_connectivity(lc_realtime)
-            .build();
+            .build()
+            .unwrap();
         let counter_realtime = client_realtime
             .create_datatype("realtime")
             .build_counter()
