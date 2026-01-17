@@ -5,7 +5,9 @@ mod tests_datatype_builder {
     #[test]
     #[instrument]
     fn can_build_counter() {
-        let client = Client::builder(module_path!(), "can_build_counter").build();
+        let client = Client::builder("test-collection", "can_build_counter")
+            .build()
+            .unwrap();
         let counter = client
             .create_datatype("counter-1")
             .with_max_memory_size_of_push_buffer(10_000_000)

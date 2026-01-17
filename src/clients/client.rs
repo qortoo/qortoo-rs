@@ -7,7 +7,8 @@ use crate::{
     clients::{common::ClientCommon, datatype_manager::DatatypeManager},
     connectivity::{Connectivity, null_connectivity::NullConnectivity},
     datatypes::{datatype_set::DatatypeSet, option::DatatypeOption},
-    errors::clients::ClientError,
+    errors::clients::{CLIENT_ERROR_MSG_COLLECTION_NAME, ClientError},
+    utils::name_validator::is_valid_collection_name,
 };
 
 /// A builder for constructing a [`Client`].
@@ -18,7 +19,7 @@ use crate::{
 /// # Examples
 /// ```
 /// use qortoo::Client;
-/// let client = Client::builder("doc-example", "ClientBuilder-test").build();
+/// let client = Client::builder("doc-example", "ClientBuilder-test").build().unwrap();
 /// assert_eq!(client.get_collection(), "doc-example");
 /// assert_eq!(client.get_alias(), "ClientBuilder-test");
 /// ```
@@ -32,13 +33,23 @@ impl ClientBuilder {
     /// Finalizes the builder and returns a new [`Client`].
     ///
     /// It initializes client metadata and datatype management structures.
-    pub fn build(self) -> Client {
+    ///
+    /// # Errors
+    /// Returns [`ClientError::InvalidCollectionName`] if the collection name is invalid.
+    pub fn build(self) -> Result<Client, ClientError> {
+        if !is_valid_collection_name(&self.collection) {
+            return Err(ClientError::InvalidCollectionName(format!(
+                "'{}' - {}",
+                self.collection, CLIENT_ERROR_MSG_COLLECTION_NAME,
+            )));
+        }
+
         let common =
             ClientCommon::new_arc(self.collection.into(), self.alias.into(), self.connectivity);
-        Client {
+        Ok(Client {
             datatypes: RwLock::new(DatatypeManager::new(common.clone())),
             common,
-        }
+        })
     }
 
     pub fn with_connectivity(mut self, connectivity: Arc<dyn Connectivity>) -> Self {
@@ -67,7 +78,7 @@ impl Client {
     /// # Examples
     /// ```
     /// use qortoo::Client;
-    /// let client = Client::builder("col", "alias").build();
+    /// let client = Client::builder("col", "alias").build().unwrap();
     /// assert_eq!(client.get_alias(), "alias");
     /// ```
     pub fn builder(collection: impl IntoString, alias: impl IntoString) -> ClientBuilder {
@@ -146,7 +157,9 @@ mod tests_client {
     use tracing::instrument;
 
     use crate::{
-        Datatype, DatatypeState, clients::client::Client, utils::path::get_test_func_name,
+        Datatype, DatatypeState,
+        clients::client::Client,
+        utils::path::{get_test_collection_name, get_test_func_name},
     };
 
     #[test]
@@ -158,7 +171,7 @@ mod tests_client {
     #[test]
     #[instrument]
     fn can_build_client() {
-        let client = Client::builder("collection1", "alias1").build();
+        let client = Client::builder("collection1", "alias1").build().unwrap();
         assert_eq!(client.get_collection(), "collection1");
         assert_eq!(client.get_alias(), "alias1");
     }
@@ -166,7 +179,9 @@ mod tests_client {
     #[test]
     #[instrument]
     fn can_use_counter_from_client() {
-        let client1 = Client::builder(module_path!(), get_test_func_name!()).build();
+        let client1 = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .build()
+            .unwrap();
 
         assert!(client1.get_datatype("k1").is_none());
 
@@ -174,15 +189,47 @@ mod tests_client {
         assert_eq!(counter1.get_state(), DatatypeState::DueToSubscribe);
         assert!(client1.get_datatype("k1").is_some());
 
-        let client2 = Client::builder(module_path!(), module_path!()).build();
+        let client2 = Client::builder(get_test_collection_name!(), get_test_collection_name!())
+            .build()
+            .unwrap();
         let counter2 = client2.create_datatype("k1").build_counter().unwrap();
         assert_eq!(counter2.get_state(), DatatypeState::DueToCreate);
 
-        let client3 = Client::builder(module_path!(), module_path!()).build();
+        let client3 = Client::builder(get_test_collection_name!(), get_test_collection_name!())
+            .build()
+            .unwrap();
         let counter3 = client3
             .subscribe_or_create_datatype("k1")
             .build_counter()
             .unwrap();
         assert_eq!(counter3.get_state(), DatatypeState::DueToSubscribeOrCreate);
+    }
+
+    #[test]
+    #[instrument]
+    fn can_reject_invalid_collection_names() {
+        // Empty collection name
+        assert!(Client::builder("", "alias").build().is_err());
+
+        // Too long (> 47 characters)
+        assert!(Client::builder("a".repeat(48), "alias").build().is_err());
+
+        // Starts with digit
+        assert!(Client::builder("1hello", "alias").build().is_err());
+
+        // Starts with system.
+        assert!(Client::builder("system.reserved", "alias").build().is_err());
+
+        // Contains .system.
+        assert!(Client::builder("my.system.db", "alias").build().is_err());
+
+        // Invalid special character
+        assert!(Client::builder("hello@world", "alias").build().is_err());
+
+        // Valid names should succeed
+        assert!(Client::builder("valid_name", "alias").build().is_ok());
+        assert!(Client::builder("my-collection", "alias").build().is_ok());
+        assert!(Client::builder("system", "alias").build().is_ok());
+        assert!(Client::builder("hello.system", "alias").build().is_ok());
     }
 }

@@ -18,7 +18,7 @@
 //! use qortoo::Client;
 //!
 //! // Create a client
-//! let client = Client::builder("my-collection", "my-client").build();
+//! let client = Client::builder("my-collection", "my-client").build().unwrap();
 //!
 //! // Create and use a counter
 //! let counter = client

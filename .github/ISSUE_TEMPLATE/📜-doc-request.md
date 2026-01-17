@@ -29,13 +29,6 @@ assignees: ''
 
 <!-- If you have ideas about what should be included, list them here -->
 
--
--
-
-### 📎 Additional context
-
-<!-- Add any other context, examples, or references -->
-
 ### ✅ Checklist
 
 - [ ] I have searched existing documentation to avoid duplicates

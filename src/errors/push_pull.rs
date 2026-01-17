@@ -2,6 +2,7 @@ use thiserror::Error;
 
 use crate::ConnectivityError;
 
+#[non_exhaustive]
 #[repr(i32)]
 #[derive(Debug, Error, Eq)]
 pub enum ServerPushPullError {
@@ -29,6 +30,7 @@ pub enum CaseAfterPushPullError {
     Abort,
 }
 
+#[non_exhaustive]
 #[derive(Debug, PartialEq, Eq, Error)]
 pub enum ClientPushPullError {
     #[error("[ClientPushPullError] pushBuffer exceeded max size of memory")]

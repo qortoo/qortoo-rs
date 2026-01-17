@@ -10,7 +10,7 @@ use derive_more::Display;
 /// ```
 /// use qortoo::{Client, DataType, Datatype};
 ///
-/// let client = Client::builder("doc-example", "datatype-test").build();
+/// let client = Client::builder("doc-example", "datatype-test").build().unwrap();
 /// let counter = client.create_datatype("my-counter").build_counter().unwrap();
 /// assert_eq!(counter.get_type(), DataType::Counter);
 /// ```
@@ -44,7 +44,7 @@ pub enum DataType {
 /// ```
 /// use qortoo::{Client, DatatypeState, Datatype};
 ///
-/// let client = Client::builder("doc-example", "state-test").build();
+/// let client = Client::builder("doc-example", "state-test").build().unwrap();
 ///
 /// // DueToCreate state allows writing
 /// let counter1 = client.create_datatype("c1").build_counter().unwrap();
