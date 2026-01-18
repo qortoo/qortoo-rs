@@ -3,8 +3,11 @@ use std::{
     sync::Arc,
 };
 
+use parking_lot::RwLock;
+
 use crate::{
     DataType,
+    clients::common::ClientCommon,
     datatypes::option::DatatypeOption,
     types::{
         common::{ArcStr, ResourceID},
@@ -120,7 +123,7 @@ impl Attribute {
         )
     }
 
-    pub fn cuid(&self) -> Cuid {
+    pub fn get_cuid(&self) -> Cuid {
         self.client_common.cuid.clone()
     }
 
@@ -142,24 +145,7 @@ macro_rules! new_attribute {
 }
 
 #[cfg(test)]
-macro_rules! new_attribute_with_connectivity {
-    ($enum_variant:path, $connectivity:expr) => {{
-        let paths = crate::utils::path::caller_path!();
-        crate::datatypes::common::Attribute::new_for_test_with_connectivity(
-            paths,
-            $enum_variant,
-            $connectivity,
-        )
-    }};
-}
-
-#[cfg(test)]
 pub(crate) use new_attribute;
-#[cfg(test)]
-pub(crate) use new_attribute_with_connectivity;
-use parking_lot::RwLock;
-
-use crate::clients::common::ClientCommon;
 
 pub enum ReturnType {
     None,

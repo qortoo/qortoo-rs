@@ -31,16 +31,12 @@ impl LocalConnectivity {
         })
     }
 
-    pub(crate) fn get_local_datatype_server(
+    pub fn get_local_datatype_server(
         &self,
         resource_id: &str,
-    ) -> Result<Arc<RwLock<LocalDatatypeServer>>, ConnectivityError> {
+    ) -> Option<Arc<RwLock<LocalDatatypeServer>>> {
         let datatypes = self.datatype_servers.read();
-        let local_datatype_server = datatypes
-            .get(resource_id)
-            .cloned()
-            .ok_or(ConnectivityError::ResourceNotFound(resource_id.to_string()))?;
-        Ok(local_datatype_server)
+        datatypes.get(resource_id).cloned()
     }
 
     pub fn set_realtime(&self, tf: bool) {
@@ -53,8 +49,7 @@ impl LocalConnectivity {
         resource_id: &ResourceID,
         cuid: &crate::types::uid::Cuid,
     ) -> Option<Arc<crate::datatypes::wired_interceptor::WiredInterceptor>> {
-        let servers = self.datatype_servers.read();
-        let server = servers.get(resource_id).cloned()?;
+        let server = self.get_local_datatype_server(resource_id)?;
         let wired_datatype = server.read().get_wired_datatype(cuid)?;
         Some(wired_datatype.get_wired_interceptor())
     }
@@ -87,7 +82,9 @@ impl Connectivity for LocalConnectivity {
     fn push_and_pull(&self, pushed: &PushPullPack) -> Result<PushPullPack, ConnectivityError> {
         let resource_id = pushed.resource_id();
 
-        let local_datatype_server_with_lock = self.get_local_datatype_server(&resource_id)?;
+        let local_datatype_server_with_lock = self
+            .get_local_datatype_server(&resource_id)
+            .ok_or_else(|| ConnectivityError::ResourceNotFound(resource_id.clone()))?;
         let mut local_datatype_server = local_datatype_server_with_lock.write();
         let pulled = match pushed.state {
             DatatypeState::DueToCreate => local_datatype_server.process_due_to_create(pushed)?,

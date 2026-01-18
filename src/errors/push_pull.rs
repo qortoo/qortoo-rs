@@ -2,6 +2,8 @@ use thiserror::Error;
 
 use crate::ConnectivityError;
 
+pub(crate) const CLIENT_PUSHPULL_ERR_MSG_NO_SNAPSHOT: &str = "no snapshot operation";
+
 #[non_exhaustive]
 #[repr(i32)]
 #[derive(Debug, Error, Eq)]
@@ -43,6 +45,8 @@ pub enum ClientPushPullError {
     FailedInConnectivity(ConnectivityError),
     #[error("[ClientPushPullError] failed and abort datatype: {0}")]
     FailedAndAbort(String),
+    #[error("[ClientPushPullError] failed with protocol violation: {0}")]
+    FailedWithProtocolViolation(String),
 }
 
 impl ClientPushPullError {
@@ -56,6 +60,7 @@ impl ClientPushPullError {
                 todo!();
             }
             ClientPushPullError::FailedAndAbort(_) => todo!(),
+            ClientPushPullError::FailedWithProtocolViolation(_) => todo!(),
         }
     }
 }

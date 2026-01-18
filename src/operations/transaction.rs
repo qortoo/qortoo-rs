@@ -21,7 +21,7 @@ pub struct Transaction {
     pub sseq: u64,
     pub tag: Option<String>,
     pub event: bool,
-    operations: Vec<Operation>,
+    pub operations: Vec<Operation>,
 }
 
 impl Transaction {

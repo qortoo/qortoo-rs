@@ -10,8 +10,8 @@ use crate::{
         push_buffer::{MemoryPushBuffer, PushBuffer},
         rollback::Rollback,
     },
-    errors::push_pull::ClientPushPullError,
-    operations::{Operation, transaction::Transaction},
+    errors::push_pull::{CLIENT_PUSHPULL_ERR_MSG_NO_SNAPSHOT, ClientPushPullError},
+    operations::{Operation, body::OperationBody, transaction::Transaction},
     types::{checkpoint::CheckPoint, operation_id::OperationId},
 };
 
@@ -46,6 +46,35 @@ impl MutableDatatype {
             state,
             op_id,
         }
+    }
+
+    fn reset(&mut self) {
+        self.push_buffer = MemoryPushBuffer::new(self.attr.option.clone());
+        self.rollback = Rollback::new(self.crdt.clone(), self.state, self.op_id.clone());
+        self.transaction = Default::default();
+    }
+
+    pub fn apply_snapshot_transaction(
+        &mut self,
+        tx: Arc<Transaction>,
+    ) -> Result<(), ClientPushPullError> {
+        if tx.operations.is_empty() {
+            return Err(ClientPushPullError::FailedWithProtocolViolation(
+                CLIENT_PUSHPULL_ERR_MSG_NO_SNAPSHOT.to_owned(),
+            ));
+        }
+        let snap_op = &tx.operations[0];
+        if let OperationBody::Snapshot(body) = &snap_op.body {
+            self.crdt.deserialize(&body.data);
+            self.op_id.cseq = 0;
+            self.op_id.lamport = snap_op.lamport;
+            self.reset();
+        } else {
+            return Err(ClientPushPullError::FailedWithProtocolViolation(
+                CLIENT_PUSHPULL_ERR_MSG_NO_SNAPSHOT.to_owned(),
+            ));
+        }
+        Ok(())
     }
 
     #[instrument(skip_all)]

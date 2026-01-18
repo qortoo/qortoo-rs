@@ -1,3 +1,5 @@
+use derive_more::Display;
+
 #[cfg(test)]
 use crate::operations::body::OperationBody;
 use crate::{
@@ -9,7 +11,7 @@ use crate::{
 
 pub mod counter_crdt;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Display)]
 pub enum Crdt {
     Counter(CounterCrdt),
 }

@@ -32,6 +32,21 @@ impl PartialEq for ClientError {
     }
 }
 
-pub(crate) const CLIENT_ERROR_MSG_COLLECTION_NAME: &str = "invalid collection name. Collection name must be 1-47 characters, start with a letter or underscore, contain only alphanumeric characters and '.', '_', '~', '-', and must not start with 'system.' or contain '.system.'.";
+pub(crate) const CLIENT_ERROR_MSG_COLLECTION_NAME: &str = "invalid collection name: '{}' - Collection name must be 1-47 characters, start with a letter or underscore, contain only alphanumeric characters and '.', '_', '~', '-', and must not start with 'system.' or contain '.system.'";
+pub(crate) const CLIENT_ERROR_MSG_DATATYPE_KEY: &str = "invalid datatype key: '{}' - Key must not be empty, must not contain null characters (\\0), must not exceed 255 bytes in length, and must not start with '$'.";
 
-pub(crate) const CLIENT_ERROR_MSG_DATATYPE_KEY: &str = "invalid datatype key. Key must not be empty, must not contain null characters (\\0), must not exceed 255 bytes in length, and must not start with '$'.";
+#[cfg(test)]
+mod tests_client_error {
+    use dyn_fmt::AsStrFormatExt;
+    use tracing::info;
+
+    use crate::errors::clients::CLIENT_ERROR_MSG_COLLECTION_NAME;
+
+    #[test]
+    fn can_use_error_msg_format() {
+        let invalid_collection_name = "invalid::collection::name";
+        let err_msg = CLIENT_ERROR_MSG_COLLECTION_NAME.format(&[invalid_collection_name]);
+        info!("{err_msg}");
+        assert!(err_msg.contains(invalid_collection_name));
+    }
+}

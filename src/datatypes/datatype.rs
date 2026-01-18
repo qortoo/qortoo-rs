@@ -33,6 +33,8 @@ pub trait Datatype {
     fn get_client_version(&self) -> u64;
     fn get_synced_client_version(&self) -> u64;
     fn sync(&self) -> Result<(), DatatypeError>;
+    #[cfg(test)]
+    fn get_attr(&self) -> std::sync::Arc<crate::datatypes::common::Attribute>;
 }
 
 pub trait DatatypeBlanket {
@@ -69,6 +71,11 @@ where
 
     fn sync(&self) -> Result<(), DatatypeError> {
         self.get_core().sync()
+    }
+
+    #[cfg(test)]
+    fn get_attr(&self) -> std::sync::Arc<crate::datatypes::common::Attribute> {
+        self.get_core().attr.clone()
     }
 }
 

@@ -72,6 +72,10 @@ impl<'a> PullHandler<'a> {
             DatatypeState::DueToSubscribe => {
                 if self.pulled_ppp.state == DatatypeState::DueToSubscribe {
                     self.new_state = DatatypeState::Subscribed;
+                    if let Some(snapshot_tx) = self.pulled_ppp.snapshot_transaction.take() {
+                        self.mutable.apply_snapshot_transaction(snapshot_tx)?;
+                    }
+                    self.mutable.attr.set_duid(self.pulled_ppp.duid.clone());
                 } else {
                     // TODO: handle error
                 }
@@ -171,6 +175,7 @@ mod tests_push_handlers {
 
         counter.increase_by(2).unwrap();
         counter.increase_by(3).unwrap();
+        counter.sync().unwrap();
 
         awaitility::at_most(Duration::from_secs(1))
             .poll_interval(Duration::from_micros(100))

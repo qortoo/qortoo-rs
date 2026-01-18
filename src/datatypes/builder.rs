@@ -1,3 +1,5 @@
+use dyn_fmt::AsStrFormatExt;
+
 use crate::{
     Client, ClientError, Counter, DataType, DatatypeState,
     datatypes::{datatype_set::DatatypeSet, option::DatatypeOption},
@@ -81,10 +83,9 @@ impl<'c> DatatypeBuilder<'c> {
     pub fn build_counter(self) -> Result<Counter, ClientError> {
         if !is_valid_datatype_key(&self.key) {
             return Err(with_err_out!(
-                ClientError::FailedToSubscribeOrCreateDatatype(format!(
-                    "'{}' - {}",
-                    self.key, CLIENT_ERROR_MSG_DATATYPE_KEY
-                ),)
+                ClientError::FailedToSubscribeOrCreateDatatype(
+                    CLIENT_ERROR_MSG_DATATYPE_KEY.format(&[self.key])
+                )
             ));
         }
         let ds = self.client.do_subscribe_or_create_datatype(
