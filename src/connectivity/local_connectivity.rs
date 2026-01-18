@@ -17,6 +17,55 @@ use crate::{
     types::{common::ResourceID, push_pull_pack::PushPullPack},
 };
 
+/// An in-memory connectivity backend for local testing and development.
+///
+/// `LocalConnectivity` simulates a synchronization server entirely in-process,
+/// allowing multiple clients to share and synchronize datatypes without any
+/// network communication. This is useful for:
+///
+/// - **Unit testing**: Test CRDT synchronization behavior without external dependencies
+/// - **Development**: Prototype applications before connecting to a real backend
+/// - **Demonstrations**: Show synchronization concepts in a controlled environment
+///
+/// # Realtime Mode
+///
+/// By default, `LocalConnectivity` operates in realtime mode, where changes
+/// are automatically synchronized. Use [`set_realtime(false)`](Self::set_realtime)
+/// to switch to manual mode, requiring explicit [`sync()`](crate::Datatype::sync) calls.
+///
+/// # Examples
+///
+/// ```
+/// use std::sync::Arc;
+/// use qortoo::{Client, Datatype, DatatypeState, LocalConnectivity};
+///
+/// // Create a shared local connectivity backend
+/// let connectivity = LocalConnectivity::new_arc();
+/// connectivity.set_realtime(false); // Manual sync mode
+///
+/// // Create two clients sharing the same backend
+/// let client1 = Client::builder("my-collection", "client-1")
+///     .with_connectivity(connectivity.clone())
+///     .build()
+///     .unwrap();
+///
+/// let client2 = Client::builder("my-collection", "client-2")
+///     .with_connectivity(connectivity)
+///     .build()
+///     .unwrap();
+///
+/// // Create a counter in client1
+/// let counter1 = client1.create_datatype("shared-counter").build_counter().unwrap();
+/// counter1.increase().unwrap();
+/// counter1.sync().unwrap();
+///
+/// // Subscribe to the same counter in client2
+/// let counter2 = client2.subscribe_datatype("shared-counter").build_counter().unwrap();
+/// counter2.sync().unwrap();
+///
+/// // Both clients see the same value
+/// assert_eq!(counter2.get_value(), 1);
+/// ```
 #[allow(dead_code)]
 pub struct LocalConnectivity {
     datatype_servers: RwLock<HashMap<ResourceID, Arc<RwLock<LocalDatatypeServer>>>>,
@@ -24,6 +73,18 @@ pub struct LocalConnectivity {
 }
 
 impl LocalConnectivity {
+    /// Creates a new `LocalConnectivity` instance wrapped in an `Arc`.
+    ///
+    /// The returned instance starts in realtime mode, meaning changes
+    /// are automatically synchronized across connected clients.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use qortoo::LocalConnectivity;
+    ///
+    /// let connectivity = LocalConnectivity::new_arc();
+    /// ```
     pub fn new_arc() -> Arc<Self> {
         Arc::new(Self {
             datatype_servers: RwLock::new(HashMap::new()),
@@ -31,7 +92,8 @@ impl LocalConnectivity {
         })
     }
 
-    pub fn get_local_datatype_server(
+    /// Returns the local datatype server for a given resource ID, if it exists.
+    pub(crate) fn get_local_datatype_server(
         &self,
         resource_id: &str,
     ) -> Option<Arc<RwLock<LocalDatatypeServer>>> {
@@ -39,6 +101,25 @@ impl LocalConnectivity {
         datatypes.get(resource_id).cloned()
     }
 
+    /// Sets whether this connectivity operates in realtime mode.
+    ///
+    /// - **Realtime mode (`true`)**: Changes are automatically synchronized
+    ///   via the event loop. This is the default behavior.
+    /// - **Manual mode (`false`)**: Changes require explicit [`sync()`](crate::Datatype::sync)
+    ///   calls to synchronize. Useful for testing synchronization behavior.
+    ///
+    /// # Arguments
+    ///
+    /// * `tf` - `true` for realtime mode, `false` for manual mode
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use qortoo::LocalConnectivity;
+    ///
+    /// let connectivity = LocalConnectivity::new_arc();
+    /// connectivity.set_realtime(false); // Switch to manual sync mode
+    /// ```
     pub fn set_realtime(&self, tf: bool) {
         self.is_realtime.store(tf, Ordering::Relaxed);
     }

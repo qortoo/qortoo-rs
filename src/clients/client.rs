@@ -52,6 +52,27 @@ impl ClientBuilder {
         })
     }
 
+    /// Sets a custom connectivity backend for synchronization.
+    ///
+    /// By default, [`Client`] uses [`NullConnectivity`](crate::connectivity::null_connectivity::NullConnectivity),
+    /// which is a no-op implementation. Use this method to provide a real
+    /// connectivity backend for distributed synchronization.
+    ///
+    /// # Arguments
+    ///
+    /// * `connectivity` - An `Arc`-wrapped implementation of the [`Connectivity`] trait
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use qortoo::{Client, LocalConnectivity};
+    ///
+    /// let connectivity = LocalConnectivity::new_arc();
+    /// let client = Client::builder("collection", "alias")
+    ///     .with_connectivity(connectivity)
+    ///     .build()
+    ///     .unwrap();
+    /// ```
     pub fn with_connectivity(mut self, connectivity: Arc<dyn Connectivity>) -> Self {
         self.connectivity = connectivity;
         self

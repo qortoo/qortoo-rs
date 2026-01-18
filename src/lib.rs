@@ -59,6 +59,7 @@ pub use datatypes::datatype_set::DatatypeSet;
 
 pub use crate::{
     clients::client::Client,
+    connectivity::local_connectivity::LocalConnectivity,
     datatypes::{builder::DatatypeBuilder, counter::Counter, datatype::Datatype},
     errors::{
         BoxedError, clients::ClientError, connectivity::ConnectivityError, datatypes::DatatypeError,

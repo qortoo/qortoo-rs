@@ -23,15 +23,52 @@ use crate::{
 /// assert_eq!(counter.get_state(), DatatypeState::DueToCreate);
 /// ```
 pub trait Datatype {
-    /// returns a unique identifier used to distinguish instances in a collection.
+    /// Returns a unique identifier used to distinguish instances in a collection.
     fn get_key(&self) -> &str;
-    /// returns an enum variant of [`DataType`] describing the kind of this datatype.
+    /// Returns an enum variant of [`DataType`] describing the kind of this datatype.
     fn get_type(&self) -> DataType;
-    /// returns a [`DatatypeState`] indicating the current lifecycle/status of this datatype.
+    /// Returns a [`DatatypeState`] indicating the current lifecycle/status of this datatype.
     fn get_state(&self) -> DatatypeState;
+    /// Returns the server-side version of this datatype.
+    ///
+    /// The server version is incremented each time the server acknowledges
+    /// a synchronization. Returns 0 if no synchronization has occurred.
     fn get_server_version(&self) -> u64;
+    /// Returns the client-side version of this datatype.
+    ///
+    /// The client version is incremented with each local operation.
+    /// This value represents the total number of operations applied locally.
     fn get_client_version(&self) -> u64;
+    /// Returns the last synchronized client version.
+    ///
+    /// This represents the client version that was successfully synchronized
+    /// with the server. Operations with versions greater than this value
+    /// are pending synchronization.
     fn get_synced_client_version(&self) -> u64;
+    /// Synchronizes local changes with the connectivity backend.
+    ///
+    /// This method pushes local pending operations to the server and pulls
+    /// remote changes. After successful synchronization, the datatype state
+    /// transitions to [`DatatypeState::Subscribed`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DatatypeError::FailedToSync`] if the synchronization fails.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use qortoo::{Client, Datatype, DatatypeState};
+    ///
+    /// let client = Client::builder("collection", "alias")
+    ///     .with_connectivity(connectivity)
+    ///     .build()
+    ///     .unwrap();
+    /// let counter = client.create_datatype("key").build_counter().unwrap();
+    /// counter.increase().unwrap();
+    /// counter.sync().unwrap();
+    /// assert_eq!(counter.get_state(), DatatypeState::Subscribed);
+    /// ```
     fn sync(&self) -> Result<(), DatatypeError>;
     #[cfg(test)]
     fn get_attr(&self) -> std::sync::Arc<crate::datatypes::common::Attribute>;
