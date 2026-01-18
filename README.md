@@ -26,7 +26,7 @@ Qortoo is a Rust SDK for conflict-free datatypes with distributed synchronizatio
 use qortoo::Client;
 
 // Create a client
-let client = Client::builder("my-collection", "my-client").build();
+let client = Client::builder("my-collection", "my-client").build().unwrap();
 
 // Create a writable counter
 let counter = client
@@ -48,43 +48,31 @@ let readonly_counter = client
 assert!(readonly_counter.increase().is_err());
 ```
 
-## For development
-
-### Getting started
+## Build and Development Commands
 
 ```shell
-# install 
-$ make install
-# 
-$ make enable-jeager 
-```
+# Install dependencies (cargo-tarpaulin)
+make install
 
-> [!NOTE]
-> To enable log output in the tests, you should run test with '--all-features' after running the follows:
+# Run all tests
+cargo test
 
-```shell
-$ make enable-jaeger
-$ cargo test --all-features 
-```
+# Run tests with tracing/observability (requires Jaeger)
+make enable-jaeger
+cargo test --all-features
 
-You can find the traces in the jaeger UI: http://localhost:16686/
+# Run a single test
+cargo test test_name
 
-### Code Coverage
+# Run tests in a specific module
+cargo test module_name::
 
-Code coverage is measured using cargo-tarpaulin:
+# Lint (run before PR)
+make lint
 
-```shell
-# run tarpaulin
-$ make tarpaulin
+# Code coverage (requires 90% minimum)
+make tarpaulin
 
-# local update coverage badge
-$ make update-coverage-badge
-```
-
-### Before pull request
-
-Run the full lint suite before submitting:
-
-```shell
-$ make lint
+# Generate documentation
+make doc
 ```

@@ -3,6 +3,21 @@ pub mod connectivity;
 pub mod datatypes;
 pub mod push_pull;
 
+/// A type alias for a boxed error that is thread-safe.
+///
+/// This is used throughout Qortoo to represent errors that can be passed
+/// across thread boundaries. It wraps any error implementing the standard
+/// `Error` trait along with `Send` and `Sync`.
+///
+/// # Examples
+///
+/// ```
+/// use qortoo::BoxedError;
+///
+/// fn may_fail() -> Result<(), BoxedError> {
+///     Err("something went wrong".into())
+/// }
+/// ```
 pub type BoxedError = Box<dyn std::error::Error + Send + Sync>;
 
 pub fn with_stack_trace(
