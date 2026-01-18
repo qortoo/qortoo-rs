@@ -26,8 +26,8 @@ pub struct PushPullPack {
     pub checkpoint: CheckPoint,
     pub safe_sseq: u64,
     pub transactions: Vec<Arc<Transaction>>,
+    pub snapshot_transaction: Option<Arc<Transaction>>,
     pub is_readonly: bool,
-    pub has_snapshot: bool,
     pub error: Option<ServerPushPullError>,
 }
 
@@ -43,8 +43,8 @@ impl PushPullPack {
             checkpoint: CheckPoint::default(),
             safe_sseq: 0,
             transactions: Vec::new(),
+            snapshot_transaction: None,
             is_readonly: attr.is_readonly,
-            has_snapshot: false,
             error: None,
         }
     }
@@ -74,8 +74,8 @@ impl PushPullPack {
             checkpoint: CheckPoint::default(),
             safe_sseq: self.safe_sseq,
             transactions: Vec::new(),
+            snapshot_transaction: None,
             is_readonly: self.is_readonly,
-            has_snapshot: false,
             error: None,
         }
     }
@@ -99,7 +99,7 @@ impl Display for PushPullPack {
             attr.push_str("rw");
         }
 
-        if self.has_snapshot {
+        if self.snapshot_transaction.is_some() {
             attr.push_str("|sn");
         }
 
@@ -157,7 +157,8 @@ mod tests_push_pull_pack {
         ));
         assert_eq!(format!("{ppp}"), format!("{ppp:?}"));
         info!("{ppp}");
-        ppp.has_snapshot = true;
+        ppp.snapshot_transaction =
+            Some(crate::operations::transaction::Transaction::new_arc_for_test(&ppp.cuid, 0));
         assert_eq!(format!("{ppp}"), format!("{ppp:?}"));
         info!("{ppp:?}");
     }

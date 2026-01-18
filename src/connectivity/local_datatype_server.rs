@@ -48,7 +48,7 @@ impl LocalDatatypeServer {
             sender_map: HashMap::new(),
             created: false,
             // creator is temporarily assigned; it should be reassigned when this datatype is created
-            creator: attr.cuid(),
+            creator: attr.get_cuid(),
             sseq: 0,
             cseq_map: HashMap::new(),
             history: Vec::new(),
@@ -145,8 +145,7 @@ impl LocalDatatypeServer {
             .ok_or(ConnectivityError::ResourceNotFound(pushed.resource_id()))?;
         let tx = creator_wired.get_subscribe_snapshot();
         pulled.checkpoint.sseq = tx.sseq;
-        pulled.transactions.push(Arc::new(tx));
-        pulled.has_snapshot = true;
+        pulled.snapshot_transaction = Some(Arc::new(tx));
         self.pull_transactions();
         Ok(pulled)
     }
@@ -165,17 +164,15 @@ impl LocalDatatypeServer {
 
 #[cfg(test)]
 mod tests_local_datatype_server {
+
     use tracing::{info, instrument};
 
     use crate::{
-        DataType, DatatypeState,
-        connectivity::{Connectivity, local_connectivity::LocalConnectivity},
-        datatypes::{
-            common::new_attribute_with_connectivity, wired::WiredDatatype,
-            wired_interceptor::WiredInterceptor,
-        },
+        Client, Datatype, DatatypeState,
+        connectivity::local_connectivity::LocalConnectivity,
         errors::push_pull::{ClientPushPullError, ServerPushPullError},
         types::{checkpoint::CheckPoint, push_pull_pack::PushPullPack, uid::Duid},
+        utils::path::{get_test_collection_name, get_test_func_name},
     };
 
     fn assert_push_pull_pack(
@@ -196,22 +193,29 @@ mod tests_local_datatype_server {
     fn can_process_due_to_create() {
         let connectivity = LocalConnectivity::new_arc();
         connectivity.set_realtime(false);
-        let attr = new_attribute_with_connectivity!(DataType::Counter, connectivity.clone());
-        let (sender, _receiver) = crossbeam_channel::unbounded();
+        let resource_id = format!("{}/{}", get_test_collection_name!(), get_test_func_name!());
+        let client1 = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
 
-        let wired_interceptor = WiredInterceptor::new_arc();
-        let wired1 = WiredDatatype::new_arc_for_test(
-            attr.clone(),
-            DatatypeState::DueToCreate,
-            wired_interceptor.clone(),
-        );
-        connectivity.register(wired1.clone(), sender);
+        let counter1 = client1
+            .create_datatype(get_test_func_name!())
+            .build_counter()
+            .unwrap();
+        for i in 0..10 {
+            counter1.increase_by(i).unwrap();
+        }
+
         let server = connectivity
-            .get_local_datatype_server(&attr.resource_id())
+            .get_local_datatype_server(&resource_id)
+            .unwrap();
+        let wired_interceptor1 = connectivity
+            .get_wired_interceptor(&resource_id, &client1.get_cuid())
             .unwrap();
 
         // readonly client should fail
-        wired_interceptor
+        wired_interceptor1
             .set_before_push(|push| {
                 push.is_readonly = true;
                 info!("PUSH:{push}");
@@ -227,13 +231,12 @@ mod tests_local_datatype_server {
                 );
                 Err(ClientPushPullError::FailToGetAfter)
             });
-        let _ = wired1.push_pull();
+        assert!(counter1.sync().is_err());
         assert!(!server.read().created);
 
         // normal DUE_TO_CREATE case
-        wired_interceptor
+        wired_interceptor1
             .set_before_push(|push| {
-                push.add_test_transactions(&push.cuid.clone(), 1, 10);
                 info!("PUSH:{push}");
             })
             .set_after_pull(|pull| {
@@ -247,14 +250,14 @@ mod tests_local_datatype_server {
                 );
                 Err(ClientPushPullError::FailToGetAfter)
             });
-        let _ = wired1.push_pull();
+        assert!(counter1.sync().is_err());
         assert!(server.read().created);
         assert_eq!(server.read().history.len(), 10);
 
         // duplicated DUE_TO_CREATE case
-        wired_interceptor
+        wired_interceptor1
             .set_before_push(|push| {
-                push.add_test_transactions(&push.cuid.clone(), 1, 10);
+                assert_eq!(push.state, DatatypeState::DueToCreate);
                 info!("PUSH:{push}");
             })
             .set_after_pull(|pull| {
@@ -269,12 +272,12 @@ mod tests_local_datatype_server {
                 Err(ClientPushPullError::FailToGetAfter)
             });
 
-        let _ = wired1.push_pull();
+        assert!(counter1.sync().is_err());
         assert!(server.read().created);
         assert_eq!(server.read().history.len(), 10);
 
         // already-created case
-        wired_interceptor
+        wired_interceptor1
             .set_before_push(|push| {
                 push.duid = Duid::new();
                 info!("PUSH:{push}");
@@ -292,7 +295,7 @@ mod tests_local_datatype_server {
                 );
                 Err(ClientPushPullError::FailToGetAfter)
             });
-        let _ = wired1.push_pull();
+        assert!(counter1.sync().is_err());
         assert!(server.read().created);
         info!("{}", server.read());
     }
@@ -302,34 +305,32 @@ mod tests_local_datatype_server {
     fn can_process_due_to_subscribe() {
         let connectivity = LocalConnectivity::new_arc();
         connectivity.set_realtime(false);
-        let attr = new_attribute_with_connectivity!(DataType::Counter, connectivity.clone());
+        let resource_id = format!("{}/{}", get_test_collection_name!(), get_test_func_name!());
 
-        let wired_interceptor1 = WiredInterceptor::new_arc();
-        let wired1 = WiredDatatype::new_arc_for_test(
-            attr.clone(),
-            DatatypeState::DueToCreate,
-            wired_interceptor1.clone(),
-        );
-        let (sender1, _receiver1) = crossbeam_channel::unbounded();
-        connectivity.register(wired1.clone(), sender1);
-        let server = connectivity
-            .get_local_datatype_server(&attr.resource_id())
+        let client1 = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let client2 = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .with_connectivity(connectivity.clone())
+            .build()
             .unwrap();
 
-        let wired_interceptor2 = WiredInterceptor::new_arc();
-        let wired2 = WiredDatatype::new_arc_for_test(
-            attr.clone(),
-            DatatypeState::DueToSubscribe,
-            wired_interceptor2.clone(),
-        );
-        let (sender2, _receiver2) = crossbeam_channel::unbounded();
-        connectivity.register(wired2.clone(), sender2);
+        let counter1 = client1
+            .create_datatype(get_test_func_name!())
+            .build_counter()
+            .unwrap();
+        let _ = counter1.increase_by(42);
+        assert!(counter1.sync().is_ok());
 
-        let _ = wired1.push_pull();
-        assert!(server.read().created);
-        assert_eq!(wired1.mutable.read().state, DatatypeState::Subscribed);
-
-        wired_interceptor2
+        let counter2 = client2
+            .subscribe_datatype(get_test_func_name!())
+            .build_counter()
+            .unwrap();
+        let interceptor2 = connectivity
+            .get_wired_interceptor(&resource_id, &client2.get_cuid())
+            .unwrap();
+        interceptor2
             .set_before_push(|push| {
                 info!("{push}");
             })
@@ -337,7 +338,17 @@ mod tests_local_datatype_server {
                 info!("{pull}");
                 Ok(())
             });
-        let _ = wired2.push_pull();
-        // TODO: continue to test after implement DUE_TO_SUBSCRIBE in PullHandler.apply
+        assert!(counter2.sync().is_ok());
+        assert_eq!(counter1.get_value(), counter2.get_value());
+
+        assert_ne!(
+            counter1.get_attr().get_cuid(),
+            counter2.get_attr().get_cuid()
+        );
+
+        assert_eq!(
+            counter1.get_attr().get_duid(),
+            counter2.get_attr().get_duid()
+        );
     }
 }

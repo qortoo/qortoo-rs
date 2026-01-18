@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use dyn_fmt::AsStrFormatExt;
 use parking_lot::RwLock;
 
 use crate::{
@@ -38,10 +39,9 @@ impl ClientBuilder {
     /// Returns [`ClientError::InvalidCollectionName`] if the collection name is invalid.
     pub fn build(self) -> Result<Client, ClientError> {
         if !is_valid_collection_name(&self.collection) {
-            return Err(ClientError::InvalidCollectionName(format!(
-                "'{}' - {}",
-                self.collection, CLIENT_ERROR_MSG_COLLECTION_NAME,
-            )));
+            return Err(ClientError::InvalidCollectionName(
+                CLIENT_ERROR_MSG_COLLECTION_NAME.format(&[self.collection]),
+            ));
         }
 
         let common =

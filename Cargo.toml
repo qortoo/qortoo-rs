@@ -52,6 +52,7 @@ futures = "^0.3.28"
 btparse = "^0.2.0"
 strum_macros = "^0.27.2"
 regex = "^1.12.2"
+dyn-fmt = "^0.4.3"
 
 [dev-dependencies]
 rstest = "^0.26.1"

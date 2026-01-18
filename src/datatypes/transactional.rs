@@ -109,6 +109,11 @@ impl Datatype for TransactionalDatatype {
     fn sync(&self) -> Result<(), DatatypeError> {
         self.event_loop.send_push_transaction_with_guarantee()
     }
+
+    #[cfg(test)]
+    fn get_attr(&self) -> std::sync::Arc<Attribute> {
+        self.attr.clone()
+    }
 }
 
 impl TransactionalDatatype {

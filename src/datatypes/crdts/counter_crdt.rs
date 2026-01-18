@@ -1,10 +1,12 @@
+use derive_more::Display;
+
 use crate::{
     DatatypeError,
     datatypes::common::ReturnType,
     operations::{Operation, body::OperationBody},
 };
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, Display)]
 pub struct CounterCrdt {
     value: i64,
 }

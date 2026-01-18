@@ -90,7 +90,7 @@ impl WiredDatatype {
     }
 
     pub fn cuid(&self) -> Cuid {
-        self.attr.cuid()
+        self.attr.get_cuid()
     }
 
     pub fn get_subscribe_snapshot(&self) -> Transaction {
