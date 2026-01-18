@@ -1,4 +1,4 @@
-name: Build and Test with Coverage
+name: Build and Test
 
 on:
   push:
