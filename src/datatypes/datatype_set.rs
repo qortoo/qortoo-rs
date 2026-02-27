@@ -51,7 +51,8 @@ impl DatatypeSet {
             option,
             is_readonly,
         ));
-        let datatype = TransactionalDatatype::new_arc(attr, state);
+        let datatype = TransactionalDatatype::new_arc(attr.clone(), state);
+        attr.set_transactional(Arc::downgrade(&datatype));
         match r#type {
             DataType::Counter => DatatypeSet::Counter(Counter::new(datatype)),
             _ => {

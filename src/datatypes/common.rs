@@ -1,14 +1,18 @@
 use std::{
     fmt::{Debug, Formatter},
-    sync::Arc,
+    sync::{Arc, Weak},
 };
 
 use parking_lot::RwLock;
 
 use crate::{
-    DataType,
+    Counter, DataType,
     clients::common::ClientCommon,
-    datatypes::option::DatatypeOption,
+    datatypes::{
+        datatype_set::DatatypeSet,
+        option::DatatypeOption,
+        transactional::TransactionalDatatype,
+    },
     types::{
         common::{ArcStr, ResourceID},
         uid::{Cuid, Duid},
@@ -58,6 +62,7 @@ pub struct Attribute {
     pub client_common: Arc<ClientCommon>,
     pub option: Arc<DatatypeOption>,
     pub is_readonly: bool,
+    pub weak_transactional: RwLock<Option<Weak<TransactionalDatatype>>>,
 }
 
 impl Debug for Attribute {
@@ -87,6 +92,7 @@ impl Attribute {
             client_common,
             option: Arc::new(option),
             is_readonly,
+            weak_transactional: RwLock::new(None),
         }
     }
 
@@ -111,6 +117,7 @@ impl Attribute {
             client_common,
             option: Default::default(),
             is_readonly: false,
+            weak_transactional: RwLock::new(None),
         })
     }
 
@@ -133,6 +140,18 @@ impl Attribute {
 
     pub fn set_duid(&self, new_duid: Duid) {
         *self.duid.write() = new_duid;
+    }
+
+    pub fn set_transactional(&self, weak: Weak<TransactionalDatatype>) {
+        *self.weak_transactional.write() = Some(weak);
+    }
+
+    pub fn get_datatype_set(&self) -> Option<DatatypeSet> {
+        let transactional = self.weak_transactional.read().as_ref()?.upgrade()?;
+        Some(match self.r#type {
+            DataType::Counter => DatatypeSet::Counter(Counter::new(transactional)),
+            _ => return None,
+        })
     }
 }
 
