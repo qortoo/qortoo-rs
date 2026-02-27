@@ -4,7 +4,7 @@ use parking_lot::RwLock;
 use tracing::{Span, info_span, instrument};
 
 use crate::{
-    DataType, DatatypeState, IntoString,
+    DataType, DatatypeHandler, DatatypeState, IntoString,
     datatypes::{
         common::{Attribute, ReturnType, internal_datatype_instrument},
         datatype::Datatype,
@@ -312,11 +312,13 @@ mod tests_transactional {
     use std::sync::Arc;
 
     use parking_lot::Mutex;
-    use tracing::{Span, info, info_span, instrument};
+    use tracing::{Instrument, Span, info, info_span, instrument};
     use tracing_opentelemetry::OpenTelemetrySpanExt;
 
+    use crate::clients::client::ClientBuilder;
+    use crate::utils::path::{get_test_collection_name, get_test_func_name};
     use crate::{
-        DataType,
+        Client, DataType,
         datatypes::{
             common::new_attribute,
             transactional::{TransactionContext, TransactionalDatatype},
@@ -392,50 +394,54 @@ mod tests_transactional {
     #[tokio::test(flavor = "multi_thread", worker_threads = 10)]
     #[instrument]
     async fn can_execute_the_same_tx_ctx_continuously_with_none_tx_ctx() {
-        let attr = new_attribute!(DataType::Counter);
-        let tx_dt = TransactionalDatatype::new_arc(attr, Default::default());
-        let parent_span = Span::current();
-        let _span_guard = parent_span.enter();
-        let tx_ctx_with_tag = Arc::new(TransactionContext::new("test_tx"));
-        let tx_ctx_with_no_tag: Arc<TransactionContext> = Default::default();
-        let mut join_handles = vec![];
+        let client1 = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .build()
+            .unwrap();
+        let counter = client1
+            .create_datatype(get_test_func_name!())
+            .build_counter()
+            .unwrap();
+
+        let counter_with_tx = counter.clone();
+        let parent_span_no_tag = Span::current();
+        let parent_span_tag = parent_span_no_tag.clone();
         let executions = Arc::new(Mutex::new(vec![]));
+        let mut join_handles = vec![];
+
         for i in 0..5 {
-            {
-                let tx_dt = tx_dt.clone();
-                let tx_ctx = tx_ctx_with_tag.clone();
-                let op = Operation::new_delay_for_test(5, true);
-                let parent_span = parent_span.clone();
-                let executions = executions.clone();
-                join_handles.push(tokio::spawn(async move {
-                    let thread_span = info_span!("thread_with_tag", i = i);
-                    if !parent_span.is_disabled() {
-                        let _ = thread_span.set_parent(parent_span.context());
-                    }
-                    let _g_thread_span = thread_span.enter();
-                    tx_dt.execute_local_operation_as_tx(tx_ctx, op).unwrap();
-                    executions.lock().push(-(i + 1));
-                    info!("with tag:{i}");
-                }));
-            }
-            {
-                let tx_dt = tx_dt.clone();
-                let tx_ctx = tx_ctx_with_no_tag.clone();
-                let op = Operation::new_delay_for_test(5, true);
-                let parent_span = parent_span.clone();
-                let executions = executions.clone();
-                join_handles.push(tokio::spawn(async move {
-                    let thread_span = info_span!("thread_with_no_tag", i = i);
-                    if !parent_span.is_disabled() {
-                        let _ = thread_span.set_parent(parent_span.context());
-                    }
-                    let _g_thread_span = thread_span.enter();
-                    tx_dt.execute_local_operation_as_tx(tx_ctx, op).unwrap();
-                    executions.lock().push(i + 1);
-                    info!("with no tag:{i}");
-                }));
-            }
+            let parent_span_no_tag = parent_span_no_tag.clone();
+            let counter_without_tx = counter.clone();
+            let executions = executions.clone();
+            let _ = join_handles.push(tokio::spawn(async move {
+                let thread_span = info_span!("thread_with_no_tag", i=i);
+                if !parent_span_no_tag.is_disabled() {
+                    let _ = thread_span.set_parent(parent_span_no_tag.context());
+                }
+                let _g_thread_span = thread_span.enter();
+                let _ = counter_without_tx.increase().unwrap();
+                let _ = executions.lock().push(i + 1);
+                counter_without_tx.increase().unwrap();
+                let _ = executions.lock().push(i + 1);
+            }));
         }
+
+        let executions_in_tx = executions.clone();
+        let _ = join_handles.push(tokio::spawn(async move {
+            let thread_span = info_span!("thread_with_tag");
+            if !parent_span_tag.is_disabled() {
+                let _ = thread_span.set_parent(parent_span_tag.context());
+            }
+            let _g_thread_span = thread_span.enter();
+            counter_with_tx
+                .transaction("with_tx", move |counter_in_tx| {
+                    for i in 0..5 {
+                        counter_in_tx.increase().unwrap();
+                        let _ = executions_in_tx.lock().push(-(i + 1));
+                    }
+                    Ok(())
+                })
+                .unwrap();
+        }));
 
         for jh in join_handles {
             jh.await.unwrap();
