@@ -60,8 +60,6 @@ pub(crate) use get_test_func_name;
 mod tests_path {
     use tracing::info;
 
-    use super::*;
-
     #[test]
     fn can_use_path_macros() {
         let collection_name = get_test_collection_name!();
