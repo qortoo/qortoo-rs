@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
     Counter, DataType, Datatype, DatatypeState,
@@ -43,6 +43,7 @@ impl DatatypeSet {
         client_common: Arc<ClientCommon>,
         option: DatatypeOption,
         is_readonly: bool,
+        handlers: BTreeMap<usize, crate::DatatypeHandler>,
     ) -> Self {
         let attr = Arc::new(Attribute::new(
             key,
@@ -51,8 +52,7 @@ impl DatatypeSet {
             option,
             is_readonly,
         ));
-        let datatype = TransactionalDatatype::new_arc(attr.clone(), state);
-        attr.set_transactional(Arc::downgrade(&datatype));
+        let datatype = TransactionalDatatype::new_arc(attr.clone(), state, handlers);
         match r#type {
             DataType::Counter => DatatypeSet::Counter(Counter::new(datatype)),
             _ => {
@@ -76,7 +76,7 @@ mod tests_datatype_set {
         Counter, DataType, Datatype, DatatypeState,
         clients::common::new_client_common,
         datatypes::{
-            common::new_attribute, datatype::DatatypeBlanket, datatype_set::DatatypeSet,
+            datatype::DatatypeBlanket, datatype_set::DatatypeSet,
             transactional::TransactionalDatatype,
         },
     };
@@ -91,6 +91,7 @@ mod tests_datatype_set {
             new_client_common!(),
             Default::default(),
             false,
+            Default::default(),
         );
         let ds2 = ds1.clone();
         let DatatypeSet::Counter(cnt1) = ds1;
@@ -119,10 +120,7 @@ mod tests_datatype_set {
     #[test]
     #[instrument]
     fn can_verify_from_into() {
-        let counter = Counter::new(TransactionalDatatype::new_arc(
-            new_attribute!(DataType::Counter),
-            Default::default(),
-        ));
+        let counter = Counter::new_for_test(Default::default());
         fn assert_datatype_set(_ds: DatatypeSet) {}
         assert_datatype_set(counter.into());
     }

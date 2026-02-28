@@ -1,5 +1,6 @@
 use crate::{
-    DataType, DatatypeError, DatatypeState, datatypes::transactional::TransactionalDatatype,
+    DataType, DatatypeError, DatatypeState,
+    datatypes::{handler::DatatypeHandler, transactional::TransactionalDatatype},
 };
 
 /// The `Datatype` trait defines the common interface for all
@@ -70,6 +71,11 @@ pub trait Datatype {
     /// assert_eq!(counter.get_state(), DatatypeState::Subscribed);
     /// ```
     fn sync(&self) -> Result<(), DatatypeError>;
+
+    fn set_handler(&self, id: usize, handler: DatatypeHandler);
+
+    fn unset_handler(&self, id: usize) -> Option<DatatypeHandler>;
+
     #[cfg(test)]
     fn get_attr(&self) -> std::sync::Arc<crate::datatypes::common::Attribute>;
 }
@@ -110,6 +116,14 @@ where
         self.get_core().sync()
     }
 
+    fn set_handler(&self, id: usize, handler: DatatypeHandler) {
+        self.get_core().set_handler(id, handler)
+    }
+
+    fn unset_handler(&self, id: usize) -> Option<DatatypeHandler> {
+        self.get_core().unset_handler(id)
+    }
+
     #[cfg(test)]
     fn get_attr(&self) -> std::sync::Arc<crate::datatypes::common::Attribute> {
         self.get_core().attr.clone()
@@ -135,7 +149,11 @@ mod tests_datatype_trait {
     fn can_call_datatype_trait_methods() {
         let attr = new_attribute!(DataType::Counter);
         let key = attr.key.as_ref();
-        let data = TransactionalDatatype::new_arc(attr.clone(), DatatypeState::DueToCreate);
+        let data = TransactionalDatatype::new_arc(
+            attr.clone(),
+            DatatypeState::DueToCreate,
+            Default::default(),
+        );
         assert_eq!(data.get_key(), key);
         assert_eq!(data.get_type(), DataType::Counter);
         assert_eq!(data.get_state(), DatatypeState::DueToCreate);

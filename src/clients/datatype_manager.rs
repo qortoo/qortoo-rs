@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, hash_map::Entry},
+    collections::{BTreeMap, HashMap, hash_map::Entry},
     sync::Arc,
 };
 
@@ -35,6 +35,7 @@ impl DatatypeManager {
         state: DatatypeState,
         option: DatatypeOption,
         is_readonly: bool,
+        handlers: BTreeMap<usize, crate::DatatypeHandler>,
     ) -> Result<DatatypeSet, ClientError> {
         let arc_key: ArcStr = key.into();
         match self.datatypes.entry(arc_key.clone()) {
@@ -56,6 +57,7 @@ impl DatatypeManager {
                     self.common.clone(),
                     option,
                     is_readonly,
+                    handlers,
                 );
                 entry.insert(dt.clone());
                 Ok(dt)
@@ -83,6 +85,7 @@ mod tests_datatype_manager {
             DatatypeState::DueToCreate,
             Default::default(),
             false,
+            Default::default(),
         );
         assert!(res1.is_ok());
         let dt1 = res1.unwrap();
@@ -95,6 +98,7 @@ mod tests_datatype_manager {
             DatatypeState::DueToCreate,
             Default::default(),
             false,
+            Default::default(),
         );
         assert_eq!(
             res2.err().unwrap(),
@@ -107,6 +111,7 @@ mod tests_datatype_manager {
             DatatypeState::DueToSubscribeOrCreate,
             Default::default(),
             false,
+            Default::default(),
         );
         assert_eq!(
             res3.err().unwrap(),

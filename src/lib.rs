@@ -55,12 +55,13 @@
 //!
 //! - `tracing` - Enables OpenTelemetry distributed tracing support
 
-pub use datatypes::datatype_set::DatatypeSet;
-
 pub use crate::{
     clients::client::Client,
     connectivity::local_connectivity::LocalConnectivity,
-    datatypes::{builder::DatatypeBuilder, counter::Counter, datatype::Datatype},
+    datatypes::{
+        builder::DatatypeBuilder, counter::Counter, datatype::Datatype, datatype_set::DatatypeSet,
+        handler::DatatypeHandler,
+    },
     errors::{
         BoxedError, clients::ClientError, connectivity::ConnectivityError, datatypes::DatatypeError,
     },

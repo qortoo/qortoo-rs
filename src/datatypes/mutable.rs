@@ -1,12 +1,13 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use tracing::instrument;
 
 use crate::{
-    DatatypeError, DatatypeState,
+    DatatypeError, DatatypeHandler, DatatypeState,
     datatypes::{
         common::{Attribute, ReturnType},
         crdts::Crdt,
+        handler::HandlersManager,
         push_buffer::{MemoryPushBuffer, PushBuffer},
         rollback::Rollback,
     },
@@ -19,12 +20,13 @@ use crate::{
 pub struct MutableDatatype {
     pub attr: Arc<Attribute>,
     pub crdt: Crdt,
-    pub state: DatatypeState,
+    state: DatatypeState,
     pub op_id: OperationId,
     pub transaction: Option<Transaction>,
     pub rollback: Rollback,
     pub push_buffer: MemoryPushBuffer,
     pub checkpoint: CheckPoint,
+    handlers_manager: HandlersManager,
 }
 
 pub struct OperationalDatatype<'a> {
@@ -33,7 +35,11 @@ pub struct OperationalDatatype<'a> {
 }
 
 impl MutableDatatype {
-    pub fn new(attr: Arc<Attribute>, state: DatatypeState) -> Self {
+    pub fn new(
+        attr: Arc<Attribute>,
+        state: DatatypeState,
+        handlers: BTreeMap<usize, DatatypeHandler>,
+    ) -> Self {
         let crdt = Crdt::new(attr.r#type);
         let op_id = OperationId::new_with_cuid(&attr.client_common.cuid);
         Self {
@@ -41,6 +47,7 @@ impl MutableDatatype {
             rollback: Rollback::new(crdt.clone(), state, op_id.clone()),
             transaction: Default::default(),
             checkpoint: CheckPoint::default(),
+            handlers_manager: HandlersManager::new(attr.clone(), handlers),
             attr,
             crdt,
             state,
@@ -80,7 +87,7 @@ impl MutableDatatype {
     #[instrument(skip_all)]
     pub fn do_rollback(&mut self) {
         self.op_id = self.rollback.op_id.clone();
-        self.state = self.rollback.state;
+        self.set_state(self.rollback.state);
         self.crdt = self.rollback.shadow_crdt.clone();
         self.replay_push_buffer();
     }
@@ -169,5 +176,26 @@ impl MutableDatatype {
         let mut snap_op = Operation::new_snapshot(data);
         snap_op.lamport = self.op_id.lamport;
         snap_op
+    }
+
+    pub fn set_handler(&mut self, priority: usize, handler: DatatypeHandler) {
+        self.handlers_manager.set_handler(priority, handler);
+    }
+
+    pub fn unset_handler(&mut self, priority: usize) -> Option<DatatypeHandler> {
+        self.handlers_manager.unset_handler(priority)
+    }
+
+    pub fn get_state(&self) -> DatatypeState {
+        self.state
+    }
+
+    pub fn set_state(&mut self, new_state: DatatypeState) {
+        let old_state = self.state;
+        if old_state != new_state {
+            self.state = new_state;
+            self.handlers_manager
+                .notify_state_change(old_state, new_state);
+        }
     }
 }

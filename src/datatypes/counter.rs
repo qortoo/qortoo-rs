@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+#[cfg(test)]
+use crate::{DataType, DatatypeState};
 use crate::{
     DatatypeError, IntoString,
     datatypes::{
@@ -25,6 +27,15 @@ impl Counter {
             datatype,
             tx_ctx: Default::default(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(state: DatatypeState) -> Self {
+        Self::new(TransactionalDatatype::new_arc(
+            crate::datatypes::common::new_attribute!(DataType::Counter),
+            state,
+            Default::default(),
+        ))
     }
 
     datatype_instrument! {
@@ -180,10 +191,8 @@ mod tests_counter {
 
     use crate::{
         DataType, DatatypeState,
-        datatypes::{
-            common::new_attribute, counter::Counter, datatype::Datatype,
-            transactional::TransactionalDatatype,
-        },
+        datatypes::{counter::Counter, datatype::Datatype},
+        utils::path::get_test_func_name,
     };
 
     #[test]
@@ -195,22 +204,16 @@ mod tests_counter {
     #[test]
     #[instrument]
     fn can_call_public_blanket_trait_methods() {
-        let attr = new_attribute!(DataType::Counter);
-        let key = attr.key.to_string();
-        let transactional = TransactionalDatatype::new_arc(attr, Default::default());
-        let counter = Counter::new(transactional);
+        let counter = Counter::new_for_test(DatatypeState::Subscribed);
         assert_eq!(counter.get_type(), DataType::Counter);
-        assert_eq!(counter.get_key(), key);
-        assert_eq!(counter.get_state(), Default::default());
+        assert_eq!(counter.get_key(), get_test_func_name!());
+        assert_eq!(counter.get_state(), DatatypeState::Subscribed);
     }
 
     #[test]
     #[instrument]
     fn can_use_counter_operations() {
-        let counter = Counter::new(TransactionalDatatype::new_arc(
-            new_attribute!(DataType::Counter),
-            DatatypeState::DueToCreate,
-        ));
+        let counter = Counter::new_for_test(DatatypeState::DueToCreate);
         assert_eq!(1, counter.increase().unwrap());
         assert_eq!(11, counter.increase_by(10).unwrap());
         assert_eq!(11, counter.get_value());
@@ -219,10 +222,7 @@ mod tests_counter {
     #[test]
     #[instrument]
     fn can_use_transaction() {
-        let counter = Counter::new(TransactionalDatatype::new_arc(
-            new_attribute!(DataType::Counter),
-            Default::default(),
-        ));
+        let counter = Counter::new_for_test(Default::default());
         let result1 = counter.transaction("success", |c| {
             c.increase_by(1).unwrap();
             c.increase_by(2).unwrap();
@@ -243,10 +243,7 @@ mod tests_counter {
     #[tokio::test(flavor = "multi_thread", worker_threads = 10)]
     #[instrument]
     async fn can_run_transactions_concurrently() {
-        let counter = Counter::new(TransactionalDatatype::new_arc(
-            new_attribute!(DataType::Counter),
-            Default::default(),
-        ));
+        let counter = Counter::new_for_test(DatatypeState::DueToCreate);
         let mut join_handles = vec![];
         let parent_span = Span::current();
 
