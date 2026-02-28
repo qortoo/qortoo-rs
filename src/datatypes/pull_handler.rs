@@ -26,7 +26,7 @@ pub struct PullHandler<'a> {
 
 impl<'a> PullHandler<'a> {
     pub fn new(pulled_ppp: &'a mut PushPullPack, mutable: &'a mut MutableDatatype) -> Self {
-        let old_state = mutable.state;
+        let old_state = mutable.get_state();
         Self {
             pulled_ppp,
             mutable,
@@ -128,10 +128,7 @@ impl<'a> PullHandler<'a> {
     }
 
     fn wrap_up(&mut self) -> Result<(), ClientPushPullError> {
-        if self.old_state != self.new_state {
-            self.mutable.state = self.new_state;
-        }
-
+        self.mutable.set_state(self.new_state);
         Ok(())
     }
 }

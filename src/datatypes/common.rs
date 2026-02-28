@@ -9,9 +9,7 @@ use crate::{
     Counter, DataType,
     clients::common::ClientCommon,
     datatypes::{
-        datatype_set::DatatypeSet,
-        option::DatatypeOption,
-        transactional::TransactionalDatatype,
+        datatype_set::DatatypeSet, option::DatatypeOption, transactional::TransactionalDatatype,
     },
     types::{
         common::{ArcStr, ResourceID},

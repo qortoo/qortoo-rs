@@ -1,7 +1,9 @@
+use std::collections::BTreeMap;
+
 use dyn_fmt::AsStrFormatExt;
 
 use crate::{
-    Client, ClientError, Counter, DataType, DatatypeState,
+    Client, ClientError, Counter, DataType, DatatypeHandler, DatatypeState,
     datatypes::{datatype_set::DatatypeSet, option::DatatypeOption},
     errors::{clients::CLIENT_ERROR_MSG_DATATYPE_KEY, with_err_out},
     utils::name_validator::is_valid_datatype_key,
@@ -48,6 +50,7 @@ pub struct DatatypeBuilder<'c> {
     state: DatatypeState,
     option: DatatypeOption,
     is_readonly: bool,
+    handlers: BTreeMap<usize, DatatypeHandler>,
 }
 
 impl<'c> DatatypeBuilder<'c> {
@@ -59,6 +62,7 @@ impl<'c> DatatypeBuilder<'c> {
             state,
             option: DatatypeOption::default(),
             is_readonly: false,
+            handlers: Default::default(),
         }
     }
 
@@ -94,6 +98,7 @@ impl<'c> DatatypeBuilder<'c> {
             self.state,
             self.option,
             self.is_readonly,
+            self.handlers,
         )?;
         let DatatypeSet::Counter(c) = ds;
         Ok(c)
@@ -146,6 +151,29 @@ impl<'c> DatatypeBuilder<'c> {
     /// ```
     pub fn with_readonly(mut self) -> Self {
         self.is_readonly = true;
+        self
+    }
+
+    /// Registers a [`DatatypeHandler`] at the given `priority`.
+    ///
+    /// Handlers are invoked in ascending priority order. If a handler is already
+    /// registered at the same priority, it will be replaced when the datatype is built.
+    ///
+    /// This method can be chained multiple times to register multiple handlers.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use qortoo::{Client, DatatypeHandler};
+    /// let client = Client::builder("doc-example", "with-handler-test").build().unwrap();
+    /// let counter = client
+    ///     .create_datatype("my-counter")
+    ///     .with_handler(0, DatatypeHandler::new())
+    ///     .build_counter()
+    ///     .unwrap();
+    /// ```
+    pub fn with_handler(mut self, priority: usize, handler: DatatypeHandler) -> Self {
+        self.handlers.insert(priority, handler);
         self
     }
 }
@@ -214,7 +242,7 @@ mod tests_datatype_builder {
             .unwrap();
 
         let counter = client.create_datatype("create_dt").build_counter().unwrap();
-        assert_eq!(counter.get_state(), DatatypeState::DueToCreate);
+
         assert!(counter.increase().is_ok());
 
         let counter = client

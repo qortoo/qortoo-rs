@@ -5,6 +5,7 @@ mod crdts;
 pub mod datatype;
 pub mod datatype_set;
 pub mod event_loop;
+pub mod handler;
 mod mutable;
 pub mod option;
 pub mod pull_handler;

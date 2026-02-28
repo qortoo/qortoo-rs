@@ -42,7 +42,11 @@ impl WiredDatatype {
         interceptor: Arc<WiredInterceptor>,
     ) -> Arc<Self> {
         Arc::new(Self {
-            mutable: Arc::new(RwLock::new(MutableDatatype::new(attr.clone(), state))),
+            mutable: Arc::new(RwLock::new(MutableDatatype::new(
+                attr.clone(),
+                state,
+                Default::default(),
+            ))),
             attr,
             interceptor,
         })
@@ -106,7 +110,7 @@ impl WiredDatatype {
 impl MutableDatatype {
     #[instrument(skip_all)]
     fn create_push_pull_pack(&mut self) -> Result<PushPullPack, ClientPushPullError> {
-        let mut ppp = PushPullPack::new(&self.attr, self.state);
+        let mut ppp = PushPullPack::new(&self.attr, self.get_state());
 
         let (transactions, _tx_size) = self.push_buffer.get_after(
             self.checkpoint.cseq + 1,
@@ -119,9 +123,10 @@ impl MutableDatatype {
     }
 
     fn need_push(&self) -> bool {
-        self.state == DatatypeState::DueToCreate
-            || self.state == DatatypeState::DueToSubscribe
-            || self.state == DatatypeState::DueToSubscribeOrCreate
+        let state = self.get_state();
+        state == DatatypeState::DueToCreate
+            || state == DatatypeState::DueToSubscribe
+            || state == DatatypeState::DueToSubscribeOrCreate
             || self.push_buffer.last_cseq > self.checkpoint.cseq
     }
 }

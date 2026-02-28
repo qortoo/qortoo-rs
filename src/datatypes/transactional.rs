@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use parking_lot::RwLock;
 use tracing::{Span, info_span, instrument};
@@ -91,7 +91,7 @@ impl Datatype for TransactionalDatatype {
     }
 
     fn get_state(&self) -> DatatypeState {
-        self.mutable.read().state
+        self.mutable.read().get_state()
     }
 
     fn get_server_version(&self) -> u64 {
@@ -110,6 +110,14 @@ impl Datatype for TransactionalDatatype {
         self.event_loop.send_push_transaction_with_guarantee()
     }
 
+    fn set_handler(&self, id: usize, handler: DatatypeHandler) {
+        self.mutable.write().set_handler(id, handler)
+    }
+
+    fn unset_handler(&self, id: usize) -> Option<DatatypeHandler> {
+        self.mutable.write().unset_handler(id)
+    }
+
     #[cfg(test)]
     fn get_attr(&self) -> std::sync::Arc<Attribute> {
         self.attr.clone()
@@ -117,16 +125,26 @@ impl Datatype for TransactionalDatatype {
 }
 
 impl TransactionalDatatype {
-    pub fn new_arc(attr: Arc<Attribute>, state: DatatypeState) -> Arc<Self> {
+    pub fn new_arc(
+        attr: Arc<Attribute>,
+        state: DatatypeState,
+        handlers: BTreeMap<usize, DatatypeHandler>,
+    ) -> Arc<Self> {
         let event_loop = EventLoop::new_arc(attr.client_common.connectivity.clone());
         let arc_td = Arc::new(Self {
-            mutable: Arc::new(RwLock::new(MutableDatatype::new(attr.clone(), state))),
-            attr,
+            mutable: Arc::new(RwLock::new(MutableDatatype::new(
+                attr.clone(),
+                state,
+                handlers,
+            ))),
+            attr: attr.clone(),
             event_loop: event_loop.clone(),
             tx_ctx: Default::default(),
             op_mutex: Default::default(),
             tx_mutex: Default::default(),
         });
+
+        attr.set_transactional(Arc::downgrade(&arc_td));
         let span = Span::current();
         span.in_scope(|| {
             event_loop.run(arc_td.get_wired_datatype());
@@ -312,11 +330,9 @@ mod tests_transactional {
     use std::sync::Arc;
 
     use parking_lot::Mutex;
-    use tracing::{Instrument, Span, info, info_span, instrument};
+    use tracing::{Span, info, info_span, instrument};
     use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-    use crate::clients::client::ClientBuilder;
-    use crate::utils::path::{get_test_collection_name, get_test_func_name};
     use crate::{
         Client, DataType,
         datatypes::{
@@ -324,13 +340,14 @@ mod tests_transactional {
             transactional::{TransactionContext, TransactionalDatatype},
         },
         operations::Operation,
+        utils::path::{get_test_collection_name, get_test_func_name},
     };
 
     #[test]
     #[instrument]
     fn can_fail_operation_execution() {
         let attr = new_attribute!(DataType::Counter);
-        let tx_dt = TransactionalDatatype::new_arc(attr, Default::default());
+        let tx_dt = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
         {
             let mutable = tx_dt.mutable.write();
             assert_eq!(0, mutable.op_id.cseq);
@@ -362,7 +379,7 @@ mod tests_transactional {
     #[instrument]
     async fn can_do_transaction() {
         let attr = new_attribute!(DataType::Counter);
-        let tx_dt = TransactionalDatatype::new_arc(attr, Default::default());
+        let tx_dt = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
         let parent_span = Span::current();
 
         let mut join_handles = vec![];
@@ -412,21 +429,21 @@ mod tests_transactional {
             let parent_span_no_tag = parent_span_no_tag.clone();
             let counter_without_tx = counter.clone();
             let executions = executions.clone();
-            let _ = join_handles.push(tokio::spawn(async move {
-                let thread_span = info_span!("thread_with_no_tag", i=i);
+            join_handles.push(tokio::spawn(async move {
+                let thread_span = info_span!("thread_with_no_tag", i = i);
                 if !parent_span_no_tag.is_disabled() {
-                    let _ = thread_span.set_parent(parent_span_no_tag.context());
+                    thread_span
+                        .set_parent(parent_span_no_tag.context())
+                        .unwrap();
                 }
                 let _g_thread_span = thread_span.enter();
-                let _ = counter_without_tx.increase().unwrap();
-                let _ = executions.lock().push(i + 1);
                 counter_without_tx.increase().unwrap();
-                let _ = executions.lock().push(i + 1);
+                executions.lock().push(i + 1);
             }));
         }
 
         let executions_in_tx = executions.clone();
-        let _ = join_handles.push(tokio::spawn(async move {
+        join_handles.push(tokio::spawn(async move {
             let thread_span = info_span!("thread_with_tag");
             if !parent_span_tag.is_disabled() {
                 let _ = thread_span.set_parent(parent_span_tag.context());
@@ -436,7 +453,7 @@ mod tests_transactional {
                 .transaction("with_tx", move |counter_in_tx| {
                     for i in 0..5 {
                         counter_in_tx.increase().unwrap();
-                        let _ = executions_in_tx.lock().push(-(i + 1));
+                        executions_in_tx.lock().push(-(i + 1));
                     }
                     Ok(())
                 })

@@ -1,10 +1,10 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use dyn_fmt::AsStrFormatExt;
 use parking_lot::RwLock;
 
 use crate::{
-    DataType, DatatypeBuilder, DatatypeState, IntoString,
+    DataType, DatatypeBuilder, DatatypeHandler, DatatypeState, IntoString,
     clients::{common::ClientCommon, datatype_manager::DatatypeManager},
     connectivity::{Connectivity, null_connectivity::NullConnectivity},
     datatypes::{datatype_set::DatatypeSet, option::DatatypeOption},
@@ -117,6 +117,7 @@ impl Client {
         state: DatatypeState,
         option: DatatypeOption,
         is_readonly: bool,
+        handlers: BTreeMap<usize, DatatypeHandler>,
     ) -> Result<DatatypeSet, ClientError> {
         self.datatypes.write().subscribe_or_create_datatype(
             &key,
@@ -124,6 +125,7 @@ impl Client {
             state,
             option,
             is_readonly,
+            handlers,
         )
     }
 
@@ -178,7 +180,7 @@ mod tests_client {
     use tracing::instrument;
 
     use crate::{
-        Datatype, DatatypeState,
+        Datatype, DatatypeState, LocalConnectivity,
         clients::client::Client,
         utils::path::{get_test_collection_name, get_test_func_name},
     };
@@ -200,21 +202,23 @@ mod tests_client {
     #[test]
     #[instrument]
     fn can_use_counter_from_client() {
+        let lc = LocalConnectivity::new_arc();
+        lc.set_realtime(false);
         let client1 = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .with_connectivity(lc)
             .build()
             .unwrap();
 
         assert!(client1.get_datatype("k1").is_none());
-
         let counter1 = client1.subscribe_datatype("k1").build_counter().unwrap();
-        assert_eq!(counter1.get_state(), DatatypeState::DueToSubscribe);
+        assert_eq!(DatatypeState::DueToSubscribe, counter1.get_state());
         assert!(client1.get_datatype("k1").is_some());
 
         let client2 = Client::builder(get_test_collection_name!(), get_test_collection_name!())
             .build()
             .unwrap();
         let counter2 = client2.create_datatype("k1").build_counter().unwrap();
-        assert_eq!(counter2.get_state(), DatatypeState::DueToCreate);
+        assert_eq!(DatatypeState::DueToCreate, counter2.get_state());
 
         let client3 = Client::builder(get_test_collection_name!(), get_test_collection_name!())
             .build()

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use crossbeam_channel::{Receiver, Sender};
 use derive_more::Display;
 use tokio::sync::oneshot;
-use tracing::{Instrument, error, instrument};
+use tracing::{Span, error, instrument};
 
 use crate::{
     DatatypeError, connectivity::Connectivity, datatypes::wired::WiredDatatype,
@@ -55,9 +55,10 @@ impl EventLoop {
         let rt_handle = wired.attr.client_common.handle.clone();
         let unbounded_tx = self.unbounded_tx.clone();
         let connectivity = wired.attr.client_common.connectivity.clone();
+        let span = Span::current();
         connectivity.register(wired.clone(), unbounded_tx);
-        rt_handle.spawn(
-            async move {
+        rt_handle.spawn_blocking(move || {
+            span.in_scope(|| {
                 add_span_event!("start event_loop");
                 loop {
                     wired.push_if_needed();
@@ -105,9 +106,8 @@ impl EventLoop {
                     }
                 }
                 add_span_event!("quiting event_loop");
-            }
-            .in_current_span(),
-        );
+            });
+        });
     }
 
     pub fn send_stop(&self) {
