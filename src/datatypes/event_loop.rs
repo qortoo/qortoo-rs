@@ -1,11 +1,10 @@
 use std::{sync::Arc, time::Duration};
 
+use backon::{BackoffBuilder, ExponentialBackoff, ExponentialBuilder};
 use crossbeam_channel::{Receiver, Sender};
 use derive_more::Display;
 use tokio::sync::oneshot;
 use tracing::{Span, error, instrument};
-
-use backon::{BackoffBuilder, ExponentialBackoff, ExponentialBuilder};
 
 use crate::{
     DatatypeError,
@@ -29,7 +28,7 @@ pub enum Event {
     #[display("PushTransaction")]
     PushTransaction(Option<oneshot::Sender<Option<DatatypeError>>>),
     #[display("BackOff")]
-    BackOff
+    BackOff,
 }
 
 #[derive(Debug)]
@@ -101,6 +100,9 @@ impl EventLoop {
                                 break;
                             }
                             Event::PushTransaction(blocking_resp_tx) => {
+                                if matches!(event_loop_action, EventLoopAction::PauseSync) {
+                                    continue;
+                                }
                                 let response = match wired.push_pull() {
                                     Ok(_) => {
                                         event_loop_action = EventLoopAction::Normal;
@@ -249,10 +251,7 @@ mod tests_event_loop {
         Client, ConnectivityError, DatatypeError, DatatypeState,
         connectivity::local_connectivity::LocalConnectivity,
         datatypes::datatype::Datatype,
-        errors::{
-            datatypes::DatatypeErrorWithActions,
-            push_pull::ClientPushPullError,
-        },
+        errors::{datatypes::DatatypeErrorWithActions, push_pull::ClientPushPullError},
         utils::path::{get_test_collection_name, get_test_func_name},
     };
 
@@ -336,7 +335,7 @@ mod tests_event_loop {
 
         assert_eq!(counter.get_state(), DatatypeState::DueToCreate);
 
-        awaitility::at_most(Duration::from_secs(50))
+        awaitility::at_most(Duration::from_secs(10))
             .poll_interval(Duration::from_millis(100))
             .until(|| counter.get_state() == DatatypeState::Subscribed);
     }
@@ -345,7 +344,7 @@ mod tests_event_loop {
     /// If BackOff is not cleared on success, the loop can fire one more timed retry.
     #[test]
     #[instrument]
-    fn does_not_trigger_extra_retry_after_successful_manual_retry() {
+    fn can_block_extra_retry_after_successful_manual_retry() {
         let connectivity = LocalConnectivity::new_arc();
         connectivity.set_realtime(false);
         let collection = get_test_collection_name!();
@@ -374,13 +373,17 @@ mod tests_event_loop {
             }
         });
 
+        // First, sync fails
         assert!(counter.sync().is_err());
         assert_eq!(pull_count.load(Ordering::SeqCst), 1);
 
+        // Then, make sync not fail
         should_fail.store(false, Ordering::SeqCst);
+
         assert!(counter.sync().is_ok());
         assert_eq!(pull_count.load(Ordering::SeqCst), 2);
 
+        // Check if no sync happens
         std::thread::sleep(Duration::from_millis(800));
         assert_eq!(pull_count.load(Ordering::SeqCst), 2);
     }
@@ -391,7 +394,6 @@ mod tests_event_loop {
     #[instrument]
     fn can_handle_pause_sync_error_without_auto_retry_loop() {
         let connectivity = LocalConnectivity::new_arc();
-        // connectivity.set_realtime(false);
         let collection = get_test_collection_name!();
         let key = get_test_func_name!();
         let resource_id = format!("{collection}/{key}");
@@ -413,8 +415,8 @@ mod tests_event_loop {
         });
 
         assert!(counter.sync().is_err());
-        assert_eq!(counter.get_state(), DatatypeState::Disabled);
         assert_eq!(pull_count.load(Ordering::SeqCst), 1);
+        assert_eq!(counter.get_state(), DatatypeState::Disabled);
 
         std::thread::sleep(Duration::from_millis(800));
         assert_eq!(counter.get_state(), DatatypeState::Disabled);

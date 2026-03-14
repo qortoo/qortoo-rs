@@ -188,7 +188,7 @@ mod tests_datatype_trait {
         interceptor1.set_after_pull(|_pull| {
             Err(DatatypeErrorWithActions::new(
                 DatatypeError::FailedToPushPull(ClientPushPullError::ExceedMaxMemSize),
-                EventLoopAction::PauseSync,
+                EventLoopAction::BackOff,
                 DatatypeAction::Recovery,
             ))
         });
