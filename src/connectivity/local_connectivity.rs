@@ -172,7 +172,7 @@ impl Connectivity for LocalConnectivity {
             DatatypeState::DueToSubscribe => {
                 local_datatype_server.process_due_to_subscribe(pushed)?
             }
-            _ => todo!(),
+            _ => todo!("TODO: {}", pushed.state),
         };
         Ok(pulled)
     }
