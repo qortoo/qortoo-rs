@@ -54,7 +54,7 @@ pub trait Datatype {
     ///
     /// # Errors
     ///
-    /// Returns [`DatatypeError::FailedToSync`] if the synchronization fails.
+    /// Returns [`DatatypeError::FailedToPushPull`] if the synchronization fails.
     ///
     /// # Examples
     ///
@@ -140,7 +140,10 @@ mod tests_datatype_trait {
         datatypes::{
             common::new_attribute, datatype::Datatype, transactional::TransactionalDatatype,
         },
-        errors::push_pull::ClientPushPullError,
+        errors::{
+            datatypes::{DatatypeAction, DatatypeErrorWithActions, EventLoopAction},
+            push_pull::ClientPushPullError,
+        },
         utils::path::{get_test_collection_name, get_test_func_name},
     };
 
@@ -182,11 +185,17 @@ mod tests_datatype_trait {
             .unwrap();
 
         // produce push_pull error
-        interceptor1.set_after_pull(|_pull| Err(ClientPushPullError::ExceedMaxMemSize));
+        interceptor1.set_after_pull(|_pull| {
+            Err(DatatypeErrorWithActions::new(
+                DatatypeError::FailedToPushPull(ClientPushPullError::ExceedMaxMemSize),
+                EventLoopAction::PauseSync,
+                DatatypeAction::Recovery,
+            ))
+        });
 
         assert_eq!(
             counter1.sync().unwrap_err(),
-            DatatypeError::FailedToSync(ClientPushPullError::ExceedMaxMemSize)
+            DatatypeError::FailedToPushPull(ClientPushPullError::ExceedMaxMemSize)
         );
         assert_eq!(counter1.get_state(), DatatypeState::DueToCreate);
 

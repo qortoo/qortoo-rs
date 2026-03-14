@@ -168,9 +168,12 @@ mod tests_local_datatype_server {
     use tracing::{info, instrument};
 
     use crate::{
-        Client, Datatype, DatatypeState,
+        Client, Datatype, DatatypeError, DatatypeState,
         connectivity::local_connectivity::LocalConnectivity,
-        errors::push_pull::{ClientPushPullError, ServerPushPullError},
+        errors::{
+            datatypes::{DatatypeAction, DatatypeErrorWithActions, EventLoopAction},
+            push_pull::{ClientPushPullError, ServerPushPullError},
+        },
         types::{checkpoint::CheckPoint, push_pull_pack::PushPullPack, uid::Duid},
         utils::path::{get_test_collection_name, get_test_func_name},
     };
@@ -229,7 +232,12 @@ mod tests_local_datatype_server {
                     DatatypeState::DueToCreate,
                     Some(ServerPushPullError::FailedToCreate("".to_string())),
                 );
-                Err(ClientPushPullError::FailToGetAfter)
+
+                Err(DatatypeErrorWithActions::new(
+                    DatatypeError::FailedToCreate("".to_owned()),
+                    EventLoopAction::Normal,
+                    DatatypeAction::Normal,
+                ))
             });
         assert!(counter1.sync().is_err());
         assert!(!server.read().created);
@@ -248,7 +256,11 @@ mod tests_local_datatype_server {
                     DatatypeState::DueToCreate,
                     None,
                 );
-                Err(ClientPushPullError::FailToGetAfter)
+                Err(DatatypeErrorWithActions::new(
+                    DatatypeError::FailedToCreate("".to_owned()),
+                    EventLoopAction::Normal,
+                    DatatypeAction::Normal,
+                ))
             });
         assert!(counter1.sync().is_err());
         assert!(server.read().created);
@@ -269,7 +281,7 @@ mod tests_local_datatype_server {
                     DatatypeState::DueToCreate,
                     None,
                 );
-                Err(ClientPushPullError::FailToGetAfter)
+                Err(ClientPushPullError::FailToGetPushingTransactions.mapping())
             });
 
         assert!(counter1.sync().is_err());
@@ -293,7 +305,7 @@ mod tests_local_datatype_server {
                         "already exist".to_string(),
                     )),
                 );
-                Err(ClientPushPullError::FailToGetAfter)
+                Err(ClientPushPullError::FailToGetPushingTransactions.mapping())
             });
         assert!(counter1.sync().is_err());
         assert!(server.read().created);

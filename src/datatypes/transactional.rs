@@ -107,6 +107,7 @@ impl Datatype for TransactionalDatatype {
     }
 
     fn sync(&self) -> Result<(), DatatypeError> {
+        self.check_disabled("sync")?;
         self.event_loop.send_push_transaction_with_guarantee()
     }
 
@@ -164,18 +165,30 @@ impl TransactionalDatatype {
     pub fn check_writable(&self) -> Result<(), DatatypeError> {
         use crate::errors::with_err_out;
 
+        let state = self.get_state();
+        if !state.is_read_writable() {
+            return Err(with_err_out!(DatatypeError::Disallowed(format!(
+                "Datatype '{}' cannot be modified for {:?} state",
+                self.attr.key, state
+            ))));
+        }
+
         if self.attr.is_readonly {
-            return Err(with_err_out!(DatatypeError::FailedToWrite(format!(
+            return Err(with_err_out!(DatatypeError::Disallowed(format!(
                 "Datatype '{}' is readonly",
                 self.attr.key
             ))));
         }
-        let state = self.get_state();
-        if !state.is_read_writable() {
-            return Err(with_err_out!(DatatypeError::FailedToWrite(format!(
-                "Datatype '{}' is not in writable state: {:?}",
-                self.attr.key, state
-            ))));
+
+        Ok(())
+    }
+
+    fn check_disabled(&self, op: &str) -> Result<(), DatatypeError> {
+        if self.mutable.read().get_state() == DatatypeState::Disabled {
+            return Err(DatatypeError::Disallowed(format!(
+                "{} is not allowed in Disabled state",
+                op
+            )));
         }
         Ok(())
     }

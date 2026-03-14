@@ -1,6 +1,9 @@
 use thiserror::Error;
 
-use crate::errors::{BoxedError, push_pull::ClientPushPullError};
+use crate::{
+    ConnectivityError,
+    errors::{BoxedError, push_pull::ClientPushPullError},
+};
 
 /// Errors that can occur while working with Qortoo datatypes.
 ///
@@ -16,8 +19,10 @@ use crate::errors::{BoxedError, push_pull::ClientPushPullError};
 #[repr(i32)]
 #[derive(Debug, Error)]
 pub enum DatatypeError {
-    #[error("[DatatypeError] failed to build datatype: {0}")]
-    FailedBuildDatatype(String) = 201,
+    #[error("[DatatypeError] failed to create datatype: {0}")]
+    FailedToCreate(String) = 200,
+    #[error("[DatatypeError] failed to create datatype: {0}")]
+    FailedInConnectivity(ConnectivityError) = 201,
     /// Transaction execution failed.
     ///
     /// Returned when a closure passed to `transaction` returns an error or when the
@@ -41,14 +46,47 @@ pub enum DatatypeError {
     FailedToExecuteOperation(String) = 204,
     #[error("[DatatypeError] failure in EventLoop")]
     FailedInEventLoop(BoxedError) = 205,
-    #[error("[DatatypeError] not allowed to write")]
-    FailedToWrite(String) = 206,
-    #[error("[DatatypeError] failed to sync: {0}")]
-    FailedToSync(ClientPushPullError) = 207,
+    #[error("[DatatypeError] disallowed to {0}")]
+    Disallowed(String) = 206,
+    #[error("[DatatypeError] failed to push and pull: {0}")]
+    FailedToPushPull(ClientPushPullError) = 207,
 }
 
 impl PartialEq for DatatypeError {
     fn eq(&self, other: &Self) -> bool {
         std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+}
+
+pub enum EventLoopAction {
+    Normal,
+    BackOff,
+    PauseSync,
+}
+
+pub enum DatatypeAction {
+    Normal,
+    Reset,
+    Disable,
+    Recovery,
+}
+
+pub struct DatatypeErrorWithActions {
+    pub error: DatatypeError,
+    pub event_loop_action: EventLoopAction,
+    pub datatype_action: DatatypeAction,
+}
+
+impl DatatypeErrorWithActions {
+    pub fn new(
+        error: DatatypeError,
+        event_loop_action: EventLoopAction,
+        datatype_action: DatatypeAction,
+    ) -> Self {
+        DatatypeErrorWithActions {
+            error,
+            event_loop_action,
+            datatype_action,
+        }
     }
 }

@@ -8,8 +8,8 @@ use crate::{
 
 #[allow(dead_code)]
 pub trait PushBuffer {
-    fn enque(&mut self, tx: Arc<Transaction>) -> Result<(), ClientPushPullError>;
-    fn get_after(
+    fn enqueue(&mut self, tx: Arc<Transaction>) -> Result<(), ClientPushPullError>;
+    fn get_pushing_transactions(
         &mut self,
         cseq: u64,
         max_mem_size: u64,
@@ -54,7 +54,7 @@ impl MemoryPushBuffer {
 }
 
 impl PushBuffer for MemoryPushBuffer {
-    fn enque(&mut self, tx: Arc<Transaction>) -> Result<(), ClientPushPullError> {
+    fn enqueue(&mut self, tx: Arc<Transaction>) -> Result<(), ClientPushPullError> {
         if self.last_cseq != 0 && self.last_cseq + 1 != tx.cseq {
             return Err(ClientPushPullError::NonSequentialCseq);
         }
@@ -70,14 +70,14 @@ impl PushBuffer for MemoryPushBuffer {
         Ok(())
     }
 
-    fn get_after(
+    fn get_pushing_transactions(
         &mut self,
         cseq: u64,
         max_mem_size: u64,
     ) -> Result<(Vec<Arc<Transaction>>, u64), ClientPushPullError> {
         let mut popped = vec![];
         if cseq == 0 || cseq < self.first_cseq {
-            return Err(ClientPushPullError::FailToGetAfter);
+            return Err(ClientPushPullError::FailToGetPushingTransactions);
         }
 
         let mut total_size: u64 = 0;
@@ -169,14 +169,14 @@ mod tests_push_buffer {
         let mut op_id = OperationId::new();
         let tx = Arc::new(Transaction::new(&mut op_id));
         let tx_size = tx.size();
-        assert!(push_buffer.enque(tx).is_ok());
+        assert!(push_buffer.enqueue(tx).is_ok());
         assert_eq!(push_buffer.mem_size, tx_size);
         assert_eq!(push_buffer.first_cseq, 1);
         assert_eq!(push_buffer.last_cseq, 1);
 
         for _ in 0..9 {
             let tx = Arc::new(Transaction::new(&mut op_id));
-            assert!(push_buffer.enque(tx).is_ok());
+            assert!(push_buffer.enqueue(tx).is_ok());
         }
         assert_eq!(push_buffer.mem_size, tx_size * 10);
         assert_eq!(push_buffer.first_cseq, 1);
@@ -184,19 +184,19 @@ mod tests_push_buffer {
 
         let mut op_id2 = OperationId::new();
         let tx_not_sequential = Arc::new(Transaction::new(&mut op_id2));
-        let result = push_buffer.enque(tx_not_sequential);
+        let result = push_buffer.enqueue(tx_not_sequential);
         assert_eq!(result.unwrap_err(), ClientPushPullError::NonSequentialCseq);
 
         loop {
             let tx = Arc::new(Transaction::new(&mut op_id));
             if push_buffer.mem_size + tx.size() > MAX_SIZE {
                 assert_eq!(
-                    push_buffer.enque(tx).unwrap_err(),
+                    push_buffer.enqueue(tx).unwrap_err(),
                     ClientPushPullError::ExceedMaxMemSize
                 );
                 break;
             }
-            assert!(push_buffer.enque(tx).is_ok());
+            assert!(push_buffer.enqueue(tx).is_ok());
         }
     }
 
@@ -210,27 +210,33 @@ mod tests_push_buffer {
         let mut op_id = OperationId::new();
         let tx = Arc::new(Transaction::new(&mut op_id));
         let tx_size = tx.size();
-        assert!(push_buffer.enque(tx).is_ok());
+        assert!(push_buffer.enqueue(tx).is_ok());
         for _ in 1..100 {
             let tx = Arc::new(Transaction::new(&mut op_id));
-            assert!(push_buffer.enque(tx).is_ok());
+            assert!(push_buffer.enqueue(tx).is_ok());
         }
         assert_eq!(push_buffer.mem_size, tx_size * 100);
         assert_eq!(push_buffer.first_cseq, 1);
         assert_eq!(push_buffer.last_cseq, 100);
 
-        let (push_transactions, push_tx_size) = push_buffer.get_after(50, MAX_PUSH_SIZE).unwrap();
+        let (push_transactions, push_tx_size) = push_buffer
+            .get_pushing_transactions(50, MAX_PUSH_SIZE)
+            .unwrap();
         info!("push_buffer: {push_buffer} {push_tx_size}");
         assert_eq!(push_transactions.len(), 51);
         assert_eq!(push_tx_size, tx_size * 51);
         assert_eq!(push_transactions.first().unwrap().cseq, 50);
 
-        let (push_transactions, push_tx_size) = push_buffer.get_after(50, tx_size * 10).unwrap();
+        let (push_transactions, push_tx_size) = push_buffer
+            .get_pushing_transactions(50, tx_size * 10)
+            .unwrap();
         assert_eq!(push_transactions.len(), 10);
         assert_eq!(push_tx_size, tx_size * 10);
         assert_eq!(push_transactions.first().unwrap().cseq, 50);
 
-        let (push_transactions, push_tx_size) = push_buffer.get_after(101, MAX_PUSH_SIZE).unwrap();
+        let (push_transactions, push_tx_size) = push_buffer
+            .get_pushing_transactions(101, MAX_PUSH_SIZE)
+            .unwrap();
         assert_eq!(push_transactions.len(), 0);
         assert_eq!(push_tx_size, 0);
 

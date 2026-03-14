@@ -1,18 +1,21 @@
 use std::sync::Arc;
 
 use parking_lot::RwLock;
-use tracing::{error, instrument};
+use tracing::instrument;
 
 #[cfg(test)]
 use crate::datatypes::wired_interceptor::WiredInterceptor;
 use crate::{
-    DatatypeState,
+    DatatypeError, DatatypeState,
     datatypes::{
         common::Attribute, mutable::MutableDatatype, pull_handler::PullHandler,
         push_buffer::PushBuffer,
     },
     defaults,
-    errors::push_pull::ClientPushPullError,
+    errors::{
+        datatypes::{DatatypeAction, DatatypeErrorWithActions},
+        push_pull::ClientPushPullError,
+    },
     observability::macros::add_span_event,
     operations::transaction::Transaction,
     types::{push_pull_pack::PushPullPack, uid::Cuid},
@@ -57,23 +60,34 @@ impl WiredDatatype {
         self.interceptor.clone()
     }
 
-    pub fn push_if_needed(&self) {
+    pub fn push_if_needed(&self) -> bool {
         if !self.attr.client_common.connectivity.is_realtime() || !self.mutable.read().need_push() {
-            return;
+            return false;
         }
-        if let Err(e) = self.push_pull() {
-            error!("push_pull failed: {}", e);
+        true
+    }
+
+    pub fn handle_error(&self, _err: &DatatypeError, action: DatatypeAction) {
+        match action {
+            DatatypeAction::Normal => {}
+            DatatypeAction::Reset => {
+                self.mutable.write().reset();
+            }
+            DatatypeAction::Disable => self.mutable.write().disable(),
+            DatatypeAction::Recovery => {
+                self.mutable.write().do_rollback();
+            }
         }
     }
 
     #[instrument(skip_all)]
-    pub fn push_pull(&self) -> Result<(), ClientPushPullError> {
+    pub fn push_pull(&self) -> Result<(), DatatypeErrorWithActions> {
         let connectivity = &self.attr.client_common.connectivity;
 
         #[cfg_attr(not(test), allow(unused_mut))]
         let mut pushing_ppp = {
             let mut mutable = self.mutable.write();
-            mutable.create_push_pull_pack()?
+            mutable.create_push_pull_pack().map_err(|e| e.mapping())?
         };
 
         #[cfg(test)]
@@ -81,7 +95,9 @@ impl WiredDatatype {
 
         add_span_event!("send PUSH PushPullPack", "ppp"=> pushing_ppp.to_string());
         #[cfg_attr(not(test), allow(unused_mut))]
-        let mut pulled_ppp = connectivity.push_and_pull(&pushing_ppp)?;
+        let mut pulled_ppp = connectivity
+            .push_and_pull(&pushing_ppp)
+            .map_err(|e| e.mapping())?;
 
         #[cfg(test)]
         self.interceptor.after_pull(&mut pulled_ppp)?;
@@ -112,7 +128,7 @@ impl MutableDatatype {
     fn create_push_pull_pack(&mut self) -> Result<PushPullPack, ClientPushPullError> {
         let mut ppp = PushPullPack::new(&self.attr, self.get_state());
 
-        let (transactions, _tx_size) = self.push_buffer.get_after(
+        let (transactions, _tx_size) = self.push_buffer.get_pushing_transactions(
             self.checkpoint.cseq + 1,
             defaults::DEFAULT_MAX_TRANSMISSION_SIZE,
         )?;

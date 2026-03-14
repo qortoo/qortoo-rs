@@ -2,15 +2,15 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
-use crate::{errors::push_pull::ClientPushPullError, types::push_pull_pack::PushPullPack};
+use crate::{errors::datatypes::DatatypeErrorWithActions, types::push_pull_pack::PushPullPack};
 
-pub type BeforePushFn = Box<dyn Fn(&mut PushPullPack) + Send + Sync + 'static>;
+pub type BeforePushFn = dyn Fn(&mut PushPullPack) + Send + Sync + 'static;
 pub type AfterPullFn =
-    Box<dyn Fn(&mut PushPullPack) -> Result<(), ClientPushPullError> + Send + Sync + 'static>;
+    dyn Fn(&mut PushPullPack) -> Result<(), DatatypeErrorWithActions> + Send + Sync + 'static;
 
 pub struct WiredInterceptor {
-    before_push: RwLock<BeforePushFn>,
-    after_pull: RwLock<AfterPullFn>,
+    before_push: RwLock<Box<BeforePushFn>>,
+    after_pull: RwLock<Box<AfterPullFn>>,
 }
 
 impl WiredInterceptor {
@@ -28,7 +28,7 @@ impl WiredInterceptor {
 
     pub fn set_after_pull(
         &self,
-        f: impl Fn(&mut PushPullPack) -> Result<(), ClientPushPullError> + Send + Sync + 'static,
+        f: impl Fn(&mut PushPullPack) -> Result<(), DatatypeErrorWithActions> + Send + Sync + 'static,
     ) -> &Self {
         *self.after_pull.write() = Box::new(f);
         self
@@ -38,7 +38,10 @@ impl WiredInterceptor {
         (self.before_push.read())(push)
     }
 
-    pub(crate) fn after_pull(&self, pull: &mut PushPullPack) -> Result<(), ClientPushPullError> {
+    pub(crate) fn after_pull(
+        &self,
+        pull: &mut PushPullPack,
+    ) -> Result<(), DatatypeErrorWithActions> {
         (self.after_pull.read())(pull)
     }
 }

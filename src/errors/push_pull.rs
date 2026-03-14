@@ -1,6 +1,9 @@
 use thiserror::Error;
 
-use crate::ConnectivityError;
+use crate::{
+    ConnectivityError, DatatypeError,
+    errors::datatypes::{DatatypeAction, DatatypeErrorWithActions, EventLoopAction},
+};
 
 pub(crate) const CLIENT_PUSHPULL_ERR_MSG_NO_SNAPSHOT: &str = "no snapshot operation";
 
@@ -16,51 +19,73 @@ pub enum ServerPushPullError {
     FailedToSubscribe(String) = 303,
 }
 
+impl ServerPushPullError {
+    pub fn mapping(&self) -> DatatypeErrorWithActions {
+        match self {
+            ServerPushPullError::IllegalPushRequest(msg) => DatatypeErrorWithActions::new(
+                DatatypeError::FailedToCreate(msg.to_owned()),
+                EventLoopAction::PauseSync,
+                DatatypeAction::Disable,
+            ),
+            ServerPushPullError::FailedToCreate(msg) => DatatypeErrorWithActions::new(
+                DatatypeError::FailedToCreate(msg.to_owned()),
+                EventLoopAction::PauseSync,
+                DatatypeAction::Disable,
+            ),
+            ServerPushPullError::FailedToSubscribe(msg) => DatatypeErrorWithActions::new(
+                DatatypeError::FailedToCreate(msg.to_owned()),
+                EventLoopAction::PauseSync,
+                DatatypeAction::Disable,
+            ),
+        }
+    }
+}
+
 impl PartialEq for ServerPushPullError {
     fn eq(&self, other: &Self) -> bool {
         std::mem::discriminant(self) == std::mem::discriminant(other)
     }
 }
 
-#[allow(dead_code)]
-pub enum CaseAfterPushPullError {
-    // The case that can be resolved with backoff retry
-    BackOff,
-    // The case that can be resolved by resetting the datatype
-    Reset,
-    // The case that any illegal case happens
-    Abort,
-}
-
 #[non_exhaustive]
-#[derive(Debug, PartialEq, Eq, Error)]
+#[derive(Debug, PartialEq, Eq, Error, Clone)]
 pub enum ClientPushPullError {
     #[error("[ClientPushPullError] pushBuffer exceeded max size of memory")]
     ExceedMaxMemSize,
-    #[error("[ClientPushPullError] an operation of nonsequential cseq is enqued into PushBuffer")]
+    #[error("[ClientPushPullError] an operation of nonsequential cseq is enqueued into PushBuffer")]
     NonSequentialCseq,
     #[error("[ClientPushPullError] failed to get after")]
-    FailToGetAfter,
+    FailToGetPushingTransactions,
     #[error("[ClientPushPullError] failed in Connectivity: {0}")]
     FailedInConnectivity(ConnectivityError),
-    #[error("[ClientPushPullError] failed and abort datatype: {0}")]
-    FailedAndAbort(String),
     #[error("[ClientPushPullError] failed with protocol violation: {0}")]
     FailedWithProtocolViolation(String),
 }
 
 impl ClientPushPullError {
-    #[allow(dead_code)]
-    fn how_to_deal_with_error(&self) -> CaseAfterPushPullError {
+    pub fn mapping(self) -> DatatypeErrorWithActions {
         match self {
             ClientPushPullError::ExceedMaxMemSize => todo!(),
-            ClientPushPullError::NonSequentialCseq => CaseAfterPushPullError::Abort,
-            ClientPushPullError::FailToGetAfter => CaseAfterPushPullError::Abort,
-            ClientPushPullError::FailedInConnectivity(_ce) => {
-                todo!();
-            }
-            ClientPushPullError::FailedAndAbort(_) => todo!(),
-            ClientPushPullError::FailedWithProtocolViolation(_) => todo!(),
+            ClientPushPullError::NonSequentialCseq => DatatypeErrorWithActions::new(
+                DatatypeError::FailedToPushPull(self),
+                EventLoopAction::Normal,
+                DatatypeAction::Recovery,
+            ),
+            ClientPushPullError::FailToGetPushingTransactions => DatatypeErrorWithActions::new(
+                DatatypeError::FailedToPushPull(self),
+                EventLoopAction::PauseSync,
+                DatatypeAction::Disable,
+            ),
+            ClientPushPullError::FailedInConnectivity(_) => DatatypeErrorWithActions::new(
+                DatatypeError::FailedToPushPull(self),
+                EventLoopAction::BackOff,
+                DatatypeAction::Normal,
+            ),
+            ClientPushPullError::FailedWithProtocolViolation(_) => DatatypeErrorWithActions::new(
+                DatatypeError::FailedToPushPull(self),
+                EventLoopAction::PauseSync,
+                DatatypeAction::Disable,
+            ),
         }
     }
 }
