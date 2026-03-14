@@ -55,10 +55,15 @@ impl MutableDatatype {
         }
     }
 
-    fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.push_buffer = MemoryPushBuffer::new(self.attr.option.clone());
         self.rollback = Rollback::new(self.crdt.clone(), self.state, self.op_id.clone());
         self.transaction = Default::default();
+    }
+
+    pub fn disable(&mut self) {
+        self.reset();
+        self.set_state(DatatypeState::Disabled);
     }
 
     pub fn apply_snapshot_transaction(
@@ -98,7 +103,7 @@ impl MutableDatatype {
                 tx.set_tag(tag);
                 let tx = Arc::new(tx);
                 if tx.cuid == self.op_id.cuid {
-                    if let Err(err) = self.push_buffer.enque(tx.clone()) {
+                    if let Err(err) = self.push_buffer.enqueue(tx.clone()) {
                         if err == ClientPushPullError::ExceedMaxMemSize {
                             todo!("should reduce the push buffer size");
                         }

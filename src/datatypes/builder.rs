@@ -219,7 +219,7 @@ mod tests_datatype_builder {
         // Write operations should fail
         assert_eq!(
             counter.increase().unwrap_err(),
-            DatatypeError::FailedToWrite("".into())
+            DatatypeError::Disallowed("".into())
         );
 
         // Transaction should fail
@@ -227,10 +227,7 @@ mod tests_datatype_builder {
             c.increase().unwrap();
             Ok(())
         });
-        assert_eq!(
-            tx_result.unwrap_err(),
-            DatatypeError::FailedToWrite("".into())
-        );
+        assert_eq!(tx_result.unwrap_err(), DatatypeError::Disallowed("".into()));
         assert_eq!(counter.get_value(), 0);
     }
 
@@ -252,7 +249,7 @@ mod tests_datatype_builder {
         assert_eq!(counter.get_state(), DatatypeState::DueToSubscribe);
         assert_eq!(
             counter.increase().unwrap_err(),
-            DatatypeError::FailedToWrite("".into())
+            DatatypeError::Disallowed("".into())
         );
 
         let counter = client

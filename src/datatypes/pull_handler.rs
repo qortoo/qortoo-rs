@@ -1,20 +1,10 @@
 use tracing::instrument;
 
 use crate::{
-    DatatypeState,
-    datatypes::mutable::MutableDatatype,
-    errors::push_pull::{ClientPushPullError, ServerPushPullError},
-    observability::macros::add_span_event,
+    DatatypeState, datatypes::mutable::MutableDatatype,
+    errors::datatypes::DatatypeErrorWithActions, observability::macros::add_span_event,
     types::push_pull_pack::PushPullPack,
 };
-
-#[allow(dead_code)]
-pub enum CaseAfterSync {
-    Normal,
-    BackOff,
-    Reset,
-    Halt,
-}
 
 pub struct PullHandler<'a> {
     pulled_ppp: &'a mut PushPullPack,
@@ -37,7 +27,7 @@ impl<'a> PullHandler<'a> {
     }
 
     #[instrument(skip_all, name = "applyPull")]
-    pub fn apply(&mut self) -> Result<(), ClientPushPullError> {
+    pub fn apply(&mut self) -> Result<(), DatatypeErrorWithActions> {
         self.handle_error_and_datatype_state()?;
         self.skip_duplicated_transactions()?;
         self.execute_transactions()?;
@@ -46,18 +36,9 @@ impl<'a> PullHandler<'a> {
         Ok(())
     }
 
-    fn handle_error_and_datatype_state(&mut self) -> Result<(), ClientPushPullError> {
+    fn handle_error_and_datatype_state(&mut self) -> Result<(), DatatypeErrorWithActions> {
         if let Some(sppe) = self.pulled_ppp.error.as_ref() {
-            match sppe {
-                ServerPushPullError::IllegalPushRequest(reason) => {
-                    // IllegalPushRequest indicates an unrecoverable state
-                    return Err(ClientPushPullError::FailedAndAbort(reason.to_owned()));
-                }
-                ServerPushPullError::FailedToCreate(_err_msg) => {
-                    // TODO: handle FailedToCreate
-                }
-                ServerPushPullError::FailedToSubscribe(_) => todo!(),
-            }
+            return Err(sppe.mapping());
         }
 
         match self.old_state {
@@ -73,7 +54,9 @@ impl<'a> PullHandler<'a> {
                 if self.pulled_ppp.state == DatatypeState::DueToSubscribe {
                     self.new_state = DatatypeState::Subscribed;
                     if let Some(snapshot_tx) = self.pulled_ppp.snapshot_transaction.take() {
-                        self.mutable.apply_snapshot_transaction(snapshot_tx)?;
+                        self.mutable
+                            .apply_snapshot_transaction(snapshot_tx)
+                            .map_err(|e| e.mapping())?;
                     }
                     self.mutable.attr.set_duid(self.pulled_ppp.duid.clone());
                 } else {
@@ -110,24 +93,24 @@ impl<'a> PullHandler<'a> {
         Ok(())
     }
 
-    fn skip_duplicated_transactions(&mut self) -> Result<(), ClientPushPullError> {
+    fn skip_duplicated_transactions(&mut self) -> Result<(), DatatypeErrorWithActions> {
         // TODO: skip duplicated transactions
         Ok(())
     }
 
-    fn execute_transactions(&mut self) -> Result<(), ClientPushPullError> {
+    fn execute_transactions(&mut self) -> Result<(), DatatypeErrorWithActions> {
         // TODO: execute transactions
         Ok(())
     }
 
-    fn sync_checkpoint(&mut self) -> Result<(), ClientPushPullError> {
+    fn sync_checkpoint(&mut self) -> Result<(), DatatypeErrorWithActions> {
         self.mutable
             .checkpoint
             .check_with(&self.pulled_ppp.checkpoint);
         Ok(())
     }
 
-    fn wrap_up(&mut self) -> Result<(), ClientPushPullError> {
+    fn wrap_up(&mut self) -> Result<(), DatatypeErrorWithActions> {
         self.mutable.set_state(self.new_state);
         Ok(())
     }

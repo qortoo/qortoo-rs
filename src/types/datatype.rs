@@ -131,8 +131,13 @@ impl DatatypeState {
 #[cfg(test)]
 mod tests_datatype {
     use rstest::rstest;
+    use tracing::instrument;
 
     use super::*;
+    use crate::{
+        Client, Datatype,
+        utils::path::{get_test_collection_name, get_test_func_name},
+    };
 
     #[test]
     fn can_display_data_types() {
@@ -147,11 +152,38 @@ mod tests_datatype {
     #[case::due_to_subscribe_or_create(DatatypeState::DueToSubscribeOrCreate, true)]
     #[case::due_to_subscribe(DatatypeState::DueToSubscribe, false)]
     #[case::disabled(DatatypeState::Disabled, false)]
-    fn can_check_accessiblity_of_datatype_state(
+    fn can_check_accessibility_of_datatype_state(
         #[case] state: DatatypeState,
         #[case] expected: bool,
     ) {
         assert_eq!(state.is_read_writable(), expected);
         assert_eq!(state.is_readonly(), !expected);
+    }
+
+    #[test]
+    #[instrument]
+    fn can_not_write_when_readonly() {
+        let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .build()
+            .unwrap();
+
+        // DueToCreate state allows writing
+        let counter1 = client.create_datatype("c1").build_counter().unwrap();
+        assert_eq!(counter1.get_state(), DatatypeState::DueToCreate);
+        assert!(counter1.increase().is_ok());
+
+        // DueToSubscribe state prevents writing (state-based)
+        let counter2 = client.subscribe_datatype("c2").build_counter().unwrap();
+        assert_eq!(counter2.get_state(), DatatypeState::DueToSubscribe);
+        assert!(counter2.increase().is_err());
+
+        // Explicit read-only flag prevents writing (flag-based)
+        let counter3 = client
+            .create_datatype("c3")
+            .with_readonly()
+            .build_counter()
+            .unwrap();
+        assert_eq!(counter3.get_state(), DatatypeState::DueToCreate);
+        assert!(counter3.increase().is_err()); // read-only despite writable state
     }
 }
