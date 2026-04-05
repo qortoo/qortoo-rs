@@ -58,10 +58,12 @@ pub trait Datatype {
     ///
     /// # Examples
     ///
-    /// ```ignore
-    /// use qortoo::{Client, Datatype, DatatypeState};
+    /// ```
+    /// use qortoo::{Client, Datatype, DatatypeState, LocalConnectivity};
     ///
-    /// let client = Client::builder("collection", "alias")
+    /// let connectivity = LocalConnectivity::new_arc();
+    /// connectivity.set_realtime(false);
+    /// let client = Client::builder("doc-example", "Datatype-sync")
     ///     .with_connectivity(connectivity)
     ///     .build()
     ///     .unwrap();
