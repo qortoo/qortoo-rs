@@ -67,17 +67,20 @@ impl WiredDatatype {
         true
     }
 
-    pub fn handle_error(&self, _err: &DatatypeError, action: DatatypeAction) {
+    pub fn handle_error(&self, err: DatatypeError, action: DatatypeAction) {
         match action {
             DatatypeAction::Normal => {}
-            DatatypeAction::Reset => {
-                self.mutable.write().reset();
+            DatatypeAction::Restart => {
+                let mut mutable = self.mutable.write();
+                mutable.reset();
+                mutable.set_state(DatatypeState::DueToSubscribeOrCreate);
             }
             DatatypeAction::Disable => self.mutable.write().disable(),
-            DatatypeAction::Recovery => {
+            DatatypeAction::Reset => {
                 self.mutable.write().do_rollback();
             }
         }
+        self.mutable.read().call_error_handler(err);
     }
 
     #[instrument(skip_all)]

@@ -14,7 +14,7 @@ const TRANSACTION_CONSTANT_SIZE: u64 = (size_of::<Vec<Operation>>() // operation
     + size_of::<bool>())  // event
     as u64;
 
-#[derive(PartialEq, Eq, Default)]
+#[derive(Clone, PartialEq, Eq, Default)]
 pub struct Transaction {
     pub cuid: Cuid,
     pub cseq: u64,

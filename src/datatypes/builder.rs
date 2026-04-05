@@ -185,7 +185,7 @@ mod tests_datatype_builder {
 
     use crate::{
         Client, ClientError, Datatype, DatatypeError, DatatypeState,
-        utils::path::{get_test_collection_name, get_test_func_name},
+        utils::test_utils::{get_test_collection_name, get_test_func_name},
     };
 
     #[test]
@@ -217,17 +217,20 @@ mod tests_datatype_builder {
         assert_eq!(counter.get_value(), 0);
 
         // Write operations should fail
-        assert_eq!(
+        assert!(matches!(
             counter.increase().unwrap_err(),
-            DatatypeError::Disallowed("".into())
-        );
+            DatatypeError::Disallowed(_)
+        ));
 
         // Transaction should fail
         let tx_result = counter.transaction("test-tx", |c| {
             c.increase().unwrap();
             Ok(())
         });
-        assert_eq!(tx_result.unwrap_err(), DatatypeError::Disallowed("".into()));
+        assert!(matches!(
+            tx_result.unwrap_err(),
+            DatatypeError::Disallowed(_)
+        ));
         assert_eq!(counter.get_value(), 0);
     }
 
@@ -247,10 +250,10 @@ mod tests_datatype_builder {
             .build_counter()
             .unwrap();
         assert_eq!(counter.get_state(), DatatypeState::DueToSubscribe);
-        assert_eq!(
+        assert!(matches!(
             counter.increase().unwrap_err(),
-            DatatypeError::Disallowed("".into())
-        );
+            DatatypeError::Disallowed(_)
+        ));
 
         let counter = client
             .subscribe_or_create_datatype("subscribe_or_create_dt")

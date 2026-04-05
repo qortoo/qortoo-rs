@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 use crate::{
-    ConnectivityError, DatatypeError,
+    ConnectivityError, DatatypeError, DatatypeState,
     errors::datatypes::{DatatypeAction, DatatypeErrorWithActions, EventLoopAction},
 };
 
@@ -9,7 +9,7 @@ pub(crate) const CLIENT_PUSHPULL_ERR_MSG_NO_SNAPSHOT: &str = "no snapshot operat
 
 #[non_exhaustive]
 #[repr(i32)]
-#[derive(Debug, Error, Eq)]
+#[derive(Debug, Error /*PartialEq*/, Eq, Clone)]
 pub enum ServerPushPullError {
     #[error("[ServerPushPullError] illegal push request - {0}")]
     IllegalPushRequest(String) = 301,
@@ -20,22 +20,35 @@ pub enum ServerPushPullError {
 }
 
 impl ServerPushPullError {
-    pub fn mapping(&self) -> DatatypeErrorWithActions {
+    pub fn mapping(
+        &self,
+        old_state: DatatypeState,
+        new_state: DatatypeState,
+    ) -> DatatypeErrorWithActions {
         match self {
-            ServerPushPullError::IllegalPushRequest(msg) => DatatypeErrorWithActions::new(
-                DatatypeError::FailedToCreate(msg.to_owned()),
-                EventLoopAction::PauseSync,
-                DatatypeAction::Disable,
-            ),
+            ServerPushPullError::IllegalPushRequest(msg) => {
+                let data_err = match old_state {
+                    DatatypeState::DueToCreate => DatatypeError::FailedToCreate(msg.to_owned()),
+                    DatatypeState::DueToSubscribe => {
+                        DatatypeError::FailedToSubscribe(msg.to_owned())
+                    }
+                    _ => DatatypeError::FailedByServerPushPullError(self.clone()),
+                };
+                DatatypeErrorWithActions::new(
+                    data_err,
+                    EventLoopAction::PauseSync,
+                    new_state.into(),
+                )
+            }
             ServerPushPullError::FailedToCreate(msg) => DatatypeErrorWithActions::new(
                 DatatypeError::FailedToCreate(msg.to_owned()),
                 EventLoopAction::PauseSync,
-                DatatypeAction::Disable,
+                new_state.into(),
             ),
             ServerPushPullError::FailedToSubscribe(msg) => DatatypeErrorWithActions::new(
-                DatatypeError::FailedToCreate(msg.to_owned()),
+                DatatypeError::FailedToSubscribe(msg.to_owned()),
                 EventLoopAction::PauseSync,
-                DatatypeAction::Disable,
+                new_state.into(),
             ),
         }
     }
@@ -48,7 +61,7 @@ impl PartialEq for ServerPushPullError {
 }
 
 #[non_exhaustive]
-#[derive(Debug, PartialEq, Eq, Error, Clone)]
+#[derive(Debug, Error, PartialEq, Eq, Clone)]
 pub enum ClientPushPullError {
     #[error("[ClientPushPullError] pushBuffer exceeded max size of memory")]
     ExceedMaxMemSize,
@@ -67,22 +80,22 @@ impl ClientPushPullError {
         match self {
             ClientPushPullError::ExceedMaxMemSize => todo!(),
             ClientPushPullError::NonSequentialCseq => DatatypeErrorWithActions::new(
-                DatatypeError::FailedToPushPull(self),
+                DatatypeError::FailedByClientPushPullError(self),
                 EventLoopAction::Normal,
-                DatatypeAction::Recovery,
+                DatatypeAction::Reset,
             ),
             ClientPushPullError::FailToGetPushingTransactions => DatatypeErrorWithActions::new(
-                DatatypeError::FailedToPushPull(self),
+                DatatypeError::FailedByClientPushPullError(self),
                 EventLoopAction::PauseSync,
                 DatatypeAction::Disable,
             ),
             ClientPushPullError::FailedInConnectivity(_) => DatatypeErrorWithActions::new(
-                DatatypeError::FailedToPushPull(self),
+                DatatypeError::FailedByClientPushPullError(self),
                 EventLoopAction::BackOff,
                 DatatypeAction::Normal,
             ),
             ClientPushPullError::FailedWithProtocolViolation(_) => DatatypeErrorWithActions::new(
-                DatatypeError::FailedToPushPull(self),
+                DatatypeError::FailedByClientPushPullError(self),
                 EventLoopAction::PauseSync,
                 DatatypeAction::Disable,
             ),

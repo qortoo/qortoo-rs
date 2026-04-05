@@ -109,7 +109,7 @@ mod tests_uid {
         let _cuid = Cuid::new();
         assert_ne!(_duid.to_string(), _cuid.to_string());
         let default_duid = Duid::default();
-        info!("{default_duid}");
+        info!("{default_duid} {default_duid:?}");
     }
 
     #[rstest]

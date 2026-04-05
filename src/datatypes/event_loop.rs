@@ -61,7 +61,7 @@ impl EventLoop {
         })
     }
 
-    #[instrument(skip_all, name="datatype_event_loop", 
+    #[instrument(skip_all, name="datatype_event_loop",
         fields(
             qortoo.col=%wired.attr.client_common.collection,
             qortoo.cl=%wired.attr.client_common.alias,
@@ -99,40 +99,54 @@ impl EventLoop {
                                 }
                                 break;
                             }
-                            Event::PushTransaction(blocking_resp_tx) => {
+                            Event::PushTransaction(resp_tx) => {
                                 if matches!(event_loop_action, EventLoopAction::PauseSync) {
+                                    Self::process_blocking_resp(
+                                        resp_tx,
+                                        Some(DatatypeError::FailedInEventLoop(
+                                            "event loop paused".into(),
+                                        )),
+                                    );
                                     continue;
                                 }
-                                let response = match wired.push_pull() {
+                                let opt_datatype_error = match wired.push_pull() {
                                     Ok(_) => {
                                         event_loop_action = EventLoopAction::Normal;
                                         None
                                     }
                                     Err(dewa) => {
                                         event_loop_action = dewa.event_loop_action;
-                                        wired.handle_error(&dewa.error, dewa.datatype_action);
+                                        wired
+                                            .handle_error(dewa.error.clone(), dewa.datatype_action);
                                         Some(dewa.error)
                                     }
                                 };
                                 if !matches!(event_loop_action, EventLoopAction::BackOff) {
                                     backoff = None;
                                 }
-                                if let Some(sender) = blocking_resp_tx {
-                                    if sender.send(response).is_err() {
-                                        error!("failed to respond PushTransaction event");
-                                    }
-                                }
+                                Self::process_blocking_resp(resp_tx, opt_datatype_error);
                             }
                             Event::BackOff => {}
                         },
                         Err(err) => {
-                            wired.handle_error(&err, DatatypeAction::Disable);
+                            wired.handle_error(err, DatatypeAction::Disable);
                         }
                     }
                 }
                 add_span_event!("quiting event_loop");
             });
         });
+    }
+
+    fn process_blocking_resp(
+        blocking_resp_tx: Option<oneshot::Sender<Option<DatatypeError>>>,
+        opt_datatype_error: Option<DatatypeError>,
+    ) {
+        if let Some(sender) = blocking_resp_tx {
+            if sender.send(opt_datatype_error).is_err() {
+                error!("failed to respond PushTransaction event");
+            }
+        }
     }
 
     #[instrument(skip_all)]
@@ -158,8 +172,8 @@ impl EventLoop {
         }
 
         let map_err = |e, ch: &str| {
-            error!("{ch} channel error {e:?}; stopping event loop");
-            DatatypeError::FailedInEventLoop(Box::new(e))
+            let err_msg = format!("{ch} channel error {e:?}; stopping event loop");
+            with_err_out!(DatatypeError::FailedInEventLoop(err_msg))
         };
 
         if let Some(duration) = backoff_duration {
@@ -199,14 +213,14 @@ impl EventLoop {
     fn send_to_unbounded(&self, ev: Event) -> Result<(), DatatypeError> {
         self.unbounded_tx
             .try_send(ev)
-            .map_err(|e| with_err_out!(DatatypeError::FailedInEventLoop(Box::new(e))))
+            .map_err(|e| with_err_out!(DatatypeError::FailedInEventLoop(format!("{e:?}"))))
     }
 
     fn send_to_bounded(&self, ev: Event) -> Result<(), DatatypeError> {
         let ev_str = format!("{ev}");
         self.bounded_tx.try_send(ev).map_err(|e| {
             add_span_event!(ev_str, "result"=>"fail");
-            DatatypeError::FailedInEventLoop(Box::new(e))
+            DatatypeError::FailedInEventLoop(format!("{e:?}"))
         })?;
         add_span_event!(ev_str, "result"=>"succeed");
         Ok(())
@@ -227,9 +241,9 @@ impl EventLoop {
             match rx.await {
                 Ok(Some(err)) => Err(err),
                 Ok(None) => Ok(()),
-                Err(e) => Err(DatatypeError::FailedInEventLoop(
-                    format!("failed to receive response of sync(): {e}").into(),
-                )),
+                Err(e) => Err(DatatypeError::FailedInEventLoop(format!(
+                    "failed to receive response of sync(): {e}"
+                ))),
             }
         })
     }
@@ -252,7 +266,7 @@ mod tests_event_loop {
         connectivity::local_connectivity::LocalConnectivity,
         datatypes::datatype::Datatype,
         errors::{datatypes::DatatypeErrorWithActions, push_pull::ClientPushPullError},
-        utils::path::{get_test_collection_name, get_test_func_name},
+        utils::test_utils::{get_test_collection_name, get_test_func_name, get_test_ids},
     };
 
     fn make_backoff_error() -> DatatypeErrorWithActions {
@@ -274,9 +288,7 @@ mod tests_event_loop {
     fn can_manually_retry_after_backoff_error() {
         let connectivity = LocalConnectivity::new_arc();
         connectivity.set_realtime(false);
-        let collection = get_test_collection_name!();
-        let key = get_test_func_name!();
-        let resource_id = format!("{collection}/{key}");
+        let (collection, key, resource_id) = get_test_ids!();
         let client = Client::builder(collection, "client")
             .with_connectivity(connectivity.clone())
             .build()
@@ -291,7 +303,7 @@ mod tests_event_loop {
         interceptor.set_after_pull(|_| Err(make_backoff_error()));
 
         let err = counter.sync().unwrap_err();
-        assert!(matches!(err, DatatypeError::FailedToPushPull(_)));
+        assert!(matches!(err, DatatypeError::FailedByClientPushPullError(_)));
         // DatatypeAction::Normal → no state change
         assert_eq!(counter.get_state(), DatatypeState::DueToCreate);
 
@@ -308,9 +320,7 @@ mod tests_event_loop {
     #[instrument]
     fn can_auto_retry_after_backoff_timeout() {
         let connectivity = LocalConnectivity::new_arc();
-        let collection = get_test_collection_name!();
-        let key = get_test_func_name!();
-        let resource_id = format!("{collection}/{key}");
+        let (collection, key, resource_id) = get_test_ids!();
 
         let client = Client::builder(collection, "client")
             .with_connectivity(connectivity.clone())
@@ -347,9 +357,8 @@ mod tests_event_loop {
     fn can_block_extra_retry_after_successful_manual_retry() {
         let connectivity = LocalConnectivity::new_arc();
         connectivity.set_realtime(false);
-        let collection = get_test_collection_name!();
-        let key = get_test_func_name!();
-        let resource_id = format!("{collection}/{key}");
+        let (collection, key, resource_id) = get_test_ids!();
+
         let client = Client::builder(collection, "client")
             .with_connectivity(connectivity.clone())
             .build()
@@ -389,14 +398,13 @@ mod tests_event_loop {
     }
 
     /// Test that PauseSync + Disable transitions datatype to Disabled and
-    /// does not keep retrying automatically afterwards.
+    /// does not keep retrying automatically afterward.
     #[test]
     #[instrument]
     fn can_handle_pause_sync_error_without_auto_retry_loop() {
         let connectivity = LocalConnectivity::new_arc();
-        let collection = get_test_collection_name!();
-        let key = get_test_func_name!();
-        let resource_id = format!("{collection}/{key}");
+        let (collection, key, resource_id) = get_test_ids!();
+
         let client = Client::builder(collection, "client")
             .with_connectivity(connectivity.clone())
             .build()

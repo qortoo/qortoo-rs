@@ -156,7 +156,7 @@ impl Attribute {
 #[cfg(test)]
 macro_rules! new_attribute {
     ($enum_variant:path) => {{
-        let paths = crate::utils::path::caller_path!();
+        let paths = crate::utils::test_utils::caller_path!();
         crate::datatypes::common::Attribute::new_for_test(paths, $enum_variant)
     }};
 }
@@ -174,7 +174,7 @@ mod tests_attribute {
 
     use tracing::info;
 
-    use crate::{DataType, types::uid::Duid, utils::path::caller_path};
+    use crate::{DataType, types::uid::Duid, utils::test_utils::caller_path};
 
     #[test]
     fn can_new_attribute_for_test() {

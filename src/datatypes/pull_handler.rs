@@ -1,10 +1,14 @@
 use tracing::instrument;
 
 use crate::{
-    DatatypeState, datatypes::mutable::MutableDatatype,
-    errors::datatypes::DatatypeErrorWithActions, observability::macros::add_span_event,
+    DatatypeError, DatatypeState,
+    datatypes::mutable::MutableDatatype,
+    errors::datatypes::{DatatypeAction, DatatypeErrorWithActions, EventLoopAction},
+    observability::macros::add_span_event,
     types::push_pull_pack::PushPullPack,
 };
+
+type PendingStep<'b> = fn(&mut PullHandler<'b>) -> Result<(), DatatypeErrorWithActions>;
 
 pub struct PullHandler<'a> {
     pulled_ppp: &'a mut PushPullPack,
@@ -12,6 +16,7 @@ pub struct PullHandler<'a> {
     old_state: DatatypeState,
     new_state: DatatypeState,
     is_created: bool,
+    pending_steps: Vec<PendingStep<'a>>,
 }
 
 impl<'a> PullHandler<'a> {
@@ -23,73 +28,99 @@ impl<'a> PullHandler<'a> {
             old_state,
             new_state: old_state,
             is_created: false,
+            pending_steps: Vec::new(),
         }
     }
 
     #[instrument(skip_all, name = "applyPull")]
     pub fn apply(&mut self) -> Result<(), DatatypeErrorWithActions> {
-        self.handle_error_and_datatype_state()?;
-        self.skip_duplicated_transactions()?;
-        self.execute_transactions()?;
-        self.sync_checkpoint()?;
+        let result = (|| -> Result<(), DatatypeErrorWithActions> {
+            self.handle_error_and_datatype_state()?;
+            self.skip_duplicated_transactions()?;
+            self.execute_transactions()?;
+            self.sync_checkpoint()?;
+            Ok(())
+        })();
         self.wrap_up()?;
-        Ok(())
+        result
+    }
+
+    fn process_illegal_state_response(
+        &self,
+        old: DatatypeState,
+        new: DatatypeState,
+    ) -> Result<(), DatatypeErrorWithActions> {
+        Err(DatatypeErrorWithActions::new(
+            DatatypeError::FailedByProtocolViolation(format!(
+                "illegal state from push-pull: received {new} for {old}"
+            )),
+            EventLoopAction::PauseSync,
+            DatatypeAction::Disable,
+        ))
     }
 
     fn handle_error_and_datatype_state(&mut self) -> Result<(), DatatypeErrorWithActions> {
+        self.new_state = self.pulled_ppp.state;
         if let Some(sppe) = self.pulled_ppp.error.as_ref() {
-            return Err(sppe.mapping());
+            return Err(sppe.mapping(self.old_state, self.pulled_ppp.state));
         }
 
         match self.old_state {
             DatatypeState::DueToCreate => {
-                if self.pulled_ppp.state == DatatypeState::DueToCreate {
-                    self.new_state = DatatypeState::Subscribed;
-                    self.is_created = true;
-                } else {
-                    // TODO: handle error
+                if self.pulled_ppp.state != DatatypeState::Subscribed {
+                    self.process_illegal_state_response(self.old_state, self.pulled_ppp.state)?;
                 }
+                self.is_created = true;
             }
             DatatypeState::DueToSubscribe => {
-                if self.pulled_ppp.state == DatatypeState::DueToSubscribe {
-                    self.new_state = DatatypeState::Subscribed;
-                    if let Some(snapshot_tx) = self.pulled_ppp.snapshot_transaction.take() {
-                        self.mutable
-                            .apply_snapshot_transaction(snapshot_tx)
-                            .map_err(|e| e.mapping())?;
-                    }
-                    self.mutable.attr.set_duid(self.pulled_ppp.duid.clone());
-                } else {
-                    // TODO: handle error
+                if self.pulled_ppp.state != DatatypeState::Subscribed {
+                    self.process_illegal_state_response(self.old_state, self.pulled_ppp.state)?;
                 }
+                self.enqueue_step(Self::apply_subscribe_response);
             }
             DatatypeState::DueToSubscribeOrCreate => {
-                if self.pulled_ppp.state == DatatypeState::DueToCreate {
-                    self.new_state = DatatypeState::Subscribed;
+                if self.pulled_ppp.state != DatatypeState::Subscribed {
+                    self.process_illegal_state_response(self.old_state, self.pulled_ppp.state)?;
+                }
+                if self.pulled_ppp.duid == self.mutable.attr.get_duid() {
                     self.is_created = true;
-                } else if self.pulled_ppp.state == DatatypeState::DueToSubscribe {
-                    self.new_state = DatatypeState::Subscribed;
                 } else {
-                    // TODO: handle error
+                    self.enqueue_step(Self::apply_subscribe_response);
                 }
             }
             DatatypeState::Subscribed => {
-                if self.pulled_ppp.state == DatatypeState::Subscribed {}
-                // TODO: Handle Subscribed state
+                if self.pulled_ppp.state != DatatypeState::Subscribed {
+                    self.process_illegal_state_response(self.old_state, self.pulled_ppp.state)?;
+                }
             }
             DatatypeState::DueToUnsubscribe => {
-                // TODO: Handle DueToUnsubscribe state
+                todo!()
             }
             DatatypeState::DueToDelete => {
-                // TODO: Handle DueToDelete state
+                todo!()
             }
             DatatypeState::Disabled => {
-                // TODO: Handle Disabled state
+                todo!()
             }
         }
+
         if self.new_state != self.old_state {
             add_span_event!("changeState", "old" => format!("{}", self.old_state), "new" => format!("{}", self.new_state));
         }
+        Ok(())
+    }
+
+    fn enqueue_step(&mut self, step: PendingStep<'a>) {
+        self.pending_steps.push(step);
+    }
+
+    fn apply_subscribe_response(&mut self) -> Result<(), DatatypeErrorWithActions> {
+        if let Some(snapshot_tx) = self.pulled_ppp.snapshot_transaction.take() {
+            self.mutable
+                .apply_snapshot_transaction(snapshot_tx)
+                .map_err(|e| e.mapping())?;
+        }
+        self.mutable.attr.set_duid(self.pulled_ppp.duid.clone());
         Ok(())
     }
 
@@ -111,6 +142,10 @@ impl<'a> PullHandler<'a> {
     }
 
     fn wrap_up(&mut self) -> Result<(), DatatypeErrorWithActions> {
+        let steps = std::mem::take(&mut self.pending_steps);
+        for step in steps {
+            step(self)?;
+        }
         self.mutable.set_state(self.new_state);
         Ok(())
     }
@@ -124,7 +159,7 @@ mod tests_push_handlers {
 
     use crate::{
         Client, Datatype, DatatypeState,
-        utils::path::{get_test_collection_name, get_test_func_name},
+        utils::test_utils::{get_test_collection_name, get_test_func_name},
     };
 
     #[test]

@@ -73,9 +73,11 @@ impl LocalDatatypeServer {
             if tx.cseq <= client_cp.cseq {
                 continue;
             }
-            self.history.push(tx.clone());
-            client_cp.cseq = tx.cseq;
             self.sseq += 1;
+            let mut owned_tx = (**tx).clone();
+            owned_tx.sseq = self.sseq;
+            self.history.push(Arc::new(owned_tx));
+            client_cp.cseq = tx.cseq;
         }
         client_cp.sseq = self.sseq;
         client_cp.cseq
@@ -92,21 +94,78 @@ impl LocalDatatypeServer {
             pulled.error = Some(ServerPushPullError::FailedToCreate(
                 "already exist".to_string(),
             ));
+            pulled.state = DatatypeState::Disabled;
             return Ok(pulled);
         }
         if pulled.is_readonly {
-            pulled.error = Some(ServerPushPullError::FailedToCreate(
+            pulled.error = Some(ServerPushPullError::IllegalPushRequest(
                 "readonly client cannot create datatype".to_string(),
             ));
+            pulled.state = DatatypeState::Disabled;
             return Ok(pulled);
         }
-        pulled.state = DatatypeState::DueToCreate;
         self.created = true;
         self.creator = pushed.cuid.clone();
         self.duid = pushed.duid.clone();
         let cseq = self.push_transactions(pushed);
         pulled.checkpoint.sseq = self.sseq;
         pulled.checkpoint.cseq = cseq;
+        pulled.state = DatatypeState::Subscribed;
+        Ok(pulled)
+    }
+
+    pub fn process_due_to_subscribe_or_create(
+        &mut self,
+        pushed: &PushPullPack,
+    ) -> Result<PushPullPack, ConnectivityError> {
+        if self.created {
+            self.process_due_to_subscribe(pushed)
+        } else {
+            self.process_due_to_create(pushed)
+        }
+    }
+
+    pub fn process_subscribe(
+        &mut self,
+        pushed: &PushPullPack,
+    ) -> Result<PushPullPack, ConnectivityError> {
+        let mut pulled = pushed.get_pulled_stub();
+        if pulled.is_readonly && !pushed.transactions.is_empty() {
+            pulled.error = Some(ServerPushPullError::IllegalPushRequest(
+                "readonly client cannot push transactions".to_string(),
+            ));
+            pulled.state = DatatypeState::Disabled;
+            return Ok(pulled);
+        }
+        let cseq = self.push_transactions(pushed);
+        pulled.checkpoint.sseq = pushed.checkpoint.sseq;
+        pulled.checkpoint.cseq = cseq;
+        self.pull_transactions(&mut pulled);
+        pulled.state = DatatypeState::Subscribed;
+        Ok(pulled)
+    }
+
+    pub fn process_due_to_unsubscribe(
+        &mut self,
+        pushed: &PushPullPack,
+    ) -> Result<PushPullPack, ConnectivityError> {
+        let pulled = pushed.get_pulled_stub();
+        Ok(pulled)
+    }
+
+    pub fn process_due_to_delete(
+        &mut self,
+        pushed: &PushPullPack,
+    ) -> Result<PushPullPack, ConnectivityError> {
+        let pulled = pushed.get_pulled_stub();
+        Ok(pulled)
+    }
+
+    pub fn process_disabled(
+        &mut self,
+        pushed: &PushPullPack,
+    ) -> Result<PushPullPack, ConnectivityError> {
+        let pulled = pushed.get_pulled_stub();
         Ok(pulled)
     }
 
@@ -121,6 +180,7 @@ impl LocalDatatypeServer {
                 pushed.r#type,
                 pushed.resource_id(),
             )));
+            pulled.state = DatatypeState::Disabled;
             return Ok(pulled);
         }
         if self.r#type != pushed.r#type {
@@ -130,23 +190,26 @@ impl LocalDatatypeServer {
                 pushed.r#type,
                 self.r#type,
             )));
+            pulled.state = DatatypeState::Disabled;
             return Ok(pulled);
         }
         if !pushed.transactions.is_empty() {
             pulled.error = Some(ServerPushPullError::IllegalPushRequest(
                 "cannot push transactions when subscribing".to_string(),
             ));
+            pulled.state = DatatypeState::Disabled;
             return Ok(pulled);
         }
 
         pulled.duid = self.duid.clone();
-        let creator_wired = self
+        let wired_of_creator = self
             .get_creator_wired_datatype()
             .ok_or(ConnectivityError::ResourceNotFound(pushed.resource_id()))?;
-        let tx = creator_wired.get_subscribe_snapshot();
+        let tx = wired_of_creator.get_subscribe_snapshot();
         pulled.checkpoint.sseq = tx.sseq;
         pulled.snapshot_transaction = Some(Arc::new(tx));
-        self.pull_transactions();
+        self.pull_transactions(&mut pulled);
+        pulled.state = DatatypeState::Subscribed;
         Ok(pulled)
     }
 
@@ -154,7 +217,15 @@ impl LocalDatatypeServer {
         self.wired_map.get(&self.creator).cloned()
     }
 
-    pub fn pull_transactions(&self) {}
+    pub fn pull_transactions(&self, pulled: &mut PushPullPack) {
+        let from_sseq = pulled.checkpoint.sseq;
+        for tx in &self.history {
+            if tx.sseq > from_sseq {
+                pulled.transactions.push(tx.clone());
+            }
+        }
+        pulled.checkpoint.sseq = self.sseq;
+    }
 
     #[cfg(test)]
     pub fn get_wired_datatype(&self, cuid: &Cuid) -> Option<Arc<WiredDatatype>> {
@@ -164,36 +235,95 @@ impl LocalDatatypeServer {
 
 #[cfg(test)]
 mod tests_local_datatype_server {
+    use std::sync::Arc;
 
+    use rstest::rstest;
     use tracing::{info, instrument};
 
     use crate::{
-        Client, Datatype, DatatypeError, DatatypeState,
+        Client, Counter, DataType, Datatype, DatatypeError, DatatypeState,
         connectivity::local_connectivity::LocalConnectivity,
         errors::{
             datatypes::{DatatypeAction, DatatypeErrorWithActions, EventLoopAction},
-            push_pull::{ClientPushPullError, ServerPushPullError},
+            push_pull::ServerPushPullError,
         },
+        operations::transaction::Transaction,
         types::{checkpoint::CheckPoint, push_pull_pack::PushPullPack, uid::Duid},
-        utils::path::{get_test_collection_name, get_test_func_name},
+        utils::test_utils::{get_test_collection_name, get_test_func_name, get_test_ids},
     };
+
+    fn push_no_change(_push: &mut PushPullPack) {}
+    fn push_set_readonly(push: &mut PushPullPack) {
+        push.is_readonly = true;
+    }
+    fn push_set_new_duid(push: &mut PushPullPack) {
+        push.duid = Duid::new();
+    }
+    fn push_set_variable_type(push: &mut PushPullPack) {
+        push.r#type = DataType::Variable;
+    }
+    fn push_add_transaction(push: &mut PushPullPack) {
+        push.transactions.push(Arc::new(Transaction::default()));
+    }
 
     fn assert_push_pull_pack(
         pulled: &PushPullPack,
         is_readonly: bool,
         cp: CheckPoint,
-        state: DatatypeState,
         error: Option<ServerPushPullError>,
+        tx_len: usize,
     ) {
         assert_eq!(pulled.is_readonly, is_readonly);
         assert_eq!(pulled.checkpoint, cp);
-        assert_eq!(pulled.state, state);
+        if error.is_some() {
+            assert_eq!(pulled.state, DatatypeState::Disabled);
+        } else {
+            assert_eq!(pulled.state, DatatypeState::Subscribed);
+        }
+
         assert_eq!(pulled.error, error);
+        assert_eq!(pulled.transactions.len(), tx_len);
     }
 
-    #[test]
+    fn make_create_error() -> DatatypeErrorWithActions {
+        DatatypeErrorWithActions::new(
+            DatatypeError::FailedToCreate("".to_owned()),
+            EventLoopAction::Normal,
+            DatatypeAction::Normal,
+        )
+    }
+
+    #[rstest]
+    #[case::readonly(
+        false,
+        push_set_readonly,
+        true,
+        Some(ServerPushPullError::IllegalPushRequest("".to_string())),
+        CheckPoint::new(0, 0),
+        false,
+        0,
+    )]
+    #[case::normal(false, push_no_change, false, None, CheckPoint::new(10, 10), true, 10)]
+    #[case::duplicate(true, push_no_change, false, None, CheckPoint::new(10, 10), true, 10)]
+    #[case::already_created(
+        true,
+        push_set_new_duid,
+        false,
+        Some(ServerPushPullError::FailedToCreate("already exist".to_string())),
+        CheckPoint::new(0, 0),
+        true,
+        10,
+    )]
     #[instrument]
-    fn can_process_due_to_create() {
+    fn can_process_due_to_create(
+        #[case] pre_create: bool,
+        #[case] modify_push: fn(&mut PushPullPack),
+        #[case] expected_is_readonly: bool,
+        #[case] expected_error: Option<ServerPushPullError>,
+        #[case] expected_cp: CheckPoint,
+        #[case] expected_created: bool,
+        #[case] expected_history_len: usize,
+    ) {
         let connectivity = LocalConnectivity::new_arc();
         connectivity.set_realtime(false);
         let resource_id = format!("{}/{}", get_test_collection_name!(), get_test_func_name!());
@@ -217,104 +347,78 @@ mod tests_local_datatype_server {
             .get_wired_interceptor(&resource_id, &client1.get_cuid())
             .unwrap();
 
-        // readonly client should fail
+        if pre_create {
+            wired_interceptor1
+                .set_before_push(|_push| {})
+                .set_after_pull(|_pull| Err(make_create_error()));
+            let _ = counter1.sync();
+            assert!(server.read().created);
+        }
+
+        let expected_error = Arc::new(expected_error);
+        let expected_error2 = expected_error.clone();
+
         wired_interceptor1
-            .set_before_push(|push| {
-                push.is_readonly = true;
+            .set_before_push(move |push| {
+                modify_push(push);
                 info!("PUSH:{push}");
             })
-            .set_after_pull(|pull| {
+            .set_after_pull(move |pull| {
                 info!("PULL:{pull}");
                 assert_push_pull_pack(
                     pull,
-                    true,
-                    CheckPoint::new(0, 0),
-                    DatatypeState::DueToCreate,
-                    Some(ServerPushPullError::FailedToCreate("".to_string())),
+                    expected_is_readonly,
+                    expected_cp,
+                    (*expected_error2).clone(),
+                    0,
                 );
-
-                Err(DatatypeErrorWithActions::new(
-                    DatatypeError::FailedToCreate("".to_owned()),
-                    EventLoopAction::Normal,
-                    DatatypeAction::Normal,
-                ))
-            });
-        assert!(counter1.sync().is_err());
-        assert!(!server.read().created);
-
-        // normal DUE_TO_CREATE case
-        wired_interceptor1
-            .set_before_push(|push| {
-                info!("PUSH:{push}");
-            })
-            .set_after_pull(|pull| {
-                info!("PULL:{pull}");
-                assert_push_pull_pack(
-                    pull,
-                    false,
-                    CheckPoint::new(10, 10),
-                    DatatypeState::DueToCreate,
-                    None,
-                );
-                Err(DatatypeErrorWithActions::new(
-                    DatatypeError::FailedToCreate("".to_owned()),
-                    EventLoopAction::Normal,
-                    DatatypeAction::Normal,
-                ))
-            });
-        assert!(counter1.sync().is_err());
-        assert!(server.read().created);
-        assert_eq!(server.read().history.len(), 10);
-
-        // duplicated DUE_TO_CREATE case
-        wired_interceptor1
-            .set_before_push(|push| {
-                assert_eq!(push.state, DatatypeState::DueToCreate);
-                info!("PUSH:{push}");
-            })
-            .set_after_pull(|pull| {
-                info!("PULL:{pull}");
-                assert_push_pull_pack(
-                    pull,
-                    false,
-                    CheckPoint::new(10, 10),
-                    DatatypeState::DueToCreate,
-                    None,
-                );
-                Err(ClientPushPullError::FailToGetPushingTransactions.mapping())
+                Ok(())
             });
 
-        assert!(counter1.sync().is_err());
-        assert!(server.read().created);
-        assert_eq!(server.read().history.len(), 10);
-
-        // already-created case
-        wired_interceptor1
-            .set_before_push(|push| {
-                push.duid = Duid::new();
-                info!("PUSH:{push}");
-            })
-            .set_after_pull(|pull| {
-                info!("PULL:{pull}");
-                assert_push_pull_pack(
-                    pull,
-                    false,
-                    CheckPoint::new(0, 0),
-                    DatatypeState::DueToCreate,
-                    Some(ServerPushPullError::FailedToCreate(
-                        "already exist".to_string(),
-                    )),
-                );
-                Err(ClientPushPullError::FailToGetPushingTransactions.mapping())
-            });
-        assert!(counter1.sync().is_err());
-        assert!(server.read().created);
+        let sync_result = counter1.sync();
+        if expected_error.is_some() {
+            assert!(matches!(
+                sync_result.unwrap_err(),
+                DatatypeError::FailedToCreate(_)
+            ));
+            // assert!(equal_errors!(&sync_result.unwrap_err(), &expected_error.unwrap()));
+            assert_eq!(counter1.get_state(), DatatypeState::Disabled);
+        } else {
+            assert!(sync_result.is_ok());
+            assert_eq!(counter1.get_state(), DatatypeState::Subscribed);
+        }
+        assert_eq!(server.read().created, expected_created);
+        assert_eq!(server.read().history.len(), expected_history_len);
         info!("{}", server.read());
     }
 
-    #[test]
+    #[rstest]
+    #[case::success(true, push_no_change, None, CheckPoint::new(5, 0))]
+    #[case::not_created(
+        false,
+        push_no_change,
+        Some(ServerPushPullError::FailedToSubscribe("".to_string())),
+        CheckPoint::new(0, 0),
+    )]
+    #[case::type_mismatch(
+        true,
+        push_set_variable_type,
+        Some(ServerPushPullError::FailedToSubscribe("".to_string())),
+        CheckPoint::new(0, 0),
+    )]
+    #[case::with_transactions(
+        true,
+        push_add_transaction,
+        Some(ServerPushPullError::IllegalPushRequest("".to_string())),
+        CheckPoint::new(0, 0),
+    )]
     #[instrument]
-    fn can_process_due_to_subscribe() {
+    fn can_process_due_to_subscribe(
+        #[case] creator_sync: bool,
+        #[case] modify_push: fn(&mut PushPullPack),
+        #[case] expected_error: Option<ServerPushPullError>,
+        #[case] expected_cp: CheckPoint,
+    ) {
         let connectivity = LocalConnectivity::new_arc();
         connectivity.set_realtime(false);
         let resource_id = format!("{}/{}", get_test_collection_name!(), get_test_func_name!());
@@ -332,8 +436,14 @@ mod tests_local_datatype_server {
             .create_datatype(get_test_func_name!())
             .build_counter()
             .unwrap();
-        let _ = counter1.increase_by(42);
-        assert!(counter1.sync().is_ok());
+        for i in 0..5 {
+            counter1.increase_by(i).unwrap();
+        }
+
+        if creator_sync {
+            assert!(counter1.sync().is_ok());
+            assert_eq!(counter1.get_state(), DatatypeState::Subscribed);
+        }
 
         let counter2 = client2
             .subscribe_datatype(get_test_func_name!())
@@ -342,25 +452,176 @@ mod tests_local_datatype_server {
         let interceptor2 = connectivity
             .get_wired_interceptor(&resource_id, &client2.get_cuid())
             .unwrap();
+
+        let expected_error = Arc::new(expected_error);
+        let expected_error2 = expected_error.clone();
+
         interceptor2
-            .set_before_push(|push| {
-                info!("{push}");
+            .set_before_push(move |push| {
+                modify_push(push);
+                info!("PUSH: {push}");
             })
-            .set_after_pull(|pull| {
-                info!("{pull}");
+            .set_after_pull(move |pull| {
+                info!("PULL: {pull}");
+                assert_push_pull_pack(pull, false, expected_cp, (*expected_error2).clone(), 0);
                 Ok(())
             });
-        assert!(counter2.sync().is_ok());
-        assert_eq!(counter1.get_value(), counter2.get_value());
 
-        assert_ne!(
-            counter1.get_attr().get_cuid(),
-            counter2.get_attr().get_cuid()
-        );
+        let sync_result = counter2.sync();
+        if expected_error.is_some() {
+            assert!(matches!(
+                sync_result.unwrap_err(),
+                DatatypeError::FailedToSubscribe(_)
+            ));
+            assert_eq!(counter2.get_state(), DatatypeState::Disabled);
+        } else {
+            assert!(sync_result.is_ok());
+            assert_eq!(counter1.get_value(), counter2.get_value());
+            assert_eq!(counter2.get_state(), DatatypeState::Subscribed);
+            assert_ne!(
+                counter1.get_attr().get_cuid(),
+                counter2.get_attr().get_cuid()
+            );
+            assert_eq!(
+                counter1.get_attr().get_duid(),
+                counter2.get_attr().get_duid()
+            );
+        }
+    }
 
-        assert_eq!(
-            counter1.get_attr().get_duid(),
-            counter2.get_attr().get_duid()
-        );
+    #[rstest]
+    #[case::normal(5, false, push_no_change, false, None, CheckPoint::new(10, 10), 5)]
+    #[case::readonly_with_transactions(
+        5,
+        false,
+        push_set_readonly,
+        true,
+        Some(ServerPushPullError::IllegalPushRequest("".to_string())),
+        CheckPoint::new(0, 0),
+        0,
+    )]
+    #[case::readonly_no_transactions(
+        0,
+        false,
+        push_set_readonly,
+        true,
+        None,
+        CheckPoint::new(5, 5),
+        0
+    )]
+    #[case::pull_from_another_client(
+        3,
+        true,
+        push_no_change,
+        false,
+        None,
+        CheckPoint::new(8, 0),
+        3
+    )]
+    #[instrument]
+    fn can_process_subscribe(
+        #[case] extra_ops: i64,
+        #[case] use_subscriber: bool,
+        #[case] modify_push: fn(&mut PushPullPack),
+        #[case] expected_is_readonly: bool,
+        #[case] expected_error: Option<ServerPushPullError>,
+        #[case] expected_cp: CheckPoint,
+        #[case] expected_tx_len: usize,
+    ) {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let (collection, key, resource_id) = get_test_ids!();
+
+        let client1 = Client::builder(collection.clone(), "client1")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let counter1 = client1
+            .subscribe_or_create_datatype(key.clone())
+            .build_counter()
+            .unwrap();
+        for i in 0..5 {
+            counter1.increase_by(i).unwrap();
+        }
+        assert!(counter1.sync().is_ok());
+        assert_eq!(counter1.get_state(), DatatypeState::Subscribed);
+
+        if use_subscriber {
+            let client2 = Client::builder(collection, "client2")
+                .with_connectivity(connectivity.clone())
+                .build()
+                .unwrap();
+            let counter2 = client2.subscribe_datatype(key).build_counter().unwrap();
+            assert!(counter2.sync().is_ok());
+            assert_eq!(counter2.get_state(), DatatypeState::Subscribed);
+
+            for i in 0..extra_ops {
+                counter1.increase_by(i).unwrap();
+            }
+            assert!(counter1.sync().is_ok());
+
+            let interceptor2 = connectivity
+                .get_wired_interceptor(&resource_id, &client2.get_cuid())
+                .unwrap();
+            let expected_error = Arc::new(expected_error);
+            let expected_error2 = expected_error.clone();
+            interceptor2
+                .set_before_push(move |push| {
+                    modify_push(push);
+                })
+                .set_after_pull(move |pull| {
+                    assert_push_pull_pack(
+                        pull,
+                        expected_is_readonly,
+                        expected_cp,
+                        (*expected_error2).clone(),
+                        expected_tx_len,
+                    );
+                    Ok(())
+                });
+            check_error(expected_error, &counter2);
+        } else {
+            for i in 0..extra_ops {
+                counter1.increase_by(i).unwrap();
+            }
+            let interceptor1 = connectivity
+                .get_wired_interceptor(&resource_id, &client1.get_cuid())
+                .unwrap();
+            let expected_error = Arc::new(expected_error);
+            let expected_error2 = expected_error.clone();
+            interceptor1
+                .set_before_push(move |push| {
+                    info!("PUSH: {push}");
+                    modify_push(push);
+                })
+                .set_after_pull(move |pull| {
+                    info!("PULL: {pull}");
+                    assert_push_pull_pack(
+                        pull,
+                        expected_is_readonly,
+                        expected_cp,
+                        (*expected_error2).clone(),
+                        expected_tx_len,
+                    );
+                    Ok(())
+                });
+            check_error(expected_error, &counter1);
+        }
+    }
+
+    fn check_error(expected_error: Arc<Option<ServerPushPullError>>, counter: &Counter) {
+        let sync_result = counter.sync();
+        if expected_error.is_some() {
+            assert_eq!(
+                sync_result.unwrap_err(),
+                DatatypeError::FailedByServerPushPullError(
+                    ServerPushPullError::IllegalPushRequest("".to_string())
+                )
+            );
+            assert_eq!(counter.get_state(), DatatypeState::Disabled);
+        } else {
+            assert!(sync_result.is_ok());
+            assert_eq!(counter.get_state(), DatatypeState::Subscribed);
+        }
     }
 }

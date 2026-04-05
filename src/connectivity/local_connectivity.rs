@@ -172,7 +172,15 @@ impl Connectivity for LocalConnectivity {
             DatatypeState::DueToSubscribe => {
                 local_datatype_server.process_due_to_subscribe(pushed)?
             }
-            _ => todo!("TODO: {}", pushed.state),
+            DatatypeState::DueToSubscribeOrCreate => {
+                local_datatype_server.process_due_to_subscribe_or_create(pushed)?
+            }
+            DatatypeState::Subscribed => local_datatype_server.process_subscribe(pushed)?,
+            DatatypeState::DueToUnsubscribe => {
+                local_datatype_server.process_due_to_unsubscribe(pushed)?
+            }
+            DatatypeState::DueToDelete => local_datatype_server.process_due_to_delete(pushed)?,
+            DatatypeState::Disabled => local_datatype_server.process_disabled(pushed)?,
         };
         Ok(pulled)
     }
@@ -190,7 +198,7 @@ mod tests_local_connectivity {
 
     use crate::{
         Client, Datatype, DatatypeState, connectivity::local_connectivity::LocalConnectivity,
-        utils::path::get_test_collection_name,
+        utils::test_utils::get_test_collection_name,
     };
 
     #[test]
