@@ -60,6 +60,14 @@ macro_rules! with_err_out {
     }};
 }
 
+#[cfg(test)]
+macro_rules! equal_errors {
+    ($err1:expr, $err2:expr) => {{ std::mem::discriminant($err1) == std::mem::discriminant($err2) }};
+}
+
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(crate) use equal_errors;
 pub(crate) use with_err_out;
 
 #[cfg(test)]
@@ -79,14 +87,17 @@ mod tests_datatype_errors {
 
     #[test]
     fn can_compare_errors() {
-        let source_err1 = Box::new(Error::new(ErrorKind::InvalidData, "source err1"));
-        let source_err2 = Box::new(Error::new(ErrorKind::InvalidInput, "source err2"));
-        let e1 = DatatypeError::FailedTransaction(source_err1);
-        let e2 = DatatypeError::FailedTransaction(source_err2);
-        assert_eq!(e1, e2);
-
+        let source_err1 = Error::new(ErrorKind::InvalidData, "source err1");
+        let source_err2 = Error::new(ErrorKind::InvalidInput, "source err2");
+        let e1 = DatatypeError::FailedTransaction(source_err1.to_string());
+        let e2 = DatatypeError::FailedTransaction(source_err2.to_string());
+        assert_ne!(e1, e2);
         let e3 = DatatypeError::FailedToDeserialize("e2".to_string());
         assert_ne!(e2, e3);
+        assert!(equal_errors!(&e1, &e2));
+        assert!(!equal_errors!(&e1, &e3));
+        let e4 = e3.clone();
+        assert_eq!(e3, e4);
     }
 
     #[test]
@@ -94,11 +105,11 @@ mod tests_datatype_errors {
         let d1 = with_err_out!(DatatypeError::FailedToDeserialize(
             "datatype error".to_owned()
         ));
-        let source_err1 = Box::new(Error::new(ErrorKind::InvalidInput, "source err1"));
-        let d2 = with_err_out!(DatatypeError::FailedTransaction(source_err1));
+        let source_err1 = Error::new(ErrorKind::InvalidInput, "source err1");
+        let d2 = with_err_out!(DatatypeError::FailedTransaction(source_err1.to_string()));
         assert_ne!(d1, d2);
         let c1 = with_err_out!(ClientError::FailedToSubscribeOrCreateDatatype(
-            "clients error".to_owned()
+            "clients error".into()
         ));
         let c2 = with_err_out!(ClientError::FailedToSubscribeOrCreateDatatype("".into()));
         assert_eq!(c1, c2);
@@ -106,7 +117,7 @@ mod tests_datatype_errors {
     }
 
     fn into_next_stack() {
-        let err = Box::new(TrySendError::Full(Event::PushTransaction(None)));
-        let _d3 = with_err_out!(DatatypeError::FailedInEventLoop(err));
+        let err = TrySendError::Full(Event::PushTransaction(None));
+        let _d3 = with_err_out!(DatatypeError::FailedInEventLoop(err.to_string()));
     }
 }

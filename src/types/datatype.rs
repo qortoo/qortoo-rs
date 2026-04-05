@@ -136,7 +136,7 @@ mod tests_datatype {
     use super::*;
     use crate::{
         Client, Datatype,
-        utils::path::{get_test_collection_name, get_test_func_name},
+        utils::test_utils::{get_test_collection_name, get_test_func_name},
     };
 
     #[test]

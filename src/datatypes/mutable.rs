@@ -203,4 +203,8 @@ impl MutableDatatype {
                 .notify_state_change(old_state, new_state);
         }
     }
+
+    pub fn call_error_handler(&self, err: DatatypeError) {
+        self.handlers_manager.notify_error(err)
+    }
 }

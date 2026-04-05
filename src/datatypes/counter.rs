@@ -171,7 +171,7 @@ impl Counter {
             counter_clone.tx_ctx = this_tx_ctx_clone.clone();
             match tx_func(counter_clone) {
                 Ok(_) => Ok(()),
-                Err(e) => Err(DatatypeError::FailedTransaction(e)),
+                Err(e) => Err(DatatypeError::FailedTransaction(e.to_string())),
             }
         };
         self.datatype.do_transaction(this_tx_ctx, do_tx_func)
@@ -192,7 +192,7 @@ mod tests_counter {
     use crate::{
         DataType, DatatypeState,
         datatypes::{counter::Counter, datatype::Datatype},
-        utils::path::get_test_func_name,
+        utils::test_utils::get_test_func_name,
     };
 
     #[test]

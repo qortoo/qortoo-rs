@@ -353,7 +353,7 @@ mod tests_transactional {
             transactional::{TransactionContext, TransactionalDatatype},
         },
         operations::Operation,
-        utils::path::{get_test_collection_name, get_test_func_name},
+        utils::test_utils::{get_test_collection_name, get_test_func_name},
     };
 
     #[test]

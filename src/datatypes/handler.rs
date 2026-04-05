@@ -15,7 +15,7 @@ pub type OnStateChangeFn = Box<dyn Fn(DatatypeSet, DatatypeState, DatatypeState)
 /// Signature for an error handler.
 ///
 /// Receives: `(datatype_set, error)`
-pub type OnErrorFn = Box<dyn Fn(DatatypeSet, &DatatypeError) + Send + Sync>;
+pub type OnErrorFn = Box<dyn Fn(DatatypeSet, DatatypeError) + Send + Sync>;
 
 /// Holds per-datatype event handlers for state changes and errors.
 /// Default handlers are no-ops.
@@ -42,7 +42,7 @@ impl DatatypeHandler {
 
     pub fn set_on_error(
         mut self,
-        f: impl Fn(DatatypeSet, &DatatypeError) + Send + Sync + 'static,
+        f: impl Fn(DatatypeSet, DatatypeError) + Send + Sync + 'static,
     ) -> Self {
         self.on_error = Box::new(f);
         self
@@ -61,8 +61,7 @@ impl DatatypeHandler {
         }
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn notify_error(&self, datatype_set: DatatypeSet, error: &DatatypeError) {
+    pub(crate) fn notify_error(&self, datatype_set: DatatypeSet, error: DatatypeError) {
         if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             (self.on_error)(datatype_set, error)
         })) {
@@ -111,8 +110,10 @@ impl HandlersManager {
             .and_then(|arc| Arc::try_unwrap(arc).ok())
     }
 
-    #[instrument]
-    pub(crate) fn notify_state_change(&self, old_state: DatatypeState, new_state: DatatypeState) {
+    fn dispatch<F>(&self, event_name: &'static str, notify: F)
+    where
+        F: Fn(&DatatypeHandler, DatatypeSet) + Send + 'static,
+    {
         let rt_handle = self.attr.client_common.handle.clone();
         if let Some(ds) = self.attr.get_datatype_set() {
             let handlers: Vec<(usize, Arc<DatatypeHandler>)> =
@@ -121,12 +122,26 @@ impl HandlersManager {
             rt_handle.spawn(async move {
                 for (priority, handler) in handlers {
                     span.in_scope(|| {
-                        add_span_event!(format!("notify_state_change priority={priority}"));
-                        handler.notify_state_change(ds.clone(), old_state, new_state);
+                        add_span_event!(format!("{event_name} priority={priority}"));
+                        notify(&handler, ds.clone());
                     });
                 }
             });
         }
+    }
+
+    #[instrument]
+    pub(crate) fn notify_state_change(&self, old_state: DatatypeState, new_state: DatatypeState) {
+        self.dispatch("notify_state_change", move |handler, ds| {
+            handler.notify_state_change(ds, old_state, new_state);
+        });
+    }
+
+    #[instrument]
+    pub(crate) fn notify_error(&self, err: DatatypeError) {
+        self.dispatch("notify_error", move |handler, ds| {
+            handler.notify_error(ds, err.clone());
+        });
     }
 }
 
@@ -140,11 +155,11 @@ mod tests_handers_manager {
         time::Duration,
     };
 
-    use tracing::instrument;
+    use tracing::{info, instrument};
 
     use crate::{
-        Client, Datatype, DatatypeHandler, DatatypeState, LocalConnectivity,
-        utils::path::{get_test_collection_name, get_test_func_name},
+        Client, Datatype, DatatypeError, DatatypeHandler, DatatypeState, LocalConnectivity,
+        utils::test_utils::{get_test_collection_name, get_test_func_name},
     };
 
     #[test]
@@ -185,6 +200,53 @@ mod tests_handers_manager {
 
         counter.set_handler(0, handler1);
         counter.sync().unwrap();
+        awaitility::at_most(Duration::from_secs(2))
+            .poll_interval(Duration::from_micros(100))
+            .until(|| call_count.load(Ordering::Relaxed) == 2);
+    }
+
+    #[test]
+    #[instrument]
+    fn can_notify_error() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .with_connectivity(connectivity)
+            .build()
+            .unwrap();
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let count_for_h1 = call_count.clone();
+        let count_for_h2 = call_count.clone();
+
+        let handler1 = DatatypeHandler::new().set_on_error(move |ds, err| {
+            info!("error1: {:?}", err);
+            assert!(matches!(err, DatatypeError::FailedToSubscribe(_)));
+            let a = count_for_h1.fetch_add(1, Ordering::Relaxed);
+            assert_eq!(a, 1);
+            assert_eq!(ds.get_state(), DatatypeState::Disabled);
+        });
+
+        let handler2 = DatatypeHandler::new().set_on_error(move |ds, err| {
+            info!("error2: {:?}", err);
+            assert!(matches!(err, DatatypeError::FailedToSubscribe(_)));
+            let a = count_for_h2.fetch_add(1, Ordering::Relaxed);
+            assert_eq!(a, 0);
+            assert_eq!(ds.get_state(), DatatypeState::Disabled);
+        });
+
+        let counter1 = client
+            .subscribe_datatype(get_test_func_name!())
+            .with_handler(1, handler1)
+            .with_handler(0, handler2)
+            .build_counter()
+            .unwrap();
+        assert_eq!(counter1.get_state(), DatatypeState::DueToSubscribe);
+        assert!(matches!(
+            counter1.sync().unwrap_err(),
+            DatatypeError::FailedToSubscribe(_)
+        ));
+        assert_eq!(counter1.get_state(), DatatypeState::Disabled);
         awaitility::at_most(Duration::from_secs(2))
             .poll_interval(Duration::from_micros(100))
             .until(|| call_count.load(Ordering::Relaxed) == 2);

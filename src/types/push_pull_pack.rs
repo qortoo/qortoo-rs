@@ -79,15 +79,6 @@ impl PushPullPack {
             error: None,
         }
     }
-
-    #[cfg(test)]
-    pub fn add_test_transactions(&mut self, cuid: &Cuid, from_cseq: u64, tx_size: usize) {
-        for cseq in from_cseq..from_cseq + tx_size as u64 {
-            let tx = Transaction::new_arc_for_test(cuid, cseq);
-            self.transactions.push(tx);
-            self.checkpoint.cseq = cseq;
-        }
-    }
 }
 
 impl Display for PushPullPack {
@@ -110,7 +101,7 @@ impl Display for PushPullPack {
 
         write!(
             f,
-            "[{:?}/{}/{} {} {} tx:{} {}:{}:{} {}]",
+            "[{:?}/{}/{} {} {} tx:{} s{}:c{}:sf{} {}]",
             self.r#type,
             self.key,
             self.duid,

@@ -46,11 +46,10 @@ impl Connectivity for NullConnectivity {
                     );
                     return Ok(pulled);
                 }
-                pulled.state = DatatypeState::DueToCreate;
+                pulled.state = DatatypeState::Subscribed;
                 self.push_transaction(pushed, &mut pulled);
             }
             DatatypeState::DueToSubscribe => {
-                pulled.state = DatatypeState::DueToSubscribe;
                 if !pushed.transactions.is_empty() {
                     self.set_illegal_push_request(
                         &mut pulled,
@@ -58,6 +57,7 @@ impl Connectivity for NullConnectivity {
                     );
                     return Ok(pulled);
                 }
+                pulled.state = DatatypeState::Subscribed;
             }
             DatatypeState::Subscribed => {
                 pulled.state = DatatypeState::Subscribed;

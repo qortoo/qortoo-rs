@@ -54,7 +54,7 @@ pub trait Datatype {
     ///
     /// # Errors
     ///
-    /// Returns [`DatatypeError::FailedToPushPull`] if the synchronization fails.
+    /// Returns [`DatatypeError::FailedByClientPushPullError`] if the synchronization fails.
     ///
     /// # Examples
     ///
@@ -144,7 +144,7 @@ mod tests_datatype_trait {
             datatypes::{DatatypeAction, DatatypeErrorWithActions, EventLoopAction},
             push_pull::ClientPushPullError,
         },
-        utils::path::{get_test_collection_name, get_test_func_name},
+        utils::test_utils::{get_test_collection_name, get_test_func_name, get_test_ids},
     };
 
     #[test]
@@ -170,15 +170,13 @@ mod tests_datatype_trait {
     fn can_use_sync_method() {
         let connectivity = LocalConnectivity::new_arc();
         connectivity.set_realtime(false);
-        let resource_id = format!("{}/{}", get_test_collection_name!(), get_test_func_name!());
-        let client1 = Client::builder(get_test_collection_name!(), get_test_collection_name!())
+        let (collection, key, resource_id) = get_test_ids!();
+
+        let client1 = Client::builder(collection, key.clone())
             .with_connectivity(connectivity.clone())
             .build()
             .unwrap();
-        let counter1 = client1
-            .create_datatype(get_test_func_name!())
-            .build_counter()
-            .unwrap();
+        let counter1 = client1.create_datatype(key).build_counter().unwrap();
 
         let interceptor1 = connectivity
             .get_wired_interceptor(&resource_id, &client1.get_cuid())
@@ -187,15 +185,15 @@ mod tests_datatype_trait {
         // produce push_pull error
         interceptor1.set_after_pull(|_pull| {
             Err(DatatypeErrorWithActions::new(
-                DatatypeError::FailedToPushPull(ClientPushPullError::ExceedMaxMemSize),
+                DatatypeError::FailedByClientPushPullError(ClientPushPullError::ExceedMaxMemSize),
                 EventLoopAction::BackOff,
-                DatatypeAction::Recovery,
+                DatatypeAction::Reset,
             ))
         });
 
         assert_eq!(
             counter1.sync().unwrap_err(),
-            DatatypeError::FailedToPushPull(ClientPushPullError::ExceedMaxMemSize)
+            DatatypeError::FailedByClientPushPullError(ClientPushPullError::ExceedMaxMemSize)
         );
         assert_eq!(counter1.get_state(), DatatypeState::DueToCreate);
 

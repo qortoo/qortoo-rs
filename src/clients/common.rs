@@ -73,7 +73,7 @@ impl Drop for ClientCommon {
 #[cfg(test)]
 macro_rules! new_client_common {
     () => {{
-        let paths = crate::utils::path::caller_path!();
+        let paths = crate::utils::test_utils::caller_path!();
         crate::clients::common::ClientCommon::new_for_test(paths)
     }};
 }
