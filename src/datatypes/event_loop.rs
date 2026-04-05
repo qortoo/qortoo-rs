@@ -51,7 +51,7 @@ impl EventLoop {
 
     pub fn new_arc(connectivity: Arc<dyn Connectivity>) -> Arc<Self> {
         let (unbounded_tx, unbounded_rx) = crossbeam_channel::unbounded::<Event>();
-        let (bounded_tx, bounded_rx) = crossbeam_channel::bounded::<Event>(0);
+        let (bounded_tx, bounded_rx) = crossbeam_channel::bounded::<Event>(1);
         Arc::new(Self {
             connectivity,
             unbounded_rx,
