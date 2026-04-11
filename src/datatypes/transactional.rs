@@ -103,7 +103,7 @@ impl Datatype for TransactionalDatatype {
     }
 
     fn get_synced_client_version(&self) -> u64 {
-        self.mutable.read().op_id.cseq
+        self.mutable.read().checkpoint.cseq
     }
 
     fn sync(&self) -> Result<(), DatatypeError> {

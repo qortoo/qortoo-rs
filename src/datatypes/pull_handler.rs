@@ -1,11 +1,11 @@
-use tracing::instrument;
+use tracing::{debug, instrument};
 
 use crate::{
     DatatypeError, DatatypeState,
     datatypes::mutable::MutableDatatype,
     errors::datatypes::{DatatypeAction, DatatypeErrorWithActions, EventLoopAction},
     observability::macros::add_span_event,
-    types::push_pull_pack::PushPullPack,
+    types::{checkpoint::CheckPoint, push_pull_pack::PushPullPack},
 };
 
 type PendingStep<'b> = fn(&mut PullHandler<'b>) -> Result<(), DatatypeErrorWithActions>;
@@ -17,6 +17,7 @@ pub struct PullHandler<'a> {
     new_state: DatatypeState,
     is_created: bool,
     pending_steps: Vec<PendingStep<'a>>,
+    skip: usize,
 }
 
 impl<'a> PullHandler<'a> {
@@ -29,6 +30,7 @@ impl<'a> PullHandler<'a> {
             new_state: old_state,
             is_created: false,
             pending_steps: Vec::new(),
+            skip: 0,
         }
     }
 
@@ -36,12 +38,12 @@ impl<'a> PullHandler<'a> {
     pub fn apply(&mut self) -> Result<(), DatatypeErrorWithActions> {
         let result = (|| -> Result<(), DatatypeErrorWithActions> {
             self.handle_error_and_datatype_state()?;
-            self.skip_duplicated_transactions()?;
-            self.execute_transactions()?;
-            self.sync_checkpoint()?;
+            self.enqueue_step(Self::skip_duplicated_transactions);
+            self.enqueue_step(Self::execute_transactions);
+            self.enqueue_step(Self::sync_checkpoint);
             Ok(())
         })();
-        self.wrap_up()?;
+        self.commit()?;
         result
     }
 
@@ -125,12 +127,27 @@ impl<'a> PullHandler<'a> {
     }
 
     fn skip_duplicated_transactions(&mut self) -> Result<(), DatatypeErrorWithActions> {
-        // TODO: skip duplicated transactions
+        let need_to_pull = self.calculate_pulling_transactions(&self.pulled_ppp.checkpoint);
+        let len_pulled_txs = self.pulled_ppp.transactions.len();
+        if len_pulled_txs > need_to_pull {
+            self.skip = len_pulled_txs - need_to_pull;
+            debug!("skip {} duplicated transactions", self.skip);
+        }
         Ok(())
     }
 
+    fn calculate_pulling_transactions(&self, new_cp: &CheckPoint) -> usize {
+        let old_cp = &self.mutable.checkpoint;
+        (new_cp.sseq - old_cp.sseq) as usize - (new_cp.cseq - old_cp.cseq) as usize
+    }
+
     fn execute_transactions(&mut self) -> Result<(), DatatypeErrorWithActions> {
-        // TODO: execute transactions
+        let transactions = self.pulled_ppp.transactions[self.skip..].to_vec();
+        for tx in transactions {
+            self.mutable.execute_remote_transaction(tx).map_err(|e| {
+                DatatypeErrorWithActions::new(e, EventLoopAction::Normal, DatatypeAction::Restart)
+            })?;
+        }
         Ok(())
     }
 
@@ -141,7 +158,7 @@ impl<'a> PullHandler<'a> {
         Ok(())
     }
 
-    fn wrap_up(&mut self) -> Result<(), DatatypeErrorWithActions> {
+    fn commit(&mut self) -> Result<(), DatatypeErrorWithActions> {
         let steps = std::mem::take(&mut self.pending_steps);
         for step in steps {
             step(self)?;

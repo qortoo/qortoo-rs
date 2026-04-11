@@ -35,7 +35,25 @@ impl Crdt {
             }
         }
         match self {
-            Crdt::Counter(c) => c.execute_local_operation(op),
+            Crdt::Counter(c) => c.execute_common_operation(op),
+        }
+    }
+
+    pub fn execute_remote_operation(
+        &mut self,
+        op: &Operation,
+    ) -> Result<ReturnType, DatatypeError> {
+        #[cfg(test)]
+        {
+            if let OperationBody::Delay4Test(body) = &op.body {
+                return match body.run() {
+                    Ok(_) => Ok(ReturnType::None),
+                    Err(_) => Err(DatatypeError::FailedToExecuteOperation(format!("{body}"))),
+                };
+            }
+        }
+        match self {
+            Crdt::Counter(c) => c.execute_common_operation(op),
         }
     }
 

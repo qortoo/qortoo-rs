@@ -21,7 +21,10 @@ impl CounterCrdt {
         self.value
     }
 
-    pub fn execute_local_operation(&mut self, op: &Operation) -> Result<ReturnType, DatatypeError> {
+    pub fn execute_common_operation(
+        &mut self,
+        op: &Operation,
+    ) -> Result<ReturnType, DatatypeError> {
         match op.body {
             OperationBody::CounterIncrease(ref body) => {
                 let ret = self.increase_by(body.delta);
