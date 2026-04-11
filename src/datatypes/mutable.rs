@@ -11,7 +11,10 @@ use crate::{
         push_buffer::{MemoryPushBuffer, PushBuffer},
         rollback::Rollback,
     },
-    errors::push_pull::{CLIENT_PUSHPULL_ERR_MSG_NO_SNAPSHOT, ClientPushPullError},
+    errors::{
+        push_pull::{CLIENT_PUSHPULL_ERR_MSG_NO_SNAPSHOT, ClientPushPullError},
+        with_err_out,
+    },
     operations::{Operation, body::OperationBody, transaction::Transaction},
     types::{checkpoint::CheckPoint, operation_id::OperationId},
 };
@@ -149,6 +152,20 @@ impl MutableDatatype {
                 // TODO: replay remote operation
             }
         }
+    }
+
+    pub fn execute_remote_transaction(
+        &mut self,
+        tx: Arc<Transaction>,
+    ) -> Result<(), DatatypeError> {
+        for op in tx.iter() {
+            self.op_id.lamport = self.op_id.lamport.max(op.lamport);
+            self.crdt.execute_remote_operation(op)?;
+            if let Err(e) = self.rollback.shadow_crdt.execute_remote_operation(op) {
+                with_err_out!(e);
+            }
+        }
+        Ok(())
     }
 
     #[instrument(skip_all)]

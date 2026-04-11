@@ -220,7 +220,7 @@ impl LocalDatatypeServer {
     pub fn pull_transactions(&self, pulled: &mut PushPullPack) {
         let from_sseq = pulled.checkpoint.sseq;
         for tx in &self.history {
-            if tx.sseq > from_sseq {
+            if tx.sseq > from_sseq && tx.cuid != pulled.cuid {
                 pulled.transactions.push(tx.clone());
             }
         }
@@ -421,19 +421,19 @@ mod tests_local_datatype_server {
     ) {
         let connectivity = LocalConnectivity::new_arc();
         connectivity.set_realtime(false);
-        let resource_id = format!("{}/{}", get_test_collection_name!(), get_test_func_name!());
+        let (collection, key, resource_id) = get_test_ids!();
 
-        let client1 = Client::builder(get_test_collection_name!(), get_test_func_name!())
+        let client1 = Client::builder(collection.clone(), key.clone())
             .with_connectivity(connectivity.clone())
             .build()
             .unwrap();
-        let client2 = Client::builder(get_test_collection_name!(), get_test_func_name!())
+        let client2 = Client::builder(collection.clone(), key.clone())
             .with_connectivity(connectivity.clone())
             .build()
             .unwrap();
 
         let counter1 = client1
-            .create_datatype(get_test_func_name!())
+            .create_datatype(key.clone())
             .build_counter()
             .unwrap();
         for i in 0..5 {
@@ -446,7 +446,7 @@ mod tests_local_datatype_server {
         }
 
         let counter2 = client2
-            .subscribe_datatype(get_test_func_name!())
+            .subscribe_datatype(key.clone())
             .build_counter()
             .unwrap();
         let interceptor2 = connectivity
@@ -490,7 +490,7 @@ mod tests_local_datatype_server {
     }
 
     #[rstest]
-    #[case::normal(5, false, push_no_change, false, None, CheckPoint::new(10, 10), 5)]
+    #[case::normal(5, false, push_no_change, false, None, CheckPoint::new(10, 10), 0)]
     #[case::readonly_with_transactions(
         5,
         false,
@@ -623,5 +623,117 @@ mod tests_local_datatype_server {
             assert!(sync_result.is_ok());
             assert_eq!(counter.get_state(), DatatypeState::Subscribed);
         }
+    }
+
+    #[test]
+    #[instrument]
+    fn can_sync_bidirectionally_between_two_clients() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let (collection, key, resource_id) = get_test_ids!();
+
+        let client1 = Client::builder(collection.clone(), "client1-1")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let client2 = Client::builder(collection.clone(), "client1-2")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+
+        let counter1 = client1
+            .create_datatype(key.clone())
+            .build_counter()
+            .unwrap();
+
+        let interceptor1 = connectivity
+            .get_wired_interceptor(&resource_id, &client1.get_cuid())
+            .unwrap();
+        interceptor1
+            .set_before_push(|push| {
+                info!("counter1 PUSH:{push}");
+            })
+            .set_after_pull(|pull| {
+                info!("counter1 PULL:{pull}");
+                Ok(())
+            });
+
+        counter1.sync().unwrap();
+
+        let counter2 = client2
+            .subscribe_datatype(key.clone())
+            .build_counter()
+            .unwrap();
+
+        let interceptor2 = connectivity
+            .get_wired_interceptor(&resource_id, &client2.get_cuid())
+            .unwrap();
+        interceptor2
+            .set_before_push(|push| {
+                info!("counter2 PUSH:{push}");
+            })
+            .set_after_pull(|pull| {
+                info!("counter2 PULL:{pull}");
+                Ok(())
+            });
+        counter2.sync().unwrap();
+
+        // === A: one-way convergence counter1 → counter2 ===
+        for i in 0..5 {
+            counter1.increase_by(i).unwrap();
+        }
+        // 0+1+2+3+4 = 10
+        let expected_after_a = 10;
+        assert_eq!(counter1.get_value(), expected_after_a);
+
+        counter1.sync().unwrap();
+        // counter1 must not re-apply its own transactions
+        assert_eq!(counter1.get_value(), expected_after_a);
+
+        counter2.sync().unwrap();
+        assert_eq!(counter2.get_value(), expected_after_a);
+        assert_eq!(counter1.get_value(), counter2.get_value());
+
+        // === B: reverse convergence counter2 → counter1 ===
+        counter2.increase_by(5).unwrap();
+        counter2.increase_by(5).unwrap();
+        let expected_after_b = expected_after_a + 10;
+
+        counter2.sync().unwrap();
+        assert_eq!(counter2.get_value(), expected_after_b);
+
+        counter1.sync().unwrap();
+        assert_eq!(counter1.get_value(), expected_after_b);
+
+        // === C: bidirectional convergence after concurrent writes ===
+        counter1.increase_by(3).unwrap();
+        counter2.increase_by(7).unwrap();
+        let expected_after_c = expected_after_b + 3 + 7;
+
+        counter1.sync().unwrap();
+        counter2.sync().unwrap();
+        counter1.sync().unwrap(); // counter1 fetches counter2's tx
+        assert_eq!(counter1.get_value(), expected_after_c);
+        assert_eq!(counter2.get_value(), expected_after_c);
+
+        // === D: checkpoint consistency and idempotent sync ===
+        // both clients must see the same server state
+        assert_eq!(counter1.get_server_version(), counter2.get_server_version());
+        // all local transactions of each client must be confirmed by the server
+        assert_eq!(
+            counter1.get_client_version(),
+            counter1.get_synced_client_version()
+        );
+        assert_eq!(
+            counter2.get_client_version(),
+            counter2.get_synced_client_version()
+        );
+
+        // repeated syncs must not change values (idempotent)
+        let value_before = counter1.get_value();
+        counter1.sync().unwrap();
+        counter2.sync().unwrap();
+        assert_eq!(counter1.get_value(), value_before);
+        assert_eq!(counter2.get_value(), value_before);
     }
 }
