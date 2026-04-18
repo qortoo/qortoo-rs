@@ -35,6 +35,20 @@ impl CounterCrdt {
         }
     }
 
+    pub fn execute_inverse_operation(
+        &mut self,
+        op: &Operation,
+    ) -> Result<ReturnType, DatatypeError> {
+        match op.body {
+            OperationBody::CounterIncrease(ref body) => {
+                let ret = self.increase_by(-body.delta);
+                Ok(ReturnType::Counter(ret))
+            }
+            #[allow(unreachable_patterns)]
+            _ => unimplemented!(),
+        }
+    }
+
     #[inline]
     pub fn to_bytes(&self) -> [u8; 8] {
         self.value.to_le_bytes()
