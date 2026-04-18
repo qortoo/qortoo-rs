@@ -9,7 +9,7 @@ use crate::{
         crdts::Crdt,
         handler::HandlersManager,
         push_buffer::{MemoryPushBuffer, PushBuffer},
-        rollback::Rollback,
+        tx_record::TxRecord,
     },
     errors::{
         push_pull::{CLIENT_PUSHPULL_ERR_MSG_NO_SNAPSHOT, ClientPushPullError},
@@ -23,18 +23,12 @@ use crate::{
 pub struct MutableDatatype {
     pub attr: Arc<Attribute>,
     pub crdt: Crdt,
-    state: DatatypeState,
     pub op_id: OperationId,
-    pub transaction: Option<Transaction>,
-    pub rollback: Rollback,
     pub push_buffer: MemoryPushBuffer,
     pub checkpoint: CheckPoint,
+    state: DatatypeState,
+    tx_record: TxRecord,
     handlers_manager: HandlersManager,
-}
-
-pub struct OperationalDatatype<'a> {
-    pub crdt: &'a mut Crdt,
-    pub op_id: &'a mut OperationId,
 }
 
 impl MutableDatatype {
@@ -47,8 +41,7 @@ impl MutableDatatype {
         let op_id = OperationId::new_with_cuid(&attr.client_common.cuid);
         Self {
             push_buffer: MemoryPushBuffer::new(attr.option.clone()),
-            rollback: Rollback::new(crdt.clone(), state, op_id.clone()),
-            transaction: Default::default(),
+            tx_record: TxRecord::new(state, op_id.clone()),
             checkpoint: CheckPoint::default(),
             handlers_manager: HandlersManager::new(attr.clone(), handlers),
             attr,
@@ -60,8 +53,7 @@ impl MutableDatatype {
 
     pub(crate) fn reset(&mut self) {
         self.push_buffer = MemoryPushBuffer::new(self.attr.option.clone());
-        self.rollback = Rollback::new(self.crdt.clone(), self.state, self.op_id.clone());
-        self.transaction = Default::default();
+        self.tx_record = TxRecord::new(self.state, self.op_id.clone());
     }
 
     pub fn disable(&mut self) {
@@ -94,64 +86,38 @@ impl MutableDatatype {
 
     #[instrument(skip_all)]
     pub fn do_rollback(&mut self) {
-        self.op_id = self.rollback.op_id.clone();
-        self.set_state(self.rollback.state);
-        self.crdt = self.rollback.shadow_crdt.clone();
-        self.replay_push_buffer();
+        if let Some(tx) = self.tx_record.pending.take() {
+            for op in tx.iter().rev() {
+                if let Err(e) = self.crdt.execute_inverse_operation(op) {
+                    with_err_out!(e);
+                }
+            }
+            self.op_id = self.tx_record.rollback_op_id.clone();
+            self.set_state(self.tx_record.rollback_state);
+        }
     }
 
     pub fn end_transaction(&mut self, tag: Option<String>, committed: bool) -> bool {
-        if committed {
-            if let Some(mut tx) = self.transaction.take() {
-                tx.set_tag(tag);
-                let tx = Arc::new(tx);
-                if tx.cuid == self.op_id.cuid {
-                    if let Err(err) = self.push_buffer.enqueue(tx.clone()) {
-                        if err == ClientPushPullError::ExceedMaxMemSize {
-                            todo!("should reduce the push buffer size");
-                        }
-                        if err == ClientPushPullError::NonSequentialCseq {
-                            unreachable!("this should not happen");
-                        }
+        if !committed {
+            self.do_rollback();
+            return false;
+        }
+
+        if let Some(mut tx) = self.tx_record.pending.take() {
+            tx.set_tag(tag);
+            let tx = Arc::new(tx);
+            if tx.cuid == self.op_id.cuid {
+                if let Err(err) = self.push_buffer.enqueue(tx.clone()) {
+                    if err == ClientPushPullError::ExceedMaxMemSize {
+                        todo!("should reduce the push buffer size");
+                    }
+                    if err == ClientPushPullError::NonSequentialCseq {
+                        unreachable!("this should not happen");
                     }
                 }
-                return true;
-            }
-        } else {
-            self.do_rollback();
-        }
-        false
-    }
-
-    fn replay_local_operation(
-        op_dt: &mut OperationalDatatype,
-        op: &Operation,
-        op_id: &OperationId,
-    ) {
-        op_dt.op_id.sync(op_id);
-        let result = op_dt.crdt.execute_local_operation(op);
-        if result.is_err() {
-            // this cannot happen
-            unreachable!()
-        }
-    }
-
-    fn replay_push_buffer(&mut self) {
-        for tx in self.push_buffer.iter() {
-            if tx.cuid == self.op_id.cuid {
-                let mut op_id = tx.get_op_id();
-                tx.iter().for_each(|op| {
-                    op_id.lamport = op.lamport;
-                    let mut op_dt = OperationalDatatype {
-                        crdt: &mut self.crdt,
-                        op_id: &mut self.op_id,
-                    };
-                    Self::replay_local_operation(&mut op_dt, op, &op_id);
-                });
-            } else {
-                // TODO: replay remote operation
             }
         }
+        true
     }
 
     pub fn execute_remote_transaction(
@@ -161,9 +127,6 @@ impl MutableDatatype {
         for op in tx.iter() {
             self.op_id.lamport = self.op_id.lamport.max(op.lamport);
             self.crdt.execute_remote_operation(op)?;
-            if let Err(e) = self.rollback.shadow_crdt.execute_remote_operation(op) {
-                with_err_out!(e);
-            }
         }
         Ok(())
     }
@@ -173,22 +136,11 @@ impl MutableDatatype {
         &mut self,
         mut op: Operation,
     ) -> Result<ReturnType, DatatypeError> {
-        let is_new_tx = self.transaction.is_none();
-        if is_new_tx {
-            self.transaction = Some(Transaction::new(&mut self.op_id));
-        }
-        op.set_lamport(self.op_id.next_lamport());
+        op.set_lamport(self.op_id.lamport + 1);
         let result = self.crdt.execute_local_operation(&op);
         if result.is_ok() {
-            if let Some(tx) = self.transaction.as_mut() {
-                tx.push_operation(op);
-            }
-        } else {
-            if is_new_tx {
-                self.op_id.prev_cseq();
-                self.transaction = None;
-            }
-            self.op_id.prev_lamport();
+            let is_new_tx = self.tx_record.record_operation(&self.op_id, self.state, op);
+            self.op_id.next(is_new_tx);
         }
         result
     }
@@ -223,5 +175,51 @@ impl MutableDatatype {
 
     pub fn call_error_handler(&self, err: DatatypeError) {
         self.handlers_manager.notify_error(err)
+    }
+}
+
+#[cfg(test)]
+mod tests_mutable_datatype {
+    use tracing::instrument;
+
+    use crate::{
+        DataType,
+        datatypes::{common::new_attribute, transactional::TransactionalDatatype},
+        operations::Operation,
+    };
+
+    #[test]
+    #[instrument]
+    fn can_fail_operation_execution() {
+        let attr = new_attribute!(DataType::Counter);
+        let tx_dt = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
+        {
+            let mutable = tx_dt.mutable.write();
+            assert_eq!(0, mutable.op_id.cseq);
+            assert!(mutable.tx_record.pending.is_none());
+            assert_eq!(mutable.op_id, mutable.tx_record.rollback_op_id);
+        }
+
+        let op1 = Operation::new_delay_for_test(10, true);
+        let result1 = tx_dt.execute_local_operation_as_tx(Default::default(), op1);
+        assert!(result1.is_ok());
+        {
+            let mutable = tx_dt.mutable.write();
+            assert_eq!(1, mutable.op_id.cseq);
+            assert!(mutable.tx_record.pending.is_none());
+            assert_eq!(
+                mutable.op_id.cseq,
+                mutable.tx_record.rollback_op_id.cseq + 1
+            );
+        }
+
+        let op2 = Operation::new_delay_for_test(10, false);
+        let result2 = tx_dt.execute_local_operation_as_tx(Default::default(), op2);
+        assert!(result2.is_err());
+        {
+            let mutable = tx_dt.mutable.write();
+            assert_eq!(1, mutable.op_id.cseq);
+            assert!(mutable.tx_record.pending.is_none());
+        }
     }
 }

@@ -44,6 +44,13 @@ impl OperationId {
         self.cseq
     }
 
+    pub fn next(&mut self, is_new_tx: bool) {
+        if is_new_tx {
+            self.cseq += 1;
+        }
+        self.lamport += 1;
+    }
+
     pub fn prev_cseq(&mut self) -> u64 {
         if self.cseq > 0 {
             self.cseq -= 1;

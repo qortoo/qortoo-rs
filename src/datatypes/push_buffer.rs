@@ -167,7 +167,8 @@ mod tests_push_buffer {
         assert_eq!(push_buffer.last_cseq, 0);
 
         let mut op_id = OperationId::new();
-        let tx = Arc::new(Transaction::new(&mut op_id));
+        let cseq = op_id.next_cseq();
+        let tx = Arc::new(Transaction::new(&op_id.cuid, cseq));
         let tx_size = tx.size();
         assert!(push_buffer.enqueue(tx).is_ok());
         assert_eq!(push_buffer.mem_size, tx_size);
@@ -175,7 +176,8 @@ mod tests_push_buffer {
         assert_eq!(push_buffer.last_cseq, 1);
 
         for _ in 0..9 {
-            let tx = Arc::new(Transaction::new(&mut op_id));
+            let cseq = op_id.next_cseq();
+            let tx = Arc::new(Transaction::new(&op_id.cuid, cseq));
             assert!(push_buffer.enqueue(tx).is_ok());
         }
         assert_eq!(push_buffer.mem_size, tx_size * 10);
@@ -183,12 +185,14 @@ mod tests_push_buffer {
         assert_eq!(push_buffer.last_cseq, 10);
 
         let mut op_id2 = OperationId::new();
-        let tx_not_sequential = Arc::new(Transaction::new(&mut op_id2));
+        let cseq2 = op_id2.next_cseq();
+        let tx_not_sequential = Arc::new(Transaction::new(&op_id2.cuid, cseq2));
         let result = push_buffer.enqueue(tx_not_sequential);
         assert_eq!(result.unwrap_err(), ClientPushPullError::NonSequentialCseq);
 
         loop {
-            let tx = Arc::new(Transaction::new(&mut op_id));
+            let cseq = op_id.next_cseq();
+            let tx = Arc::new(Transaction::new(&op_id.cuid, cseq));
             if push_buffer.mem_size + tx.size() > MAX_SIZE {
                 assert_eq!(
                     push_buffer.enqueue(tx).unwrap_err(),
@@ -208,11 +212,13 @@ mod tests_push_buffer {
         let option = Arc::new(DatatypeOption::default());
         let mut push_buffer = MemoryPushBuffer::new(option);
         let mut op_id = OperationId::new();
-        let tx = Arc::new(Transaction::new(&mut op_id));
+        let cseq = op_id.next_cseq();
+        let tx = Arc::new(Transaction::new(&op_id.cuid, cseq));
         let tx_size = tx.size();
         assert!(push_buffer.enqueue(tx).is_ok());
         for _ in 1..100 {
-            let tx = Arc::new(Transaction::new(&mut op_id));
+            let cseq = op_id.next_cseq();
+            let tx = Arc::new(Transaction::new(&op_id.cuid, cseq));
             assert!(push_buffer.enqueue(tx).is_ok());
         }
         assert_eq!(push_buffer.mem_size, tx_size * 100);

@@ -111,9 +111,10 @@ mod tests_null_connectivity {
 
         let mut pushed2 = PushPullPack::new(&attr, DatatypeState::DueToSubscribe);
         let mut op_id = OperationId::new();
+        let cseq = op_id.next_cseq();
         pushed2
             .transactions
-            .push(Arc::new(Transaction::new(&mut op_id)));
+            .push(Arc::new(Transaction::new(&op_id.cuid, cseq)));
         let res2 = null_connectivity.push_and_pull(&pushed2);
         assert!(res2.is_ok());
         let pulled2 = res2.unwrap();

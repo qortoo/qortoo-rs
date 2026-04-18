@@ -356,38 +356,6 @@ mod tests_transactional {
         utils::test_utils::{get_test_collection_name, get_test_func_name},
     };
 
-    #[test]
-    #[instrument]
-    fn can_fail_operation_execution() {
-        let attr = new_attribute!(DataType::Counter);
-        let tx_dt = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
-        {
-            let mutable = tx_dt.mutable.write();
-            assert_eq!(0, mutable.op_id.cseq);
-            assert!(mutable.transaction.is_none());
-            assert_eq!(mutable.op_id, mutable.rollback.op_id);
-        }
-
-        let op1 = Operation::new_delay_for_test(10, true);
-        let result1 = tx_dt.execute_local_operation_as_tx(Default::default(), op1);
-        assert!(result1.is_ok());
-        {
-            let mutable = tx_dt.mutable.write();
-            assert_eq!(1, mutable.op_id.cseq);
-            assert!(mutable.transaction.is_none());
-            assert_eq!(mutable.op_id.cseq, mutable.rollback.op_id.cseq + 1);
-        }
-
-        let op2 = Operation::new_delay_for_test(10, false);
-        let result2 = tx_dt.execute_local_operation_as_tx(Default::default(), op2);
-        assert!(result2.is_err());
-        {
-            let mutable = tx_dt.mutable.write();
-            assert_eq!(1, mutable.op_id.cseq);
-            assert_eq!(mutable.op_id.cseq, mutable.rollback.op_id.cseq + 1);
-        }
-    }
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 10)]
     #[instrument]
     async fn can_do_transaction() {

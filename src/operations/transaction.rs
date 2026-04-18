@@ -25,10 +25,10 @@ pub struct Transaction {
 }
 
 impl Transaction {
-    pub fn new(op_id: &mut OperationId) -> Self {
+    pub fn new(cuid: &Cuid, cseq: u64) -> Self {
         Self {
-            cuid: op_id.cuid.clone(),
-            cseq: op_id.next_cseq(),
+            cuid: cuid.clone(),
+            cseq,
             sseq: 0,
             tag: None,
             event: false,
@@ -132,7 +132,8 @@ mod tests_transaction {
     #[test]
     fn can_debug_and_display_transaction() {
         let mut op_id = OperationId::new();
-        let mut tx = Transaction::new(&mut op_id);
+        let cseq = op_id.next_cseq();
+        let mut tx = Transaction::new(&op_id.cuid, cseq);
         info!("{tx}");
         tx.set_tag(Some("tag1".to_string()));
         tx.set_event(true);
@@ -155,7 +156,8 @@ mod tests_transaction {
     #[test]
     fn can_measure_transaction_size() {
         let mut op_id = OperationId::new();
-        let mut tx = Transaction::new(&mut op_id);
+        let cseq = op_id.next_cseq();
+        let mut tx = Transaction::new(&op_id.cuid, cseq);
         assert_eq!(tx.size(), TRANSACTION_CONSTANT_SIZE);
         tx.set_tag(Some("1234567890".to_string()));
         assert_eq!(tx.size(), TRANSACTION_CONSTANT_SIZE + 10);

@@ -57,6 +57,15 @@ impl Crdt {
         }
     }
 
+    pub fn execute_inverse_operation(
+        &mut self,
+        op: &Operation,
+    ) -> Result<ReturnType, DatatypeError> {
+        match self {
+            Crdt::Counter(c) => c.execute_inverse_operation(op),
+        }
+    }
+
     pub fn serialize(&self) -> Box<[u8]> {
         match self {
             Self::Counter(c) => Box::new(c.to_bytes()),

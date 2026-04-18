@@ -26,21 +26,21 @@ tracing-subscriber = { version = "^0.3.23", features = [
     "env-filter",
 ], optional = true }
 opentelemetry_sdk = { version = "^0.31.0", optional = true }
-opentelemetry-otlp = { version = "^0.31.0", features = [
+opentelemetry-otlp = { version = "^0.31.1", features = [
     "grpc-tonic",
 ], optional = true }
-ctor = { version = "^0.6.3", optional = true }
+ctor = { version = "0.10.0", optional = true }
 
 tracing = "^0.1.44"
-nanoid = "^0.4.0"
-tokio = { version = "^1.50.0", features = ["full"] }
+nanoid = "^0.5.0"
+tokio = { version = "^1.52.1", features = ["full"] }
 parking_lot = "^0.12.5"
 time = { version = "^0.3.47", features = [
     "formatting",
     "local-offset",
     "macros",
 ] }
-itoa = "^1.0.17"
+itoa = "^1.0.18"
 derive_more = { version = "^2.1.1", features = ["display", "debug"] }
 chrono = "^0.4.44"
 thiserror = "^2.0.18"
@@ -58,4 +58,4 @@ backon = { version = "^1.6.0", default-features = false, features = ["tokio-slee
 [dev-dependencies]
 rstest = "^0.26.1"
 awaitility = "^0.4.1"
-tokio = { version = "^1.50.0", features = ["full", "test-util"] }
+tokio = { version = "^1.52.1", features = ["full", "test-util"] }

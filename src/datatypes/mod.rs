@@ -10,8 +10,8 @@ mod mutable;
 pub mod option;
 pub mod pull_handler;
 pub mod push_buffer;
-mod rollback;
 mod transactional;
+mod tx_record;
 pub mod wired;
 #[cfg(test)]
 pub mod wired_interceptor;
