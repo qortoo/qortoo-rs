@@ -16,7 +16,7 @@ use crate::{
         datatypes::{DatatypeAction, DatatypeErrorWithActions},
         push_pull::ClientPushPullError,
     },
-    observability::macros::add_span_event,
+    observability::{macros::add_span_event, metrics},
     operations::transaction::Transaction,
     types::{push_pull_pack::PushPullPack, uid::Cuid},
 };
@@ -85,6 +85,13 @@ impl WiredDatatype {
 
     #[instrument(skip_all)]
     pub fn push_pull(&self) -> Result<(), DatatypeErrorWithActions> {
+        let start = std::time::Instant::now();
+        let result = self.do_push_pull();
+        metrics::emit_sync(&self.attr, result.is_ok(), start.elapsed());
+        result
+    }
+
+    fn do_push_pull(&self) -> Result<(), DatatypeErrorWithActions> {
         let connectivity = &self.attr.client_common.connectivity;
 
         #[cfg_attr(not(test), allow(unused_mut))]
