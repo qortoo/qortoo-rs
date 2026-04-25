@@ -17,16 +17,18 @@ static PROVIDER: OnceLock<Mutex<SdkTracerProvider>> = OnceLock::new();
 static TRACING_INITIALIZED: OnceLock<()> = OnceLock::new();
 
 extern "C" fn shutdown_provider() {
-    let provider = PROVIDER.get().unwrap();
+    let Some(provider) = PROVIDER.get() else {
+        return;
+    };
     let provider = provider.lock();
 
     if let Err(e) = provider.shutdown() {
-        println!("failed to shutdown provider: {:?}", e);
+        println!("failed to shutdown SDK tracer provider: {:?}", e);
     }
 }
 
 pub fn init(level: LevelFilter) {
-    // Ensure initialization happens only once across all tests
+    // Ensure initialization happens only once across all ctor/test paths.
     TRACING_INITIALIZED.get_or_init(|| {
         init_once(level);
     });
@@ -34,59 +36,79 @@ pub fn init(level: LevelFilter) {
 
 fn init_once(level: LevelFilter) {
     let handle = get_or_init_runtime_handle("observability");
+    // tonic exporter init requires an active Tokio runtime context
+    let _enter = handle.enter();
+    if constants::is_otel_enabled() {
+        init_otel_subscriber(level);
+    } else {
+        init_local_subscriber(level);
+    }
+}
 
-    handle.block_on(async move {
-        if constants::is_otel_enabled() {
-            println!(
-                "Initialize open-telemetry tracing with service '{}' for '{}' level",
-                constants::get_agent(),
-                level
-            );
-            let exporter = SpanExporter::builder()
-                .with_tonic()
-                .with_protocol(Protocol::Grpc)
-                .build()
-                .expect("failed to create otlp exporter");
+fn init_otel_subscriber(level: LevelFilter) {
+    println!(
+        "Initialize open-telemetry tracing with service '{}' for '{}' level",
+        constants::get_agent(),
+        level
+    );
 
-            let provider = SdkTracerProvider::builder()
-                .with_batch_exporter(exporter)
-                .with_resource(
-                    Resource::builder()
-                        .with_service_name(constants::get_agent())
-                        .build(),
-                )
-                .build();
+    let provider = init_otel_provider();
+    let tracer = provider.tracer(constants::get_agent());
+    let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+    let filter = tracing_subscriber::EnvFilter::from_default_env()
+        .add_directive("qortoo=trace".parse().unwrap())
+        .add_directive("integration=trace".parse().unwrap());
 
-            PROVIDER
-                .set(Mutex::new(provider.clone()))
-                .expect("failed to set provider");
+    let subscriber = Registry::default()
+        .with(telemetry)
+        .with(filter)
+        .with(QortooTracingLayer { opt: Some(level) });
+    set_global_subscriber(subscriber);
+}
 
-            unsafe {
-                let _ = atexit(shutdown_provider);
-            }
+fn init_local_subscriber(level: LevelFilter) {
+    let subscriber = Registry::default().with(QortooTracingLayer { opt: Some(level) });
+    set_global_subscriber(subscriber);
+}
 
-            let tracer = provider.tracer(constants::get_agent());
-            let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
-            let filter = tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("qortoo=trace".parse().unwrap())
-                .add_directive("integration=trace".parse().unwrap());
+fn init_otel_provider() -> SdkTracerProvider {
+    let exporter = SpanExporter::builder()
+        .with_tonic()
+        .with_protocol(Protocol::Grpc)
+        .build()
+        .expect("failed to create otlp exporter");
 
-            let subscriber = Registry::default()
-                .with(telemetry)
-                .with(filter)
-                .with(QortooTracingLayer { opt: Some(level) });
-            tracing::subscriber::set_global_default(subscriber)
-                .expect("failed to set global default subscriber");
-        } else {
-            let subscriber = Registry::default().with(QortooTracingLayer { opt: Some(level) });
-            tracing::subscriber::set_global_default(subscriber)
-                .expect("failed to set global default subscriber");
-        }
-    });
+    let provider = SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .with_resource(
+            Resource::builder()
+                .with_service_name(constants::get_agent())
+                .build(),
+        )
+        .build();
+
+    PROVIDER
+        .set(Mutex::new(provider.clone()))
+        .expect("failed to set provider");
+
+    unsafe {
+        let _ = atexit(shutdown_provider);
+    }
+
+    provider
+}
+
+fn set_global_subscriber<S>(subscriber: S)
+where
+    S: tracing::Subscriber + Send + Sync + 'static,
+{
+    // A host application may install its own global subscriber before this
+    // library ctor runs. In that case, leave the existing subscriber intact.
+    let _ = tracing::subscriber::set_global_default(subscriber);
 }
 
 #[cfg(test)]
-mod tests_tracing {
+mod tests_subscriber {
     use tracing::{Level, debug, error, info, instrument, span, trace, warn};
 
     #[derive(Debug)]

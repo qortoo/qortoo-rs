@@ -86,5 +86,5 @@ pub(crate) mod utils;
 #[ctor::ctor]
 pub fn init_tracing_subscriber() {
     use tracing::level_filters::LevelFilter;
-    observability::tracing_for_test::init(LevelFilter::TRACE);
+    observability::subscriber::init(LevelFilter::TRACE);
 }
