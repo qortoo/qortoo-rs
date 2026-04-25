@@ -15,7 +15,7 @@ use crate::{
         datatypes::{DatatypeAction, EventLoopAction},
         with_err_out,
     },
-    observability::macros::add_span_event,
+    observability::{macros::add_span_event, metrics},
 };
 
 const BACKOFF_MIN_DELAY: Duration = Duration::from_millis(500);
@@ -116,6 +116,9 @@ impl EventLoop {
                                     }
                                     Err(dewa) => {
                                         event_loop_action = dewa.event_loop_action;
+                                        if matches!(event_loop_action, EventLoopAction::BackOff) {
+                                            metrics::emit_backoff(&wired.attr);
+                                        }
                                         wired
                                             .handle_error(dewa.error.clone(), dewa.datatype_action);
                                         Some(dewa.error)
