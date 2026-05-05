@@ -1,8 +1,10 @@
-pub mod macros;
+#[cfg(feature = "log_layer")]
+pub mod log_layer;
+#[cfg(feature = "log_layer")]
+pub mod trace_context;
+
 pub mod metrics;
-#[cfg(feature = "tracing")]
-pub mod subscriber;
-#[cfg(feature = "tracing")]
-pub mod tracing_layer;
-#[cfg(feature = "tracing")]
-pub mod visitor;
+pub mod trace;
+
+#[cfg(test)]
+pub mod test_subscriber;

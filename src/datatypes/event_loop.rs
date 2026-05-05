@@ -15,7 +15,7 @@ use crate::{
         datatypes::{DatatypeAction, EventLoopAction},
         with_err_out,
     },
-    observability::{macros::add_span_event, metrics},
+    observability::{metrics, trace::add_span_event},
 };
 
 const BACKOFF_MIN_DELAY: Duration = Duration::from_millis(500);
@@ -63,11 +63,11 @@ impl EventLoop {
 
     #[instrument(skip_all, name="datatype_event_loop",
         fields(
-            qortoo.col=%wired.attr.client_common.collection,
-            qortoo.cl=%wired.attr.client_common.alias,
-            qortoo.cuid=%wired.attr.client_common.cuid,
-            qortoo.dt=%wired.attr.key,
-            qortoo.duid=%wired.attr.get_duid(),
+            collection=%wired.attr.client_common.collection,
+            client=%wired.attr.client_common.alias,
+            cuid=%wired.attr.client_common.cuid,
+            data_key=%wired.attr.key,
+            duid=%wired.attr.get_duid(),
         )
     )]
     pub fn run(&self, wired: Arc<WiredDatatype>) {

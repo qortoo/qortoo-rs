@@ -1,0 +1,283 @@
+{
+  "uid": "qortoo-logs",
+  "title": "Qortoo Logs",
+  "tags": ["qortoo", "logs"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-30m", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "source",
+        "label": "Source",
+        "type": "custom",
+        "query": "example,test",
+        "current": { "text": "All", "value": ["$__all"] },
+        "includeAll": true,
+        "allValue": ".+",
+        "multi": true,
+        "options": [
+          { "selected": true, "text": "All",     "value": "$__all"  },
+          { "selected": false, "text": "example", "value": "example" },
+          { "selected": false, "text": "test",    "value": "test"    }
+        ]
+      },
+      {
+        "name": "search",
+        "label": "Search",
+        "type": "textbox",
+        "query": "",
+        "current": { "text": "", "value": "" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Log Rate",
+      "type": "stat",
+      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 3 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "blue", "value": null }]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "sum(count_over_time({app=\"qortoo\", source=~\"$source\"}[1m]))",
+          "legendFormat": "logs/min"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Errors (last 30m)",
+      "type": "stat",
+      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 3 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red",    "value": 5 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["sum"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "sum(count_over_time({app=\"qortoo\", source=~\"$source\"} |~ `(?i)error` [30m]))",
+          "legendFormat": "errors"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Warns (last 30m)",
+      "type": "stat",
+      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 3 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green",  "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "orange", "value": 10 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["sum"] },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "sum(count_over_time({app=\"qortoo\", source=~\"$source\"} |~ `(?i)warn` [30m]))",
+          "legendFormat": "warns"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Active Sources",
+      "type": "stat",
+      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 3 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [{ "color": "blue", "value": null }]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "background"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "count(count by (source) (count_over_time({app=\"qortoo\"}[5m])))",
+          "legendFormat": "sources"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Log Volume",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 3, "w": 24, "h": 6 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 0,
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "drawStyle": "bars",
+            "stacking": { "mode": "normal", "group": "A" }
+          }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "error"   }, "properties": [{ "id": "color", "value": { "fixedColor": "#E02F44", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "warn"    }, "properties": [{ "id": "color", "value": { "fixedColor": "#FF9830", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "info"    }, "properties": [{ "id": "color", "value": { "fixedColor": "#3274D9", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "debug"   }, "properties": [{ "id": "color", "value": { "fixedColor": "#5794F2", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "trace"   }, "properties": [{ "id": "color", "value": { "fixedColor": "#B877D9", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "example" }, "properties": [{ "id": "color", "value": { "fixedColor": "#37872D", "mode": "fixed" } }] },
+          { "matcher": { "id": "byName", "options": "test"    }, "properties": [{ "id": "color", "value": { "fixedColor": "#1F60C4", "mode": "fixed" } }] }
+        ]
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "sum by (source) (count_over_time({app=\"qortoo\", source=~\"$source\"}[$__interval]))",
+          "legendFormat": "{{source}}"
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "title": "Log Stream",
+      "type": "logs",
+      "gridPos": { "x": 0, "y": 9, "w": 24, "h": 16 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showCommonLabels": false,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{app=\"qortoo\", source=~\"$source\"} | json | line_format \"{{.message}} | client={{.client}} col={{.collection}} dt={{.data_key}} [{{._target}}:{{._line}}]\" |~ \"$search\"",
+          "maxLines": 500
+        }
+      ]
+    },
+    {
+      "id": 30,
+      "title": "Errors Only",
+      "type": "logs",
+      "gridPos": { "x": 0, "y": 25, "w": 24, "h": 8 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{app=\"qortoo\", source=~\"$source\"} |~ `(?i)error|panic|FAILED`",
+          "maxLines": 200
+        }
+      ]
+    },
+    {
+      "id": 40,
+      "title": "Qortoo Context (collection / datatype)",
+      "type": "logs",
+      "gridPos": { "x": 0, "y": 33, "w": 24, "h": 8 },
+      "datasource": { "type": "loki", "uid": "loki" },
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "prettifyLogMessage": false,
+        "showLabels": true,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "loki" },
+          "expr": "{app=\"qortoo\", source=~\"$source\"} |~ `qortoo\\.col|qortoo\\.dt|qortoo\\.cuid`",
+          "maxLines": 200
+        }
+      ]
+    }
+  ]
+}

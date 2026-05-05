@@ -9,13 +9,13 @@ use tracing::{
 };
 use tracing_subscriber::{Layer, layer::Context, registry::LookupSpan};
 
-use crate::observability::visitor::QortooVisitor;
+use crate::observability::trace_context::QortooTraceContextVisitor;
 
-pub struct QortooTracingLayer {
-    pub opt: Option<LevelFilter>,
+pub struct QortooLogLayer {
+    pub level_filter: Option<LevelFilter>,
 }
 
-impl QortooTracingLayer {
+impl QortooLogLayer {
     #[inline]
     fn level_str_into(level: &Level, buf: &mut Vec<u8>) {
         buf.extend_from_slice(match *level {
@@ -65,13 +65,13 @@ impl QortooTracingLayer {
         buffer.extend_from_slice(buf.format(metadata.line().unwrap_or_default()).as_bytes());
     }
 
-    fn process_context<S>(ctx: Context<'_, S>, current_visitor: &mut QortooVisitor)
+    fn process_context<S>(ctx: Context<'_, S>, current_visitor: &mut QortooTraceContextVisitor)
     where
         S: Subscriber + for<'lookup> LookupSpan<'lookup>,
     {
         if let Some(span) = ctx.lookup_current() {
             for span in span.scope() {
-                if let Some(visitor) = span.extensions().get::<QortooVisitor>() {
+                if let Some(visitor) = span.extensions().get::<QortooTraceContextVisitor>() {
                     if !current_visitor.merge(visitor) {
                         return;
                     }
@@ -81,22 +81,23 @@ impl QortooTracingLayer {
     }
 }
 
-impl<S> Layer<S> for QortooTracingLayer
+impl<S> Layer<S> for QortooLogLayer
 where
     S: Subscriber + for<'lookup> LookupSpan<'lookup>,
 {
     fn enabled(&self, metadata: &Metadata<'_>, _ctx: Context<'_, S>) -> bool {
-        self.opt
+        self.level_filter
             .as_ref()
             .map(|level_filter| metadata.level() <= level_filter)
             .unwrap_or(true)
     }
 
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
-        let span = ctx.span(id).expect("failed to get span");
-        let mut v = QortooVisitor::new();
-        attrs.record(&mut v);
-        span.extensions_mut().insert(v);
+        if let Some(span) = ctx.span(id) {
+            let mut v = QortooTraceContextVisitor::new();
+            attrs.record(&mut v);
+            span.extensions_mut().insert(v);
+        }
     }
 
     fn on_event(&self, event: &Event, ctx: Context<'_, S>) {
@@ -112,7 +113,7 @@ where
             Self::ts_into(&mut buffer);
             Self::level_str_into(event.metadata().level(), &mut buffer);
 
-            let mut visitor = QortooVisitor::new();
+            let mut visitor = QortooTraceContextVisitor::new();
             event.record(&mut visitor);
             visitor.message_into(&mut buffer);
 

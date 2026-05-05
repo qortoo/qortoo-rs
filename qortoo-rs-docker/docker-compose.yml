@@ -1,0 +1,93 @@
+networks:
+  observability:
+    driver: bridge
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  tempo_data:
+  loki_data:
+  pyroscope_data:
+
+services:
+  # ── Metrics ──────────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: qortoo-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-remote-write-receiver
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - observability
+    restart: unless-stopped
+
+  # ── Tracing ──────────────────────────────────────────────────────────────────
+  tempo:
+    image: grafana/tempo:latest
+    container_name: qortoo-tempo
+    command: [-config.file=/etc/tempo/tempo.yaml]
+    volumes:
+      - ./tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo_data:/var/tempo
+    ports:
+      - "4317:4317"   # OTLP gRPC  (Rust app → Tempo)
+      - "4318:4318"   # OTLP HTTP
+      - "3200:3200"   # Tempo query API (Grafana → Tempo)
+    networks:
+      - observability
+    restart: unless-stopped
+
+  # ── Logs ─────────────────────────────────────────────────────────────────────
+  loki:
+    image: grafana/loki:latest
+    container_name: qortoo-loki
+    command: [-config.file=/etc/loki/loki-config.yaml]
+    volumes:
+      - ./loki/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki_data:/loki
+    ports:
+      - "3100:3100"
+    networks:
+      - observability
+    restart: unless-stopped
+
+  # ── Profiling ─────────────────────────────────────────────────────────────────
+  pyroscope:
+    image: grafana/pyroscope:latest
+    container_name: qortoo-pyroscope
+    volumes:
+      - pyroscope_data:/data
+    ports:
+      - "4040:4040"
+    networks:
+      - observability
+    restart: unless-stopped
+
+  # ── Visualization ─────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    container_name: qortoo-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=qortooAdmin
+      - GF_FEATURE_TOGGLES_ENABLE=traceqlEditor
+      - GF_INSTALL_PLUGINS=grafana-pyroscope-app
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - tempo
+      - loki
+      - pyroscope
+    networks:
+      - observability
+    restart: unless-stopped

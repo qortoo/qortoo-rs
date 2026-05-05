@@ -22,11 +22,11 @@ macro_rules! datatype_instrument {
         $(#[$attr])*
         #[tracing::instrument(skip_all,
             fields(
-                qortoo.col=%self.datatype.attr.client_common.collection,
-                qortoo.cl=%self.datatype.attr.client_common.alias,
-                qortoo.cuid=%self.datatype.attr.client_common.cuid,
-                qortoo.dt=%self.datatype.attr.key,
-                qortoo.duid=%self.datatype.attr.get_duid(),
+                collection=%self.datatype.attr.client_common.collection,
+                client=%self.datatype.attr.client_common.alias,
+                cuid=%self.datatype.attr.client_common.cuid,
+                data_key=%self.datatype.attr.key,
+                duid=%self.datatype.attr.get_duid(),
             )
         )]
         $vis fn $name $($rest)*
@@ -39,11 +39,11 @@ macro_rules! internal_datatype_instrument {
         #[tracing::instrument(skip_all,
             name = $span_name,
             fields(
-                qortoo.col=%self.attr.client_common.collection,
-                qortoo.cl=%self.attr.client_common.alias,
-                qortoo.cuid=%self.attr.client_common.cuid,
-                qortoo.dt=%self.attr.key,
-                qortoo.duid=%self.attr.get_duid(),
+                collection=%self.attr.client_common.collection,
+                client=%self.attr.client_common.alias,
+                cuid=%self.attr.client_common.cuid,
+                data_key=%self.attr.key,
+                duid=%self.attr.get_duid(),
             )
         )]
         $vis fn $name $($rest)*
@@ -169,6 +169,15 @@ pub enum ReturnType {
     Counter(i64),
 }
 
+impl Debug for ReturnType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ReturnType::None => f.write_str("None"),
+            ReturnType::Counter(value) => f.debug_tuple("Counter").field(value).finish(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests_attribute {
 
@@ -207,5 +216,14 @@ mod tests_attribute {
         assert_eq!(new_duid.as_ptr(), got_duid.as_ptr());
         info!("{}: {}", new_duid, new_duid.as_ptr() as u64);
         info!("{}: {}", got_duid, got_duid.as_ptr() as u64);
+    }
+
+    #[test]
+    fn can_debug_return_type() {
+        assert_eq!(format!("{:?}", super::ReturnType::None), "None");
+        assert_eq!(
+            format!("{:?}", super::ReturnType::Counter(42)),
+            "Counter(42)"
+        );
     }
 }

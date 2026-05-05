@@ -5,16 +5,14 @@ use opentelemetry::trace::TracerProvider;
 use opentelemetry_otlp::{Protocol, SpanExporter, WithExportConfig};
 use opentelemetry_sdk::{Resource, trace::SdkTracerProvider};
 use parking_lot::Mutex;
-use tracing::metadata::LevelFilter;
-use tracing_subscriber::{Registry, layer::SubscriberExt};
+use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt};
 
-use crate::{
-    constants, observability::tracing_layer::QortooTracingLayer,
-    utils::runtime::get_or_init_runtime_handle,
-};
+#[cfg(feature = "log_layer")]
+use crate::observability::log_layer::QortooLogLayer;
+use crate::{constants, utils::runtime::get_or_init_runtime_handle};
 
-static PROVIDER: OnceLock<Mutex<SdkTracerProvider>> = OnceLock::new();
 static TRACING_INITIALIZED: OnceLock<()> = OnceLock::new();
+static PROVIDER: OnceLock<Mutex<SdkTracerProvider>> = OnceLock::new();
 
 extern "C" fn shutdown_provider() {
     let Some(provider) = PROVIDER.get() else {
@@ -27,51 +25,88 @@ extern "C" fn shutdown_provider() {
     }
 }
 
-pub fn init(level: LevelFilter) {
-    // Ensure initialization happens only once across all ctor/test paths.
+#[ctor::ctor(unsafe)]
+pub fn init() {
+    // Test builds install this subscriber through a ctor; do it once per process.
     TRACING_INITIALIZED.get_or_init(|| {
-        init_once(level);
+        init_once();
     });
 }
 
-fn init_once(level: LevelFilter) {
+fn init_once() {
     let handle = get_or_init_runtime_handle("observability");
-    // tonic exporter init requires an active Tokio runtime context
+    // The tonic OTLP exporter requires an active Tokio runtime context.
     let _enter = handle.enter();
-    if constants::is_otel_enabled() {
-        init_otel_subscriber(level);
+
+    let loki_url = std::env::var("QORTOO_RS_LOKI_URL").ok();
+    if let Some(url) = loki_url {
+        init_subscriber_with_loki(url, &handle);
     } else {
-        init_local_subscriber(level);
+        init_otel_subscriber();
     }
 }
 
-fn init_otel_subscriber(level: LevelFilter) {
+fn init_otel_subscriber() {
+    let level = build_env_filter();
     println!(
         "Initialize open-telemetry tracing with service '{}' for '{}' level",
         constants::get_agent(),
         level
     );
 
-    let provider = init_otel_provider();
+    let provider = init_provider();
     let tracer = provider.tracer(constants::get_agent());
     let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
-    let filter = tracing_subscriber::EnvFilter::from_default_env()
-        .add_directive("qortoo=trace".parse().unwrap())
-        .add_directive("integration=trace".parse().unwrap());
 
-    let subscriber = Registry::default()
-        .with(telemetry)
-        .with(filter)
-        .with(QortooTracingLayer { opt: Some(level) });
-    set_global_subscriber(subscriber);
+    #[cfg(feature = "log_layer")]
+    let fmt = QortooLogLayer { level_filter: None };
+    #[cfg(not(feature = "log_layer"))]
+    let fmt = tracing_subscriber::fmt::layer();
+
+    let subscriber = Registry::default().with(telemetry).with(level).with(fmt);
+    let _ = tracing::subscriber::set_global_default(subscriber);
 }
 
-fn init_local_subscriber(level: LevelFilter) {
-    let subscriber = Registry::default().with(QortooTracingLayer { opt: Some(level) });
-    set_global_subscriber(subscriber);
+fn init_subscriber_with_loki(loki_url: String, handle: &tokio::runtime::Handle) {
+    let Ok(parsed_url) = url::Url::parse(&loki_url) else {
+        eprintln!("QORTOO_RS_LOKI_URL is not a valid URL: {loki_url}");
+        init_otel_subscriber();
+        return;
+    };
+
+    let builder = tracing_loki::builder()
+        .label("app", "qortoo")
+        .and_then(|b| b.label("source", "test"))
+        .and_then(|b| b.build_url(parsed_url));
+
+    match builder {
+        Ok((loki_layer, loki_task)) => {
+            handle.spawn(loki_task);
+
+            #[cfg(feature = "log_layer")]
+            let fmt = QortooLogLayer { level_filter: None };
+            #[cfg(not(feature = "log_layer"))]
+            let fmt = tracing_subscriber::fmt::layer();
+
+            let subscriber = Registry::default()
+                .with(build_env_filter())
+                .with(fmt)
+                .with(loki_layer);
+            let _ = tracing::subscriber::set_global_default(subscriber);
+        }
+        Err(e) => {
+            eprintln!("failed to build Loki layer: {e}");
+            init_otel_subscriber();
+        }
+    }
 }
 
-fn init_otel_provider() -> SdkTracerProvider {
+fn build_env_filter() -> EnvFilter {
+    EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::default().add_directive("qortoo=debug".parse().unwrap()))
+}
+
+fn init_provider() -> SdkTracerProvider {
     let exporter = SpanExporter::builder()
         .with_tonic()
         .with_protocol(Protocol::Grpc)
@@ -87,24 +122,12 @@ fn init_otel_provider() -> SdkTracerProvider {
         )
         .build();
 
-    PROVIDER
-        .set(Mutex::new(provider.clone()))
-        .expect("failed to set provider");
+    let _ = PROVIDER.set(Mutex::new(provider.clone()));
 
     unsafe {
         let _ = atexit(shutdown_provider);
     }
-
     provider
-}
-
-fn set_global_subscriber<S>(subscriber: S)
-where
-    S: tracing::Subscriber + Send + Sync + 'static,
-{
-    // A host application may install its own global subscriber before this
-    // library ctor runs. In that case, leave the existing subscriber intact.
-    let _ = tracing::subscriber::set_global_default(subscriber);
 }
 
 #[cfg(test)]
@@ -146,11 +169,11 @@ mod tests_subscriber {
     }
 
     #[instrument(name = "level1", skip(_st),
-        fields(qortoo.cl =_st.client,
-        qortoo.cuid = _st.cuid,
-        qortoo.duid = _st.duid,
-        qortoo.dt = _st.datatype,
-        qortoo.col = _st.collection
+        fields(client =_st.client,
+        cuid = _st.cuid,
+        duid = _st.duid,
+        data_key = _st.datatype,
+        collection = _st.collection
         ))]
     fn do_something_level1(_st: SpanType) {
         info!("info do_something_level1");
@@ -172,11 +195,11 @@ mod tests_subscriber {
         info!("end can_log_spans");
     }
 
-    #[instrument(skip_all, name = "client1", fields(qortoo.cuid=_cuid))]
+    #[instrument(skip_all, name = "client1", fields(cuid=_cuid))]
     fn client_level(_cuid: &str) {
-        let x = span!(Level::INFO, "client_level", qortoo.cuid = "1");
+        let x = span!(Level::INFO, "client_level", cuid = "1");
         let _g = x.enter();
-        info!(qortoo.cuid = "🙊", "begin client_level");
+        info!(cuid = "🙊", "begin client_level");
         client_level2();
         info!("end client_level");
     }
@@ -187,14 +210,14 @@ mod tests_subscriber {
         info!("end client_level2");
     }
 
-    #[instrument(name = "datatype1", fields(qortoo.dt="🙈"))]
+    #[instrument(name = "datatype1", fields(data_key = "🙈"))]
     fn datatype_level() {
         info!("begin datatype_level");
         datatype_level2();
         info!("end datatype_level");
     }
 
-    #[instrument(name = "datatype2", fields(qortoo.dt="😘"))]
+    #[instrument(name = "datatype2", fields(data_key = "😘"))]
     fn datatype_level2() {
         info!("begin datatype_level2");
         info!("end datatype_level2");
