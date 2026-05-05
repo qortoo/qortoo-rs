@@ -16,7 +16,7 @@ use crate::{
         datatypes::{DatatypeAction, DatatypeErrorWithActions},
         push_pull::ClientPushPullError,
     },
-    observability::{macros::add_span_event, metrics},
+    observability::{metrics, trace::add_span_event},
     operations::transaction::Transaction,
     types::{push_pull_pack::PushPullPack, uid::Cuid},
 };

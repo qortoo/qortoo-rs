@@ -2,31 +2,66 @@
 
 ## Overview
 
-Qortoo-rs provides two complementary observability pillars:
+Qortoo-rs exposes instrumentation, but applications own exporter setup. The crate does not install a global `tracing` subscriber and no longer has a `tracing` feature.
 
-| Pillar | Mechanism | Location |
-|--------|-----------|----------|
-| **Tracing** | OpenTelemetry spans and events (opt-in via `tracing` feature) | `src/observability/tracing_layer.rs` |
-| **Metrics** | `metrics` crate facade — Prometheus-compatible counters and histograms | `src/observability/metrics.rs` |
+| Surface | Mechanism | Code |
+|---------|-----------|------|
+| Trace | `tracing` spans/events plus application-owned OpenTelemetry export | `src/observability/trace.rs`, `examples/observability/trace.rs` |
+| Log | Optional Qortoo stdout `tracing_subscriber` layer | `src/observability/log_layer.rs`, `src/observability/trace_context.rs`, `examples/observability/log.rs` |
+| Metrics | `metrics` facade calls; application-owned recorder/exporter | `src/observability/metrics.rs`, `examples/observability/metrics.rs` |
+| Profile | Application-owned Pyroscope CPU profiler | `examples/observability/profile.rs` |
 
-Both follow a **facade pattern**: the library only calls a thin abstraction layer; the actual backend (Jaeger, Prometheus, etc.) is registered by the application at startup. No backend = zero runtime cost.
+The local stack in `qortoo-rs-docker/docker-compose.yml` starts Grafana, Prometheus, Tempo, Loki, and Pyroscope:
+
+```shell
+make obs-up
+# Grafana: http://localhost:3000
+# user/password: admin/qortooAdmin
+```
+
+The examples live under `examples/observability/`, but `Cargo.toml` registers explicit example targets, so the public commands stay short:
+
+```shell
+cargo run --example trace
+cargo run --example log
+cargo run --example metrics
+cargo run --example profile
+```
 
 ---
 
-## Tracing
+## Trace
 
-### Enabling
+Qortoo always emits `tracing` spans/events at instrumentation points. To export them, the application installs a subscriber and OpenTelemetry layer.
 
-Tracing is disabled by default. Enable it with the `tracing` feature:
+`examples/observability/trace.rs` configures:
 
-```toml
-[dependencies]
-qortoo = { version = "...", features = ["tracing"] }
+- `tracing_subscriber::Registry` with `EnvFilter` (`qortoo=trace`, `trace=trace`)
+- `tracing_subscriber::fmt::layer()` for stdout log output
+- `tracing_opentelemetry` layer wired to the OTel tracer
+- `opentelemetry_otlp` gRPC exporter (`SpanExporter` via tonic)
+- `opentelemetry_sdk::trace::SdkTracerProvider` with batch export
+- service name `qortoo-example-trace` via `Resource::builder().with_attribute(KeyValue::new("service.name", ...))`
+- `OtelGuard` RAII struct — calls `provider.shutdown()` on drop to flush the batch exporter
+
+Run locally:
+
+```shell
+make obs-up
+cargo run --example trace
+# Grafana -> Explore -> Tempo -> Search -> Service name: qortoo-example-trace
 ```
 
-This pulls in `opentelemetry_sdk`, `opentelemetry-otlp`, and `tracing-subscriber`. Without the feature, the `tracing` facade calls compile to no-ops.
+Override the OTLP endpoint with standard OpenTelemetry variables:
 
-### What is instrumented
+```shell
+# traces-specific variable (checked first)
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://my-collector:4317 cargo run --example trace
+# generic fallback
+OTEL_EXPORTER_OTLP_ENDPOINT=http://my-collector:4317 cargo run --example trace
+```
+
+### Instrumented Spans
 
 | Span | Trigger |
 |------|---------|
@@ -35,186 +70,211 @@ This pulls in `opentelemetry_sdk`, `opentelemetry-otlp`, and `tracing-subscriber
 | `execute_local_operation` | Each local write |
 | `create_push_pull_pack` | Assembly of outgoing `PushPullPack` |
 
-Span events (via `add_span_event!`) annotate key moments within a span:
+Span events added with `add_span_event!` annotate moments such as event loop start, push pack send, pull pack receive, and event loop shutdown.
 
+### Span Fields
+
+Datatype spans use these fields:
+
+| Field | Meaning |
+|-------|---------|
+| `collection` | Collection name |
+| `client` | Client alias |
+| `cuid` | Client unique ID |
+| `data_key` | Datatype key |
+| `duid` | Datatype unique ID |
+
+---
+
+## Log
+
+The `log_layer` feature exposes `QortooLogLayer`, Qortoo's compact stdout formatter for `tracing_subscriber`.
+
+```toml
+qortoo = { version = "...", features = ["log_layer"] }
 ```
-datatype_event_loop
-  ├── "start event_loop"
-  ├── "send PUSH PushPullPack"   (ppp = <serialized pack>)
-  ├── "recv PULL PushPullPack"
-  └── "quiting event_loop"
+
+Create the layer directly — the only field is an optional level filter:
+
+```rust
+let fmt = qortoo::QortooLogLayer { level_filter: None };
 ```
 
-### Span fields
-
-Every datatype span carries these fields for filtering in Jaeger/Tempo:
-
-```
-qortoo.col   — collection name
-qortoo.cl    — client alias
-qortoo.cuid  — client unique ID
-qortoo.dt    — datatype key
-qortoo.duid  — datatype unique ID
-```
-
-### Running locally with Jaeger
+Run with the Qortoo formatter and Loki shipping:
 
 ```shell
-make enable-jaeger          # starts Jaeger via docker-compose
-cargo test --all-features   # tests emit spans to Jaeger
-# open http://localhost:16686
+make obs-up
+RUST_LOG=info cargo run --example log --features log_layer
+# Grafana -> Explore -> Loki -> {app="qortoo", source="example"}
+```
+
+Run with the standard fmt layer (no feature flag needed):
+
+```shell
+make obs-up
+RUST_LOG=info cargo run --example log
+```
+
+`QortooLogLayer` is only a layer. Applications still own the subscriber, `EnvFilter`, and any remote log exporter. The log example builds a `Registry` that chains `EnvFilter → QortooLogLayer (or fmt) → tracing_loki`, shipping logs to `http://localhost:3100` with labels `{app="qortoo", source="example"}`.
+
+The formatter reads the same context fields used by tracing:
+
+```text
+collection
+client
+cuid
+data_key
+duid
 ```
 
 ---
 
 ## Metrics
 
-### Design: facade pattern
+Qortoo emits metrics through the `metrics` crate. The application chooses and installs the global recorder.
 
 ```
-Qortoo-rs (library)
-  └─ metrics::counter!("qortoo_sync_total", ...)   ← facade call
-       └─ [global recorder, set by application]
-            ├─ metrics-exporter-prometheus  (user's choice)
-            ├─ metrics-exporter-statsd
-            └─ no recorder → AtomicPtr no-op, zero cost
+Qortoo-rs
+  -> metrics::counter! / metrics::histogram!
+  -> application recorder
+  -> Prometheus, StatsD, debugging recorder, or another backend
 ```
 
-The `metrics` crate (`^0.24`) is always a dependency. Heavy exporters live in the application, not the library — no version conflicts, no forced backend.
+### Metric Catalogue
 
-### Metric catalogue
+#### `qortoo_sync_total`
 
-All metric names follow the Prometheus convention (`snake_case`, unit suffix).
-
-#### `qortoo_sync_total` — counter
-
-Counts every push/pull sync cycle.
-
-| Label | Values | Description |
-|-------|--------|-------------|
-| `collection` | string | Collection name |
-| `key` | string | Datatype key |
-| `type` | `Counter` / … | CRDT type |
-| `result` | `success` / `failure` | Outcome of the sync |
-
-```
-qortoo_sync_total{collection="orders",key="visits",type="Counter",result="success"} 42
-qortoo_sync_total{collection="orders",key="visits",type="Counter",result="failure"} 1
-```
-
-#### `qortoo_sync_duration_seconds` — histogram
-
-End-to-end latency of a single `push_pull()` call, in seconds. Includes both the connectivity round-trip and local state application.
+Counter incremented for every push/pull sync cycle.
 
 | Label | Values |
 |-------|--------|
-| `collection` | string |
-| `key` | string |
-| `type` | CRDT type |
+| `collection` | Collection name |
+| `key` | Datatype key |
+| `type` | CRDT type, currently `Counter` |
+| `result` | `success` or `failure` |
 
-#### `qortoo_backoff_total` — counter
+#### `qortoo_sync_duration_seconds`
 
-Incremented on each recoverable connectivity failure that results in a `BackOff` action, including retries that fail while already in backoff. Useful for alerting on degraded connectivity.
+Histogram for end-to-end `push_pull()` latency in seconds.
 
 | Label | Values |
 |-------|--------|
-| `collection` | string |
-| `key` | string |
+| `collection` | Collection name |
+| `key` | Datatype key |
 | `type` | CRDT type |
 
-### Instrumentation points
+#### `qortoo_backoff_total`
 
+Counter incremented when a recoverable connectivity failure puts the event loop into `BackOff`.
+
+| Label | Values |
+|-------|--------|
+| `collection` | Collection name |
+| `key` | Datatype key |
+| `type` | CRDT type |
+
+### Running Locally
+
+`examples/observability/metrics.rs` installs `metrics-exporter-prometheus` and exposes:
+
+```text
+http://localhost:9000/metrics
 ```
-WiredDatatype::push_pull()            ← records sync_total + sync_duration_seconds
-  └── do_push_pull()
-        └── connectivity.push_and_pull()
 
-EventLoop::run()  [PushTransaction error path]
-  └── if event_loop_action == BackOff  ← records backoff_total
+Run:
+
+```shell
+make obs-up
+cargo run --example metrics
+# Grafana -> Explore -> Prometheus -> qortoo_sync_total
 ```
 
-### Connecting to Prometheus
+Prometheus is provisioned by `qortoo-rs-docker/prometheus/prometheus.yml` to scrape `host.docker.internal:9000`. On Linux, replace that target with the Docker bridge gateway IP, usually `172.17.0.1:9000`.
 
-In the application, install a recorder once at startup:
+### Testing Metrics
+
+Tests use `metrics-util`'s `DebuggingRecorder`.
 
 ```toml
-# application Cargo.toml
-metrics-exporter-prometheus = "0.16"
-```
-
-```rust
-use metrics_exporter_prometheus::PrometheusBuilder;
-
-fn main() {
-    // registers the global recorder; all metrics::counter!() calls route here
-    let handle = PrometheusBuilder::new()
-        .install_recorder()
-        .unwrap();
-
-    // expose /metrics endpoint (example with axum)
-    let app = axum::Router::new()
-        .route("/metrics", axum::routing::get(move || {
-            let body = handle.render();
-            async move { body }
-        }));
-    // ...
-}
-```
-
-The `/metrics` endpoint is then scraped by Prometheus:
-
-```yaml
-# prometheus.yml
-scrape_configs:
-  - job_name: qortoo-app
-    static_configs:
-      - targets: ['localhost:3000']
-    scrape_interval: 15s
-```
-
-### Testing metrics
-
-Unit and integration tests use `metrics-util`'s `DebuggingRecorder` — an in-memory recorder that captures metric values without any network or file I/O.
-
-```toml
-# dev-dependencies only
 metrics-util = { version = "^0.20", features = ["debugging"] }
 ```
 
-```rust
-use metrics_util::debugging::DebuggingRecorder;
+Important behavior in `metrics-util` 0.20: `snapshot()` drains all registered metrics globally. Keep metrics tests serial and take one snapshot per assertion group.
 
-let recorder = DebuggingRecorder::new();
-let snapshotter = recorder.snapshotter();
-recorder.install().unwrap();  // sets the global recorder for this process
-
-// ... trigger sync ...
-
-let snap = snapshotter.snapshot().into_vec();
-// inspect snap for expected counter/histogram values
-```
-
-**Important — metrics-util 0.20 semantics:**
-`snapshot()` resets (consumes) **all** registered metrics to zero — counters and histograms alike. This is a breaking change from 0.18 which only drained histograms.
-
-Consequences for test design:
-
-| Rule | Reason |
-|------|--------|
-| Call `snapshot()` exactly once per assertion group | Each call resets everything; two calls drain each other's values |
-| Mark metrics tests `#[serial_test::serial]` | Parallel tests share the global recorder; one test's snapshot resets another's counters |
-| Use `extract_counter!` on an already-drained vec | Avoids a second snapshot that would lose histogram samples |
-
-See `src/observability/metrics.rs` (`tests_metrics` module) for the full test pattern.
+See `src/observability/metrics.rs` and `tests/metrics.rs` for the current test pattern.
 
 ---
 
-## Key Types Quick Reference
+## Profile
 
-| Type | Location | Purpose |
+Profiling is application-owned. `examples/observability/profile.rs` uses the Rust Pyroscope client with the pprof backend and exports CPU samples to the Pyroscope service in `qortoo-rs-docker/docker-compose.yml`.
+
+The workload runs two clients against a shared counter — `client-a` writes and syncs, `client-b` subscribes and reads — while a `burn_cpu` function creates measurable CPU samples each iteration. Tags `example=profile` and `library=qortoo` are attached to the Pyroscope application.
+
+Run:
+
+```shell
+make obs-up
+cargo run --example profile
+# Grafana -> Explore -> Pyroscope -> qortoo-example-profile
+```
+
+Defaults:
+
+| Setting | Default |
+|---------|---------|
+| `PYROSCOPE_URL` | `http://localhost:4040` |
+| `PYROSCOPE_APPLICATION_NAME` | `qortoo-example-profile` |
+| `QORTOO_PROFILE_SECONDS` | `30` |
+
+Override them as needed:
+
+```shell
+PYROSCOPE_URL=http://localhost:4040 \
+PYROSCOPE_APPLICATION_NAME=qortoo-example-profile \
+QORTOO_PROFILE_SECONDS=30 \
+cargo run --example profile
+```
+
+---
+
+## Local Stack
+
+`make obs-up` starts:
+
+| Service | URL |
+|---------|-----|
+| Grafana | `http://localhost:3000` |
+| Prometheus | `http://localhost:9090` |
+| Tempo OTLP gRPC | `http://localhost:4317` |
+| Tempo OTLP HTTP | `http://localhost:4318` |
+| Loki | `http://localhost:3100` |
+| Pyroscope | `http://localhost:4040` |
+
+Shutdown:
+
+```shell
+make obs-down
+```
+
+Remove persisted volumes too:
+
+```shell
+make obs-down-v
+```
+
+---
+
+## Quick Reference
+
+| Item | Location | Purpose |
 |------|----------|---------|
-| `add_span_event!` | `src/observability/macros.rs` | Add an OpenTelemetry span event at the current tracing scope |
-| `metrics::emit_sync` | `src/observability/metrics.rs` | Emit `sync_total` + `sync_duration_seconds` for one push/pull |
-| `metrics::emit_backoff` | `src/observability/metrics.rs` | Emit `backoff_total` on BackOff entry |
-| `SYNC_TOTAL`, `BACKOFF_TOTAL`, … | `src/observability/metrics.rs` | Metric name constants (module-private; single source of truth within the module) |
-
+| `add_span_event!` | `src/observability/trace.rs` | Add an OpenTelemetry span event at the current tracing scope |
+| `QortooLogLayer` | `src/observability/log_layer.rs` | Format tracing events to stdout with Qortoo context |
+| `QortooTraceContextVisitor` | `src/observability/trace_context.rs` | Collect Qortoo context fields for local formatting |
+| `metrics::emit_sync` | `src/observability/metrics.rs` | Emit `qortoo_sync_total` and `qortoo_sync_duration_seconds` |
+| `metrics::emit_backoff` | `src/observability/metrics.rs` | Emit `qortoo_backoff_total` |
+| Trace example | `examples/observability/trace.rs` | Export traces to Tempo |
+| Log example | `examples/observability/log.rs` | Ship logs to Loki |
+| Metrics example | `examples/observability/metrics.rs` | Export metrics to Prometheus |
+| Profile example | `examples/observability/profile.rs` | Export CPU profiles to Pyroscope |

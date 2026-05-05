@@ -1,0 +1,15 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: [localhost:9090]
+
+  # Qortoo metrics example (run on the host: cargo run --example metrics)
+  # macOS / Windows: host.docker.internal resolves to the host machine.
+  # Linux Docker Engine usually needs the bridge gateway IP instead, e.g. 172.17.0.1.
+  - job_name: qortoo
+    static_configs:
+      - targets: [host.docker.internal:9000]

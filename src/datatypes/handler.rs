@@ -4,7 +4,7 @@ use tracing::{Span, error, instrument};
 
 use crate::{
     DatatypeError, DatatypeSet, DatatypeState, datatypes::common::Attribute,
-    observability::macros::add_span_event,
+    observability::trace::add_span_event,
 };
 
 /// Signature for a state-change handler.

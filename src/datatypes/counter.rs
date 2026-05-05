@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-#[cfg(test)]
-use crate::{DataType, DatatypeState};
+use tracing::trace;
+
 use crate::{
     DatatypeError, IntoString,
     datatypes::{
@@ -30,9 +30,9 @@ impl Counter {
     }
 
     #[cfg(test)]
-    pub(crate) fn new_for_test(state: DatatypeState) -> Self {
+    pub(crate) fn new_for_test(state: crate::DatatypeState) -> Self {
         Self::new(TransactionalDatatype::new_arc(
-            crate::datatypes::common::new_attribute!(DataType::Counter),
+            crate::datatypes::common::new_attribute!(crate::DataType::Counter),
             state,
             Default::default(),
         ))
@@ -67,6 +67,7 @@ impl Counter {
         let ret = self
             .datatype
             .execute_local_operation_as_tx(self.tx_ctx.clone(), op)?;
+        trace!("increased by {delta} -> {ret:?}");
         match ret {
             ReturnType::Counter(cv) => Ok(cv),
             _ => Err(DatatypeError::FailedToExecuteOperation("unexpected return type".into()))

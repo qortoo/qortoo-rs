@@ -17,7 +17,7 @@ Qortoo is a Rust SDK for conflict-free datatypes with distributed synchronizatio
 - **Push Buffer Management**: Memory-managed operation buffering with configurable limits
 - **Checkpoint Tracking**: Sequence synchronization for distributed state
 - **Enhanced Error Handling**: Structured stack traces with typed error codes for better debugging
-- **Observability**: Optional OpenTelemetry and Jaeger integration for distributed tracing
+- **Observability**: `tracing` instrumentation with application-owned logs, traces, metrics, and profiling exporters
 - **High Code Coverage**: Enforced 90% minimum coverage with cargo-tarpaulin
 
 ## Quick Start
@@ -34,8 +34,17 @@ let counter = client
     .build_counter()
     .unwrap();
 
-counter.increase().unwrap();
-assert_eq!(counter.get_value(), 1);
+counter.increase().unwrap();           // increment by 1
+counter.increase_by(5).unwrap();       // increment by delta
+assert_eq!(counter.get_value(), 6);
+
+// Atomic transaction — all-or-nothing; rolled back on error
+counter.transaction("batch", |c| {
+    c.increase_by(10)?;
+    c.increase_by(5)?;
+    Ok(())
+}).unwrap();
+assert_eq!(counter.get_value(), 21);
 
 // Create a read-only counter for observation
 let readonly_counter = client
@@ -44,9 +53,37 @@ let readonly_counter = client
     .build_counter()
     .unwrap();
 
-// This will fail with FailedToWrite error
+// Write operations fail on read-only datatypes
 assert!(readonly_counter.increase().is_err());
 ```
+
+## Feature Flags
+
+| Flag | Description |
+|------|-------------|
+| `log_layer` | Exports `QortooLogLayer` — Qortoo's compact stdout formatter for `tracing_subscriber` |
+
+## Observability
+
+Qortoo emits `tracing` spans, metrics, and logs. Applications own the exporter setup; the crate installs nothing globally.
+
+Start the local observability stack (Grafana, Prometheus, Tempo, Loki, Pyroscope):
+
+```shell
+make obs-up
+# Grafana: http://localhost:3000  (admin / qortooAdmin)
+```
+
+Run the bundled examples:
+
+```shell
+cargo run --example trace    # OpenTelemetry traces → Tempo
+cargo run --example log      # structured logs → Loki  (add --features log_layer for QortooLogLayer)
+cargo run --example metrics  # Prometheus metrics scrape endpoint
+cargo run --example profile  # pprof CPU profiles → Pyroscope
+```
+
+See [`docs/observability.md`](docs/observability.md) for the full reference.
 
 ## Build and Development Commands
 
@@ -57,8 +94,7 @@ make install
 # Run all tests
 cargo test
 
-# Run tests with tracing/observability (requires Jaeger)
-make enable-jaeger
+# Run tests with all feature-gated code enabled
 cargo test --all-features
 
 # Run a single test
@@ -75,4 +111,10 @@ make tarpaulin
 
 # Generate documentation
 make doc
+
+# Observability stack
+make obs-up        # start Grafana / Prometheus / Tempo / Loki / Pyroscope
+make obs-down      # stop the stack
+make obs-down-v    # stop and remove persisted volumes
+make obs-logs      # tail container logs
 ```

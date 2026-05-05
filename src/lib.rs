@@ -10,7 +10,8 @@
 //! - **Read-Only Mode**: Create read-only datatypes for observation without modification
 //! - **Event Loop System**: Priority-based event processing with graceful shutdown
 //! - **Enhanced Error Handling**: Structured stack traces with typed error codes
-//! - **Observability**: Optional OpenTelemetry and Jaeger integration (via `tracing` feature)
+//! - **Observability**: `tracing` instrumentation plus application-owned trace, log,
+//!   metrics, and profiling exporters
 //!
 //! # Quick Start
 //!
@@ -53,8 +54,10 @@
 //!
 //! # Feature Flags
 //!
-//! - `tracing` - Enables OpenTelemetry distributed tracing support
+//! - `log_layer` - Exports Qortoo's local stdout `tracing_subscriber` layer
 
+#[cfg(feature = "log_layer")]
+pub use crate::observability::log_layer::QortooLogLayer;
 pub use crate::{
     clients::client::Client,
     connectivity::local_connectivity::LocalConnectivity,
@@ -81,10 +84,3 @@ pub(crate) mod observability;
 pub(crate) mod operations;
 pub(crate) mod types;
 pub(crate) mod utils;
-
-#[cfg(feature = "tracing")]
-#[ctor::ctor]
-pub fn init_tracing_subscriber() {
-    use tracing::level_filters::LevelFilter;
-    observability::subscriber::init(LevelFilter::TRACE);
-}

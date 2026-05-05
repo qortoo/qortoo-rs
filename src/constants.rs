@@ -1,24 +1,20 @@
 use std::{env, sync::OnceLock};
 
+#[allow(dead_code)]
 pub(crate) const SDK_VER: &str = env!("CARGO_PKG_VERSION");
+#[allow(dead_code)]
 pub(crate) const SDK_NAME: &str = env!("CARGO_PKG_NAME");
+#[allow(dead_code)]
 pub(crate) const SDK_HASH: &str = match option_env!("GIT_HASH") {
     Some(hash) => hash,
     None => "unknown",
 };
 
+#[allow(dead_code)]
 static AGENT: OnceLock<String> = OnceLock::new();
+#[allow(dead_code)]
 pub fn get_agent() -> &'static str {
     AGENT.get_or_init(|| format!("{SDK_NAME}-{SDK_VER}-{SDK_HASH}"))
-}
-
-#[cfg(feature = "tracing")]
-static QORTOO_RS_OTEL_ENABLED: OnceLock<String> = OnceLock::new();
-#[cfg(feature = "tracing")]
-pub fn is_otel_enabled() -> bool {
-    let enabled = QORTOO_RS_OTEL_ENABLED
-        .get_or_init(|| env::var("QORTOO_RS_OTEL_ENABLED").unwrap_or_else(|_| "".to_string()));
-    !enabled.is_empty()
 }
 
 #[cfg(test)]

@@ -13,7 +13,7 @@ use crate::{
         wired::WiredDatatype,
     },
     errors::datatypes::DatatypeError,
-    observability::macros::add_span_event,
+    observability::trace::add_span_event,
     operations::Operation,
     utils::{defer_guard::DeferGuard, no_guard_mutex::NoGuardMutex},
 };
@@ -326,7 +326,7 @@ impl TransactionalDatatype {
     }
 
     pub fn push_transaction(&self) {
-        // TODO: implment pushing transactions to remote server
+        // TODO: implement pushing transactions to remote server
     }
 }
 
@@ -413,9 +413,7 @@ mod tests_transactional {
             join_handles.push(tokio::spawn(async move {
                 let thread_span = info_span!("thread_with_no_tag", i = i);
                 if !parent_span_no_tag.is_disabled() {
-                    thread_span
-                        .set_parent(parent_span_no_tag.context())
-                        .unwrap();
+                    let _ = thread_span.set_parent(parent_span_no_tag.context());
                 }
                 let _g_thread_span = thread_span.enter();
                 counter_without_tx.increase().unwrap();

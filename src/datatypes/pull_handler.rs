@@ -4,7 +4,7 @@ use crate::{
     DatatypeError, DatatypeState,
     datatypes::mutable::MutableDatatype,
     errors::datatypes::{DatatypeAction, DatatypeErrorWithActions, EventLoopAction},
-    observability::macros::add_span_event,
+    observability::trace::add_span_event,
     types::{checkpoint::CheckPoint, push_pull_pack::PushPullPack},
 };
 
