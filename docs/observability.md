@@ -127,6 +127,25 @@ data_key
 duid
 ```
 
+### Shipping Test Logs to Loki
+
+The test subscriber (`src/observability/test_subscriber.rs`) is installed once per process via `#[ctor]`. By default it uses the OpenTelemetry subscriber. Setting `QORTOO_RS_LOKI_URL` switches it to ship logs to Loki instead:
+
+```shell
+make obs-up
+QORTOO_RS_LOKI_URL=http://localhost:3100 RUST_LOG=debug cargo test
+# Grafana -> Explore -> Loki -> {app="qortoo", source="test"}
+```
+
+Labels attached to every test log line:
+
+| Label | Value |
+|-------|-------|
+| `app` | `qortoo` |
+| `source` | `test` |
+
+If the URL is missing or invalid, the subscriber silently falls back to the OTel backend.
+
 ---
 
 ## Metrics
