@@ -28,6 +28,8 @@ Each datatype is composed of five layers stacked vertically. A user operation pa
 └────────────────────────────────────────────────────┘
 ```
 
+> For event loop internals (channel architecture, BackOff, Notify flow) see [`docs/event-loop.md`](event-loop.md).
+
 ### Layer Responsibilities
 
 | Layer | Struct | Key Responsibility |
@@ -35,7 +37,7 @@ Each datatype is composed of five layers stacked vertically. A user operation pa
 | Public API | `Counter`, etc. | User-facing methods; implements `DatatypeBlanket` |
 | Transactional | `TransactionalDatatype` | Transaction scope via `TransactionContext` and `DeferGuard`; serializes concurrent ops via `op_mutex` / `tx_mutex` |
 | Mutable | `MutableDatatype` | Owns `Crdt`, `OperationId`, `PushBuffer`, `TxRecord`; executes and records operations |
-| Wired | `WiredDatatype` | Assembles `PushPullPack` and calls `Connectivity::push_and_pull`; drives the event loop |
+| Wired | `WiredDatatype` | Assembles `PushPullPack` and calls `Connectivity::push_pull`; drives the event loop |
 | CRDT | `CounterCrdt`, … | Pure state machine; no I/O, no locking |
 
 ## Shared State Model
@@ -87,7 +89,7 @@ EventLoop fires PushTransaction event
   ▼
 WiredDatatype::push_pull()
   ├── mutable.read() → assemble PushPullPack (push_buffer contents)
-  ├── connectivity.push_and_pull(&pack)
+  ├── connectivity.push_pull(&pack)
   ├── mutable.write() → apply pulled transactions
   │    ├── execute_remote_transaction() for each remote tx
   │    └── push_buffer.deque(acked_cseq)

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use parking_lot::RwLock;
-use tracing::instrument;
+use tracing::{instrument, trace, warn};
 
 #[cfg(test)]
 use crate::datatypes::wired_interceptor::WiredInterceptor;
@@ -18,7 +18,7 @@ use crate::{
     },
     observability::{metrics, trace::add_span_event},
     operations::transaction::Transaction,
-    types::{push_pull_pack::PushPullPack, uid::Cuid},
+    types::{notification::Notification, push_pull_pack::PushPullPack, uid::Cuid},
 };
 
 pub struct WiredDatatype {
@@ -84,6 +84,34 @@ impl WiredDatatype {
     }
 
     #[instrument(skip_all)]
+    pub fn handle_notification(&self, notify: Notification) -> bool {
+        if self.attr.get_duid() != notify.duid {
+            warn!(
+                "ignore {notify}: different duid(expected={})",
+                self.attr.get_duid()
+            );
+            return false;
+        }
+        if self.attr.get_cuid() == notify.cuid {
+            trace!("ignore {notify}: self-notification");
+            return false;
+        }
+        let cp_sseq = self.mutable.read().checkpoint.sseq;
+        if cp_sseq >= notify.sseq {
+            trace!(
+                "ignore {notify} due to current sseq({cp_sseq}) >= notification.sseq({})",
+                notify.sseq
+            );
+            return false;
+        }
+        trace!(
+            "schedule push-pull due to current sseq({cp_sseq}) < notification.sseq({})",
+            notify.sseq
+        );
+        true
+    }
+
+    #[instrument(skip_all)]
     pub fn push_pull(&self) -> Result<(), DatatypeErrorWithActions> {
         let start = std::time::Instant::now();
         let result = self.do_push_pull();
@@ -106,7 +134,7 @@ impl WiredDatatype {
         add_span_event!("send PUSH PushPullPack", "ppp"=> pushing_ppp.to_string());
         #[cfg_attr(not(test), allow(unused_mut))]
         let mut pulled_ppp = connectivity
-            .push_and_pull(&pushing_ppp)
+            .push_pull(&pushing_ppp)
             .map_err(|e| e.mapping())?;
 
         #[cfg(test)]

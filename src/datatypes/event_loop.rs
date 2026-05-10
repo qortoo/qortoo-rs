@@ -16,6 +16,7 @@ use crate::{
         with_err_out,
     },
     observability::{metrics, trace::add_span_event},
+    types::notification::Notification,
 };
 
 const BACKOFF_MIN_DELAY: Duration = Duration::from_millis(500);
@@ -29,6 +30,8 @@ pub enum Event {
     PushTransaction(Option<oneshot::Sender<Option<DatatypeError>>>),
     #[display("BackOff")]
     BackOff,
+    #[display("Notify")]
+    Notify(Notification),
 }
 
 #[derive(Debug)]
@@ -75,6 +78,7 @@ impl EventLoop {
         let bounded_rx = self.bounded_rx.clone();
         let rt_handle = wired.attr.client_common.handle.clone();
         let unbounded_tx = self.unbounded_tx.clone();
+        let bounded_tx = self.bounded_tx.clone();
         let connectivity = wired.attr.client_common.connectivity.clone();
         let span = Span::current();
         connectivity.register(wired.clone(), unbounded_tx);
@@ -130,6 +134,12 @@ impl EventLoop {
                                 Self::process_blocking_resp(resp_tx, opt_datatype_error);
                             }
                             Event::BackOff => {}
+                            Event::Notify(notify) => {
+                                if wired.handle_notification(notify) {
+                                    // best-effort: drop if a PushTransaction is already queued
+                                    let _ = bounded_tx.try_send(Event::PushTransaction(None));
+                                }
+                            }
                         },
                         Err(err) => {
                             wired.handle_error(err, DatatypeAction::Disable);

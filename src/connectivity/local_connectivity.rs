@@ -160,7 +160,13 @@ impl Connectivity for LocalConnectivity {
         server.write().insert_client_item(wired, sender);
     }
 
-    fn push_and_pull(&self, pushed: &PushPullPack) -> Result<PushPullPack, ConnectivityError> {
+    #[tracing::instrument(name = "LocalConnectivity::push_pull", skip_all, fields(
+        collection=%pushed.collection,
+        cuid=%pushed.cuid,
+        duid=%pushed.duid,
+        key=%pushed.key,
+    ))]
+    fn push_pull(&self, pushed: &PushPullPack) -> Result<PushPullPack, ConnectivityError> {
         let resource_id = pushed.resource_id();
 
         let local_datatype_server_with_lock = self
@@ -175,7 +181,9 @@ impl Connectivity for LocalConnectivity {
             DatatypeState::DueToSubscribeOrCreate => {
                 local_datatype_server.process_due_to_subscribe_or_create(pushed)?
             }
-            DatatypeState::Subscribed => local_datatype_server.process_subscribe(pushed)?,
+            DatatypeState::Subscribed => {
+                local_datatype_server.process_subscribed(pushed, self.is_realtime())?
+            }
             DatatypeState::DueToUnsubscribe => {
                 local_datatype_server.process_due_to_unsubscribe(pushed)?
             }
@@ -197,8 +205,9 @@ mod tests_local_connectivity {
     use tracing::instrument;
 
     use crate::{
-        Client, Datatype, DatatypeState, connectivity::local_connectivity::LocalConnectivity,
-        utils::test_utils::get_test_collection_name,
+        Client, Datatype, DatatypeState,
+        connectivity::local_connectivity::LocalConnectivity,
+        utils::test_utils::{get_test_collection_name, get_test_func_name, get_test_ids},
     };
 
     #[test]
@@ -232,5 +241,74 @@ mod tests_local_connectivity {
 
         counter_manual.sync().unwrap();
         assert_eq!(counter_manual.get_state(), DatatypeState::Subscribed);
+    }
+
+    #[test]
+    #[instrument]
+    fn can_notify_other_clients_after_realtime_push() {
+        let connectivity = LocalConnectivity::new_arc();
+        let (collection, key, _) = get_test_ids!();
+        let client1 = Client::builder(collection.clone(), "client1")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let client2 = Client::builder(collection, "client2")
+            .with_connectivity(connectivity)
+            .build()
+            .unwrap();
+
+        let counter1 = client1
+            .create_datatype(key.clone())
+            .build_counter()
+            .unwrap();
+        awaitility::at_most(Duration::from_secs(1))
+            .poll_interval(Duration::from_micros(100))
+            .until(|| counter1.get_state() == DatatypeState::Subscribed);
+
+        let counter2 = client2.subscribe_datatype(key).build_counter().unwrap();
+        awaitility::at_most(Duration::from_secs(1))
+            .poll_interval(Duration::from_micros(100))
+            .until(|| counter2.get_state() == DatatypeState::Subscribed);
+
+        counter1.increase_by(7).unwrap();
+
+        awaitility::at_most(Duration::from_secs(1))
+            .poll_interval(Duration::from_micros(100))
+            .until(|| counter2.get_value() == 7);
+        assert_eq!(counter1.get_server_version(), counter2.get_server_version());
+    }
+
+    #[test]
+    #[instrument]
+    fn does_not_notify_other_clients_in_manual_mode() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let (collection, key, _) = get_test_ids!();
+        let client1 = Client::builder(collection.clone(), "client1")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let client2 = Client::builder(collection, "client2")
+            .with_connectivity(connectivity)
+            .build()
+            .unwrap();
+
+        let counter1 = client1
+            .create_datatype(key.clone())
+            .build_counter()
+            .unwrap();
+        counter1.sync().unwrap();
+
+        let counter2 = client2.subscribe_datatype(key).build_counter().unwrap();
+        counter2.sync().unwrap();
+
+        counter1.increase_by(7).unwrap();
+        counter1.sync().unwrap();
+
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(counter2.get_value(), 0);
+
+        counter2.sync().unwrap();
+        assert_eq!(counter2.get_value(), 7);
     }
 }

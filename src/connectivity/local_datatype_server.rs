@@ -1,6 +1,7 @@
 use std::{collections::HashMap, fmt::Display, sync::Arc};
 
 use crossbeam_channel::Sender;
+use tracing::{instrument, trace};
 
 use crate::{
     ConnectivityError, DataType, DatatypeState,
@@ -10,14 +11,32 @@ use crate::{
     types::{
         checkpoint::CheckPoint,
         common::ArcStr,
+        notification::Notification,
         push_pull_pack::PushPullPack,
         uid::{Cuid, Duid},
     },
 };
 
+macro_rules! datatype_server_instrument {
+    ($(#[$attr:meta])* $vis:vis fn $name:ident $($rest:tt)*) => {
+        $(#[$attr])*
+        #[tracing::instrument(skip_all,
+            fields(
+                collection=%self.collection,
+                data_key=%self.key,
+                duid=%self.duid,
+                r#type=%self.r#type,
+                sseq=%self.sseq,
+            )
+        )]
+        $vis fn $name $($rest)*
+    };
+}
+
 pub struct LocalDatatypeServer {
     wired_map: HashMap<Cuid, Arc<WiredDatatype>>,
     sender_map: HashMap<Cuid, Sender<Event>>,
+    collection: ArcStr,
     key: ArcStr,
     r#type: DataType,
     duid: Duid,
@@ -49,6 +68,7 @@ impl LocalDatatypeServer {
             created: false,
             // creator is temporarily assigned; it should be reassigned when this datatype is created
             creator: attr.get_cuid(),
+            collection: attr.client_common.collection.clone(),
             sseq: 0,
             cseq_map: HashMap::new(),
             history: Vec::new(),
@@ -63,16 +83,18 @@ impl LocalDatatypeServer {
         self.sender_map.insert(wired.cuid(), sender);
     }
 
-    pub fn push_transactions(&mut self, pushed: &PushPullPack) -> u64 {
+    pub fn push_transactions(&mut self, pushed: &PushPullPack) -> (u64, bool) {
         let client_cp = self
             .cseq_map
             .entry(pushed.cuid.clone())
             .or_insert(CheckPoint::new(0, 0));
+        let mut pushed_any = false;
 
         for tx in pushed.transactions.iter() {
             if tx.cseq <= client_cp.cseq {
                 continue;
             }
+            pushed_any = true;
             self.sseq += 1;
             let mut owned_tx = (**tx).clone();
             owned_tx.sseq = self.sseq;
@@ -80,9 +102,10 @@ impl LocalDatatypeServer {
             client_cp.cseq = tx.cseq;
         }
         client_cp.sseq = self.sseq;
-        client_cp.cseq
+        (client_cp.cseq, pushed_any)
     }
 
+    datatype_server_instrument! {
     pub fn process_due_to_create(
         &mut self,
         pushed: &PushPullPack,
@@ -107,13 +130,14 @@ impl LocalDatatypeServer {
         self.created = true;
         self.creator = pushed.cuid.clone();
         self.duid = pushed.duid.clone();
-        let cseq = self.push_transactions(pushed);
+        let (cseq, _) = self.push_transactions(pushed);
         pulled.checkpoint.sseq = self.sseq;
         pulled.checkpoint.cseq = cseq;
         pulled.state = DatatypeState::Subscribed;
         Ok(pulled)
-    }
+    }}
 
+    datatype_server_instrument! {
     pub fn process_due_to_subscribe_or_create(
         &mut self,
         pushed: &PushPullPack,
@@ -123,11 +147,13 @@ impl LocalDatatypeServer {
         } else {
             self.process_due_to_create(pushed)
         }
-    }
+    }}
 
-    pub fn process_subscribe(
+    datatype_server_instrument! {
+    pub fn process_subscribed(
         &mut self,
         pushed: &PushPullPack,
+        is_realtime: bool,
     ) -> Result<PushPullPack, ConnectivityError> {
         let mut pulled = pushed.get_pulled_stub();
         if pulled.is_readonly && !pushed.transactions.is_empty() {
@@ -137,38 +163,65 @@ impl LocalDatatypeServer {
             pulled.state = DatatypeState::Disabled;
             return Ok(pulled);
         }
-        let cseq = self.push_transactions(pushed);
+        let (cseq, pushed_any) = self.push_transactions(pushed);
         pulled.checkpoint.sseq = pushed.checkpoint.sseq;
         pulled.checkpoint.cseq = cseq;
         self.pull_transactions(&mut pulled);
         pulled.state = DatatypeState::Subscribed;
+        if is_realtime && pushed_any {
+            self.notify_pushed(&pushed.cuid);
+        }
+
         Ok(pulled)
+    }}
+
+    #[instrument(skip_all)]
+    fn notify_pushed(&self, cuid: &Cuid) {
+        let notification = Notification::new(cuid.clone(), self.duid.clone(), self.sseq, 0);
+        let mut notified_cuids = Vec::new();
+        for (registered_cuid, sender) in &self.sender_map {
+            if registered_cuid == cuid {
+                continue;
+            }
+            match sender.try_send(Event::Notify(notification.clone())) {
+                Ok(_) => notified_cuids.push(registered_cuid.to_string()),
+                Err(e) => trace!("failed to notify {registered_cuid}: {e:?}"),
+            }
+        }
+        trace!(
+            "notified {} client(s): {notified_cuids:?} of {notification}",
+            notified_cuids.len()
+        );
     }
 
+    datatype_server_instrument! {
     pub fn process_due_to_unsubscribe(
         &mut self,
         pushed: &PushPullPack,
     ) -> Result<PushPullPack, ConnectivityError> {
         let pulled = pushed.get_pulled_stub();
         Ok(pulled)
-    }
+    }}
 
+    datatype_server_instrument! {
     pub fn process_due_to_delete(
         &mut self,
         pushed: &PushPullPack,
     ) -> Result<PushPullPack, ConnectivityError> {
         let pulled = pushed.get_pulled_stub();
         Ok(pulled)
-    }
+    }}
 
+    datatype_server_instrument! {
     pub fn process_disabled(
         &mut self,
         pushed: &PushPullPack,
     ) -> Result<PushPullPack, ConnectivityError> {
         let pulled = pushed.get_pulled_stub();
         Ok(pulled)
-    }
+    }}
 
+    datatype_server_instrument! {
     pub fn process_due_to_subscribe(
         &mut self,
         pushed: &PushPullPack,
@@ -211,7 +264,7 @@ impl LocalDatatypeServer {
         self.pull_transactions(&mut pulled);
         pulled.state = DatatypeState::Subscribed;
         Ok(pulled)
-    }
+    }}
 
     fn get_creator_wired_datatype(&self) -> Option<Arc<WiredDatatype>> {
         self.wired_map.get(&self.creator).cloned()
