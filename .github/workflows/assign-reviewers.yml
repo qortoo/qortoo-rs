@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Assign assignee and request reviewers
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         env:
           PR_REVIEWERS: ${{ vars.PR_REVIEWERS }}
           PR_TEAM_REVIEWERS: ${{ vars.PR_TEAM_REVIEWERS }}
