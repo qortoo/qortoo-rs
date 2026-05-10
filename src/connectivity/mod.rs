@@ -15,6 +15,6 @@ pub mod null_connectivity;
 
 pub trait Connectivity: Send + Sync + Debug {
     fn register(&self, wired: Arc<WiredDatatype>, sender: Sender<Event>);
-    fn push_and_pull(&self, ppp: &PushPullPack) -> Result<PushPullPack, ConnectivityError>;
+    fn push_pull(&self, ppp: &PushPullPack) -> Result<PushPullPack, ConnectivityError>;
     fn is_realtime(&self) -> bool;
 }

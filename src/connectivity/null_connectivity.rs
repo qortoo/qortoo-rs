@@ -34,7 +34,7 @@ impl Connectivity for NullConnectivity {
         // do nothing
     }
 
-    fn push_and_pull(&self, pushed: &PushPullPack) -> Result<PushPullPack, ConnectivityError> {
+    fn push_pull(&self, pushed: &PushPullPack) -> Result<PushPullPack, ConnectivityError> {
         let mut pulled = pushed.get_pulled_stub();
 
         match pushed.state {
@@ -101,7 +101,7 @@ mod tests_null_connectivity {
 
         let mut pushed1 = PushPullPack::new(&attr, DatatypeState::DueToCreate);
         pushed1.is_readonly = true;
-        let res1 = null_connectivity.push_and_pull(&pushed1);
+        let res1 = null_connectivity.push_pull(&pushed1);
         assert!(res1.is_ok());
         let pulled1 = res1.unwrap();
         assert_eq!(
@@ -115,7 +115,7 @@ mod tests_null_connectivity {
         pushed2
             .transactions
             .push(Arc::new(Transaction::new(&op_id.cuid, cseq)));
-        let res2 = null_connectivity.push_and_pull(&pushed2);
+        let res2 = null_connectivity.push_pull(&pushed2);
         assert!(res2.is_ok());
         let pulled2 = res2.unwrap();
         assert_eq!(

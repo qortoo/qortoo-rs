@@ -31,7 +31,7 @@ services:
   tempo:
     image: grafana/tempo:latest
     container_name: qortoo-tempo
-    command: [-config.file=/etc/tempo/tempo.yaml]
+    command: ["-target=all", "-config.file=/etc/tempo/tempo.yaml"]
     volumes:
       - ./tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
       - tempo_data:/var/tempo
@@ -39,6 +39,7 @@ services:
       - "4317:4317"   # OTLP gRPC  (Rust app → Tempo)
       - "4318:4318"   # OTLP HTTP
       - "3200:3200"   # Tempo query API (Grafana → Tempo)
+      - "7946:7946"
     networks:
       - observability
     restart: unless-stopped
