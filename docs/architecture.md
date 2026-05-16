@@ -8,24 +8,15 @@ Qortoo-rs is a Rust SDK for CRDTs (Conflict-free Replicated Data Types) with dis
 
 Each datatype is composed of five layers stacked vertically. A user operation passes through all layers top-down.
 
-```
-┌────────────────────────────────────────────────────┐
-│           Public API  (e.g., Counter)              │  ← User-facing type
-│           implements DatatypeBlanket               │
-├────────────────────────────────────────────────────┤
-│           Transactional Layer                      │  ← Transaction scope,
-│           TransactionalDatatype                    │     DeferGuard commit/rollback
-├────────────────────────────────────────────────────┤
-│           Mutable Layer                            │  ← Local state: CRDT, op_id,
-│           MutableDatatype                          │     push_buffer, tx_record
-├────────────────────────────────────────────────────┤
-│           Wired Layer                              │  ← Push/pull sync with
-│           WiredDatatype                            │     connectivity backend
-├────────────────────────────────────────────────────┤
-│           CRDT Layer   (e.g., CounterCrdt)         │  ← Pure CRDT: execute_local_operation,
-│           Crdt enum                                │     execute_remote_operation,
-│                                                    │     execute_inverse_operation
-└────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    API["<b>Public API</b> (e.g., Counter)<br/>implements DatatypeBlanket<br/>← User-facing type"]
+    TX["<b>Transactional Layer</b> — TransactionalDatatype<br/>← Transaction scope, DeferGuard commit/rollback"]
+    MU["<b>Mutable Layer</b> — MutableDatatype<br/>← Local state: CRDT, op_id, push_buffer, tx_record"]
+    WI["<b>Wired Layer</b> — WiredDatatype<br/>← Push/pull sync with connectivity backend"]
+    CR["<b>CRDT Layer</b> (e.g., CounterCrdt) — Crdt enum<br/>← Pure CRDT: execute_local_operation,<br/>execute_remote_operation, execute_inverse_operation"]
+
+    API --> TX --> MU --> WI --> CR
 ```
 
 > For event loop internals (channel architecture, BackOff, Notify flow) see [`docs/event-loop.md`](event-loop.md).
@@ -42,16 +33,26 @@ Each datatype is composed of five layers stacked vertically. A user operation pa
 
 ## Shared State Model
 
-```
-Arc<TransactionalDatatype>
- ├── attr: Arc<Attribute>          ← immutable config (cuid, type, option, handlers)
- ├── mutable: Arc<RwLock<MutableDatatype>>
- │    ├── crdt: Crdt               ← CRDT state
- │    ├── op_id: OperationId       ← lamport + cseq counter
- │    ├── push_buffer              ← committed-but-not-acked transactions
- │    ├── tx_record: TxRecord      ← pending transaction + rollback save point
- │    └── state: DatatypeState     ← lifecycle state
- └── (WiredDatatype wraps the same Arc<RwLock<MutableDatatype>>)
+```mermaid
+flowchart TD
+    ATD["Arc&lt;TransactionalDatatype&gt;"]
+    ATTR["attr: Arc&lt;Attribute&gt;\nimmutable config (key, type, duid, option, is_readonly)"]
+    MUT["mutable: Arc&lt;RwLock&lt;MutableDatatype&gt;&gt;"]
+    CRDT["crdt: Crdt — CRDT state"]
+    OPID["op_id: OperationId — lamport + cseq counter"]
+    PB["push_buffer — committed-but-not-acked transactions"]
+    TXR["tx_record: TxRecord — pending transaction + rollback save point"]
+    STATE["state: DatatypeState — lifecycle state"]
+    WD["WiredDatatype\n(shares the same Arc&lt;RwLock&lt;MutableDatatype&gt;&gt;)"]
+
+    ATD --> ATTR
+    ATD --> MUT
+    MUT --> CRDT
+    MUT --> OPID
+    MUT --> PB
+    MUT --> TXR
+    MUT --> STATE
+    WD -.->|shares| MUT
 ```
 
 `Arc<Attribute>` is shared across all layers and is the best place for per-datatype cross-cutting concerns (handler registry, push buffer options, etc.).
@@ -60,40 +61,30 @@ Arc<TransactionalDatatype>
 
 ### Local write
 
-```
-User calls counter.increase(1)
-  │
-  ▼
-TransactionalDatatype::execute_local_operation_as_tx()
-  ├── acquire op_mutex
-  ├── begin_transaction_if_needed()   ← creates TransactionContext + DeferGuard
-  │
-  ▼
-MutableDatatype::execute_local_operation()
-  ├── op.set_lamport(op_id.lamport + 1)
-  ├── crdt.execute_local_operation(&op)   ─── succeeds?
-  │     YES → tx_record.record_operation()  ← append op + update rollback save point
-  │           op_id.next(is_new_tx)         ← advance lamport (and cseq if new tx)
-  │     NO  → return Err (op_id unchanged)
-  │
-  ▼
-DeferGuard drop → end_transaction(committed=true)
-  └── push_buffer.enqueue(tx)   ← ready to sync
+```mermaid
+flowchart TD
+    User["User calls counter.increase(1)"]
+    TX["TransactionalDatatype::execute_local_operation_as_tx()\n──────────────────────────────────────\nacquire op_mutex\nbegin_transaction_if_needed()\n→ creates TransactionContext + DeferGuard"]
+    MU["MutableDatatype::execute_local_operation()\n──────────────────────────────────────\nop.set_lamport(op_id.lamport + 1)\ncrdt.execute_local_operation(&op)"]
+    Ok["YES: succeeds\ntx_record.record_operation() ← append op + update rollback save point\nop_id.next(is_new_tx) ← advance lamport (and cseq if new tx)"]
+    Err["NO: fails\nreturn Err (op_id unchanged)"]
+    Defer["DeferGuard drop → end_transaction(committed=true)\npush_buffer.enqueue(tx) ← ready to sync"]
+
+    User --> TX --> MU
+    MU -->|"succeeds"| Ok --> Defer
+    MU -->|"fails"| Err
 ```
 
 ### Sync (push/pull)
 
-```
-EventLoop fires PushTransaction event
-  │
-  ▼
-WiredDatatype::push_pull()
-  ├── mutable.read() → assemble PushPullPack (push_buffer contents)
-  ├── connectivity.push_pull(&pack)
-  ├── mutable.write() → apply pulled transactions
-  │    ├── execute_remote_transaction() for each remote tx
-  │    └── push_buffer.deque(acked_cseq)
-  └── set_state(pulled.state)
+```mermaid
+flowchart TD
+    EL["EventLoop fires PushTransaction event"]
+    PP["WiredDatatype::push_pull()\n──────────────────────────────────────\nmutable.read() → assemble PushPullPack (push_buffer contents)\nconnectivity.push_pull(&pack)"]
+    Apply["mutable.write() → apply pulled transactions\n──────────────────────────────────────\nexecute_remote_transaction() for each remote tx\npush_buffer.deque(acked_cseq)"]
+    State["set_state(pulled.state)"]
+
+    EL --> PP --> Apply --> State
 ```
 
 ## Concurrency Model
