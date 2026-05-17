@@ -7,24 +7,16 @@ Each datatype instance owns a dedicated `EventLoop`. It runs on a `spawn_blockin
 - Reacting to server-side realtime notifications
 - Managing exponential backoff on transient errors
 
-```
-┌─────────────────────────────────────────────────┐
-│  TransactionalDatatype / Public API             │
-│  (counter.increase(), counter.sync())           │
-└──────────────────┬──────────────────────────────┘
-                   │ send Event
-        ┌──────────▼──────────┐
-        │     EventLoop       │  ← spawn_blocking thread
-        │  (run loop)         │
-        └──────────┬──────────┘
-                   │ push_pull()
-        ┌──────────▼──────────┐
-        │   WiredDatatype     │
-        └──────────┬──────────┘
-                   │ push_pull()
-        ┌──────────▼──────────┐
-        │   Connectivity      │  ← LocalConnectivity / NullConnectivity / ...
-        └─────────────────────┘
+```mermaid
+flowchart TD
+    API["TransactionalDatatype / Public API\n(counter.increase(), counter.sync())"]
+    EL["EventLoop\n(spawn_blocking thread)"]
+    WD["WiredDatatype"]
+    CN["Connectivity\n(LocalConnectivity / NullConnectivity / ...)"]
+
+    API -->|"send Event"| EL
+    EL -->|"push_pull()"| WD
+    WD -->|"push_pull()"| CN
 ```
 
 ---
@@ -33,14 +25,16 @@ Each datatype instance owns a dedicated `EventLoop`. It runs on a `spawn_blockin
 
 The event loop receives events through two crossbeam channels.
 
-```
-                  ┌─────────────────┐
-                  │   EventLoop     │
-                  │                 │
-  unbounded_tx ──►│  unbounded_rx   │  capacity: unlimited
-                  │                 │
-    bounded_tx ──►│    bounded_rx   │  capacity: 1
-                  └─────────────────┘
+```mermaid
+flowchart LR
+    UBT["unbounded_tx"]
+    BT["bounded_tx"]
+    subgraph EL["EventLoop"]
+        UBR["unbounded_rx\ncapacity: unlimited"]
+        BR["bounded_rx\ncapacity: 1"]
+    end
+    UBT --> UBR
+    BT --> BR
 ```
 
 | Channel | Purpose | Behavior |
@@ -73,17 +67,15 @@ pub enum Event {
 
 The event loop tracks its current sync policy via `EventLoopAction`.
 
-```
-            sync succeeds
-  ┌──────────────────────────────────────────┐
-  │                                          │
-  ▼       error: BackOff              error: PauseSync
-Normal ──────────────────► BackOff      ──► PauseSync
-  ▲                          │
-  │   BackOff timer expires  │
-  └──────────────────────────┘
-  ▲        or explicit sync() succeeds
-  └──────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    N(["Normal"])
+    B(["BackOff"])
+    P(["PauseSync"])
+
+    N -->|"error: BackOff"| B
+    N -->|"error: PauseSync"| P
+    B -->|"timer expires or\nexplicit sync() succeeds"| N
 ```
 
 | State | Behavior |
@@ -98,23 +90,29 @@ Normal ──────────────────► BackOff      �
 
 `receive_event` is called at the start of every loop iteration.
 
-```
-receive_event()
-  │
-  ├── [Normal] push_if_needed && wired.push_if_needed()
-  │     → return Ok(Event::PushTransaction(None))   ← auto-push trigger
-  │
-  ├── [BackOff] compute next backoff duration
-  │     crossbeam select! {
-  │       recv(unbounded_rx) → handle immediately (Stop, explicit sync, Notify)
-  │       default(duration)  → timer expired → return Ok(Event::BackOff)
-  │     }
-  │
-  └── [Normal / PauseSync] no timeout
-        crossbeam select! {
-          recv(unbounded_rx) → handle
-          recv(bounded_rx)   → handle
-        }
+```mermaid
+flowchart TD
+    RE["receive_event()"]
+    State{"EventLoopAction?"}
+
+    AutoPush["[Normal] push_if_needed &&\nwired.push_if_needed()\n→ return Ok(Event::PushTransaction(None))"]
+
+    BOSelect["[BackOff]\ncompute next backoff duration\ncrossbeam select!"]
+    BOUnbounded["recv(unbounded_rx)\n→ handle immediately\n(Stop, explicit sync, Notify)"]
+    BOTimer["default(duration)\n→ timer expired\n→ return Ok(Event::BackOff)"]
+
+    NPSelect["[Normal / PauseSync]\ncrossbeam select!"]
+    NPUnbounded["recv(unbounded_rx) → handle"]
+    NPBounded["recv(bounded_rx) → handle"]
+
+    RE --> State
+    State -->|"Normal (push needed)"| AutoPush
+    State -->|"BackOff"| BOSelect
+    State -->|"Normal / PauseSync\n(no push needed)"| NPSelect
+    BOSelect --> BOUnbounded
+    BOSelect --> BOTimer
+    NPSelect --> NPUnbounded
+    NPSelect --> NPBounded
 ```
 
 `push_if_needed()` returns `true` only when `is_realtime() && need_push()`. This prevents auto-push from firing in manual sync mode.
@@ -125,44 +123,53 @@ receive_event()
 
 ### PushTransaction
 
-```
-PushTransaction(resp_tx)
-  │
-  ├── [PauseSync] → immediately return error → process_blocking_resp()
-  │
-  └── wired.push_pull()
-        ├── Ok  → event_loop_action = Normal
-        │         backoff = None (cleared if not BackOff)
-        │         process_blocking_resp(None)
-        │
-        └── Err(DatatypeErrorWithActions)
-              ├── event_loop_action = dewa.event_loop_action
-              ├── wired.handle_error(error, datatype_action)
-              └── process_blocking_resp(Some(error))
+```mermaid
+flowchart TD
+    PT["PushTransaction(resp_tx)"]
+    Pause{"[PauseSync]?"}
+    PauseErr["immediately return error\n→ process_blocking_resp()"]
+    PushPull["wired.push_pull()"]
+    Ok["Ok\nevent_loop_action = Normal\nbackoff = None\nprocess_blocking_resp(None)"]
+    Err["Err(DatatypeErrorWithActions)\nevent_loop_action = dewa.event_loop_action\nwired.handle_error(error, datatype_action)\nprocess_blocking_resp(Some(error))"]
+
+    PT --> Pause
+    Pause -->|"Yes"| PauseErr
+    Pause -->|"No"| PushPull
+    PushPull -->|"Ok"| Ok
+    PushPull -->|"Err"| Err
 ```
 
 ### Notify
 
-```
-Notify(notification)
-  │
-  └── wired.handle_notification(notification) → bool
-        ├── false: self-notification (trace) or mismatched duid (warn) → skip
-        ├── false: cp_sseq >= notify.sseq → already up-to-date → skip
-        │
-        └── true: cp_sseq < notify.sseq → push-pull needed
-                bounded_tx.try_send(PushTransaction(None))
-                  ├── Ok  → processed in next iteration as PushTransaction
-                  └── Err → already queued → drop (best-effort)
+```mermaid
+flowchart TD
+    N["Notify(notification)"]
+    Handle["wired.handle_notification(notification) → bool"]
+    Skip1["false: self-notification (trace)\nor mismatched duid (warn) → skip"]
+    Skip2["false: cp_sseq >= notify.sseq\n→ already up-to-date → skip"]
+    NeedPush["true: cp_sseq < notify.sseq\n→ push-pull needed"]
+    TrySend["bounded_tx.try_send(PushTransaction(None))"]
+    SendOk["Ok → processed in next iteration\nas PushTransaction"]
+    SendErr["Err → already queued\n→ drop (best-effort)"]
+
+    N --> Handle
+    Handle -->|"false (self / duid mismatch)"| Skip1
+    Handle -->|"false (up-to-date)"| Skip2
+    Handle -->|"true"| NeedPush
+    NeedPush --> TrySend
+    TrySend -->|"Ok"| SendOk
+    TrySend -->|"Err"| SendErr
 ```
 
 > **Notify during BackOff**: `bounded_rx` is not polled during BackOff. A PushTransaction queued via `bounded_tx` will only be processed after the BackOff timer expires. This is intentional — Notify must not bypass BackOff protection. Explicit `sync()` uses `unbounded_tx` and bypasses BackOff immediately.
 
 ### Stop
 
-```
-Stop(ack_tx)
-  └── ack_tx.send(()) → event loop exits
+```mermaid
+flowchart TD
+    Stop["Stop(ack_tx)"]
+    Exit["ack_tx.send(())\n→ event loop exits"]
+    Stop --> Exit
 ```
 
 ---
@@ -195,7 +202,7 @@ On push_pull failure, `DatatypeErrorWithActions.datatype_action` determines the 
 | `Normal` | No state change |
 | `Restart` | Transition to `DueToSubscribeOrCreate` (reconnect attempt) |
 | `Disable` | Transition to `Disabled` (sync permanently stopped) |
-| `Reset` | Call `do_rollback()`, then recover from server snapshot |
+| `Reset` | Call `do_rollback()` to undo the pending local transaction; the next sync cycle re-fetches state from the server |
 
 ---
 
@@ -203,20 +210,18 @@ On push_pull failure, `DatatypeErrorWithActions.datatype_action` determines the 
 
 In realtime mode, when one client pushes transactions the server immediately notifies all other clients subscribed to the same datatype.
 
-```
-Client A                LocalDatatypeServer         Client B
-   │                          │                        │
-   │── push_pull() ──────►│                        │
-   │                          │ notify_pushed()        │
-   │                          │── Notify ─────────────►│ (via unbounded_tx)
-   │◄── PushPullPack ─────────│                        │
-   │                          │                EventLoop::run()
-   │                          │                  handle_notification()
-   │                          │                    cp_sseq < notify.sseq?
-   │                          │                  bounded_tx.try_send(PushTransaction)
-   │                          │                        │
-   │                          │◄── push_pull() ────│
-   │                          │─── PushPullPack ──────►│
+```mermaid
+sequenceDiagram
+    participant A as Client A
+    participant S as LocalDatatypeServer
+    participant B as Client B
+
+    A->>S: push_pull()
+    S->>B: Notify (via unbounded_tx)
+    S-->>A: PushPullPack
+    Note over B: EventLoop::run()<br/>handle_notification()<br/>cp_sseq < notify.sseq?<br/>bounded_tx.try_send(PushTransaction)
+    B->>S: push_pull()
+    S-->>B: PushPullPack
 ```
 
 `handle_notification` filtering logic:

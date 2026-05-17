@@ -23,39 +23,25 @@ pub struct TxRecord {
 
 ## Transaction Lifecycle
 
-```
-Idle (pending = None)
-  │
-  │  first execute_local_operation() succeeds
-  ▼
-record_operation() called
-  ├── pending = Some(Transaction::new(cuid, cseq+1))
-  ├── rollback_op_id = current op_id     ← save point set HERE
-  ├── rollback_state = current state     ← save point set HERE
-  └── op appended to pending.operations
-  │
-  │  op_id.next(is_new_tx=true)
-  │    → cseq += 1, lamport += 1
-  │
-  │  more operations succeed
-  ▼
-record_operation() called (is_new = false)
-  └── op appended to pending.operations
-  │
-  │  op_id.next(is_new_tx=false)
-  │    → lamport += 1  (cseq unchanged within same tx)
-  │
-  ├─── end_transaction(committed=true) ────────────────────────────────┐
-  │      pending.take() → push_buffer.enqueue(tx)                      │
-  │      pending = None                                                 │
-  │      (rollback_op_id / rollback_state remain stale — harmless)     │
-  │                                                              [Idle] ┘
-  │
-  └─── end_transaction(committed=false) → do_rollback() ───────────────┐
-         pending.take() → iter().rev() → execute_inverse_operation()   │
-         op_id = rollback_op_id                                         │
-         set_state(rollback_state)                                      │
-         pending = None                                          [Idle] ┘
+```mermaid
+flowchart TD
+    Idle["Idle\n(pending = None)"]
+    RecordFirst["record_operation()\n──────────────────────────────────────\npending = Some(Transaction::new(cuid, cseq+1))\nrollback_op_id = current op_id  ← save point set HERE\nrollback_state = current state  ← save point set HERE\nop appended to pending.operations"]
+    Advance1["op_id.next(is_new_tx=true)\n→ cseq += 1, lamport += 1"]
+    RecordMore["record_operation() (is_new = false)\nop appended to pending.operations"]
+    Advance2["op_id.next(is_new_tx=false)\n→ lamport += 1  (cseq unchanged within same tx)"]
+    Commit["end_transaction(committed=true)\npending.take() → push_buffer.enqueue(tx)\npending = None\n(rollback_op_id / rollback_state remain stale — harmless)"]
+    Rollback["end_transaction(committed=false) → do_rollback()\npending.take() → iter().rev() → execute_inverse_operation()\nop_id = rollback_op_id\nset_state(rollback_state)\npending = None"]
+    IdleEnd["Idle"]
+
+    Idle -->|"first execute_local_operation() succeeds"| RecordFirst
+    RecordFirst --> Advance1
+    Advance1 -->|"more operations succeed"| RecordMore
+    RecordMore --> Advance2
+    Advance2 -->|"committed=true"| Commit
+    Advance2 -->|"committed=false"| Rollback
+    Commit --> IdleEnd
+    Rollback --> IdleEnd
 ```
 
 ## Success-Only Advance Pattern
@@ -78,11 +64,17 @@ On failure: `op_id` is untouched, `pending` is unchanged. The next operation ret
 
 Instead of keeping a shadow clone of the CRDT, rollback applies the **inverse of each operation in reverse order**:
 
-```
-pending.operations = [op_A, op_B, op_C]  (applied in this order)
-
-rollback applies:
-  inverse(op_C) → inverse(op_B) → inverse(op_A)
+```mermaid
+flowchart LR
+    subgraph applied["Applied (in order)"]
+        direction LR
+        A[op_A] --> B[op_B] --> C[op_C]
+    end
+    subgraph rollback["Rollback (reversed)"]
+        direction LR
+        D["inverse(op_C)"] --> E["inverse(op_B)"] --> F["inverse(op_A)"]
+    end
+    applied -.->|rollback| rollback
 ```
 
 Each CRDT operation must implement `execute_inverse_operation`. For `CounterIncrease(delta)`, the inverse is `increase_by(-delta)`.
@@ -104,16 +96,23 @@ If `pending` is `None` (no op was ever applied), `do_rollback` is a no-op — no
 
 At the `TransactionalDatatype` level, a transaction is scoped by `TransactionContext` and `DeferGuard`:
 
-```
-execute_local_operation_as_tx(tx_ctx, op)
-  │
-  ├── begin_transaction(tx_ctx)
-  │     returns BeginTx(DeferGuard) or SameCtx or OtherCtx
-  │
-  ├── MutableDatatype::execute_local_operation(op)
-  │
-  └── DeferGuard::drop()
-        → end_transaction(committed = result.is_ok())
+```mermaid
+flowchart TD
+    Entry["execute_local_operation_as_tx(tx_ctx, op)"]
+    Begin["begin_transaction(tx_ctx)"]
+    BeginTx["BeginTx(DeferGuard)\nnew transaction scope opened"]
+    SameCtx["SameCtx\njoined into caller's ongoing transaction"]
+    OtherCtx["OtherCtx\nreturn error immediately"]
+    Execute["MutableDatatype::execute_local_operation(op)"]
+    Drop["DeferGuard::drop()\n→ end_transaction(committed = result.is_ok())"]
+
+    Entry --> Begin
+    Begin -->|BeginTx| BeginTx
+    Begin -->|SameCtx| SameCtx
+    Begin -->|OtherCtx| OtherCtx
+    BeginTx --> Execute
+    SameCtx --> Execute
+    Execute --> Drop
 ```
 
 - `SameCtx` — op is joined into the caller's ongoing transaction (no new `DeferGuard`).
