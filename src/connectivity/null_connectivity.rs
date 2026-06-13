@@ -64,7 +64,8 @@ impl Connectivity for NullConnectivity {
                 self.push_transaction(pushed, &mut pulled);
             }
             DatatypeState::DueToUnsubscribe => {
-                todo!()
+                pulled.state = DatatypeState::Disabled;
+                self.push_transaction(pushed, &mut pulled);
             }
             DatatypeState::DueToDelete => {
                 todo!()
@@ -122,5 +123,16 @@ mod tests_null_connectivity {
             pulled2.error.unwrap(),
             ServerPushPullError::IllegalPushRequest(String::new())
         );
+
+        let mut pushed3 = PushPullPack::new(&attr, DatatypeState::DueToUnsubscribe);
+        let cseq = op_id.next_cseq();
+        pushed3
+            .transactions
+            .push(Arc::new(Transaction::new(&op_id.cuid, cseq)));
+        let res3 = null_connectivity.push_pull(&pushed3);
+        assert!(res3.is_ok());
+        let pulled3 = res3.unwrap();
+        assert_eq!(pulled3.state, DatatypeState::Disabled);
+        assert_eq!(pulled3.checkpoint.cseq, pushed3.checkpoint.cseq);
     }
 }

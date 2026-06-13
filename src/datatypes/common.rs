@@ -151,6 +151,20 @@ impl Attribute {
             _ => return None,
         })
     }
+
+    pub(crate) fn detach_datatype_if_same_instance(&self) {
+        let Some(transactional) = self
+            .weak_transactional
+            .read()
+            .as_ref()
+            .and_then(Weak::upgrade)
+        else {
+            return;
+        };
+        let core_id = Arc::as_ptr(&transactional) as usize;
+        self.client_common
+            .detach_datatype_if_same_instance(&self.key, core_id);
+    }
 }
 
 #[cfg(test)]

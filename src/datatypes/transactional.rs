@@ -12,7 +12,7 @@ use crate::{
         mutable::MutableDatatype,
         wired::WiredDatatype,
     },
-    errors::datatypes::DatatypeError,
+    errors::{datatypes::DatatypeError, with_err_out},
     observability::trace::add_span_event,
     operations::Operation,
     utils::{defer_guard::DeferGuard, no_guard_mutex::NoGuardMutex},
@@ -111,6 +111,15 @@ impl Datatype for TransactionalDatatype {
         self.event_loop.send_push_transaction_with_guarantee()
     }
 
+    fn unsubscribe(&self) -> Result<(), DatatypeError> {
+        self.check_subscribed("unsubscribe")?;
+        self.mutable
+            .write()
+            .set_state(DatatypeState::DueToUnsubscribe);
+        self.event_loop.send_push_transaction_with_best_effort();
+        Ok(())
+    }
+
     fn set_handler(&self, id: usize, handler: DatatypeHandler) {
         self.mutable.write().set_handler(id, handler)
     }
@@ -189,6 +198,17 @@ impl TransactionalDatatype {
                 "{} is not allowed in Disabled state",
                 op
             )));
+        }
+        Ok(())
+    }
+
+    fn check_subscribed(&self, op: &str) -> Result<(), DatatypeError> {
+        let state = self.mutable.read().get_state();
+        if state != DatatypeState::Subscribed {
+            return Err(with_err_out!(DatatypeError::Disallowed(format!(
+                "{} is only allowed in Subscribed state, current state is {:?}",
+                op, state
+            ))));
         }
         Ok(())
     }

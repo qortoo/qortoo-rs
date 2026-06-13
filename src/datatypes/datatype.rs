@@ -74,6 +74,12 @@ pub trait Datatype {
     /// ```
     fn sync(&self) -> Result<(), DatatypeError>;
 
+    /// Unsubscribes this datatype from the connectivity backend.
+    ///
+    /// After a successful unsubscribe, the datatype transitions to
+    /// [`DatatypeState::Disabled`] and should no longer be used for writes or sync.
+    fn unsubscribe(&self) -> Result<(), DatatypeError>;
+
     fn set_handler(&self, id: usize, handler: DatatypeHandler);
 
     fn unset_handler(&self, id: usize) -> Option<DatatypeHandler>;
@@ -118,6 +124,10 @@ where
         self.get_core().sync()
     }
 
+    fn unsubscribe(&self) -> Result<(), DatatypeError> {
+        self.get_core().unsubscribe()
+    }
+
     fn set_handler(&self, id: usize, handler: DatatypeHandler) {
         self.get_core().set_handler(id, handler)
     }
@@ -134,6 +144,8 @@ where
 
 #[cfg(test)]
 mod tests_datatype_trait {
+    use std::time::Duration;
+
     use tracing::instrument;
 
     use crate::{
@@ -203,5 +215,134 @@ mod tests_datatype_trait {
         interceptor1.set_after_pull(|_pull| Ok(()));
         assert!(counter1.sync().is_ok());
         assert_eq!(counter1.get_state(), DatatypeState::Subscribed);
+    }
+
+    #[test]
+    #[instrument]
+    fn can_reject_unsubscribe_before_subscribed() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .with_connectivity(connectivity)
+            .build()
+            .unwrap();
+        let counter = client
+            .create_datatype(get_test_func_name!())
+            .build_counter()
+            .unwrap();
+
+        assert!(matches!(
+            counter.unsubscribe().unwrap_err(),
+            DatatypeError::Disallowed(_)
+        ));
+        assert_eq!(counter.get_state(), DatatypeState::DueToCreate);
+    }
+
+    #[test]
+    #[instrument]
+    fn can_mark_due_to_unsubscribe() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .with_connectivity(connectivity)
+            .build()
+            .unwrap();
+        let counter = client
+            .create_datatype(get_test_func_name!())
+            .build_counter()
+            .unwrap();
+        counter.sync().unwrap();
+        assert_eq!(counter.get_state(), DatatypeState::Subscribed);
+
+        counter.unsubscribe().unwrap();
+
+        assert_eq!(counter.get_state(), DatatypeState::DueToUnsubscribe);
+    }
+
+    #[test]
+    #[instrument]
+    fn can_sync_unsubscribe_to_disabled() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let (collection, key, resource_id) = get_test_ids!();
+        let client = Client::builder(collection, get_test_func_name!())
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let counter = client.create_datatype(key).build_counter().unwrap();
+        counter.sync().unwrap();
+
+        counter.unsubscribe().unwrap();
+        assert_eq!(counter.get_state(), DatatypeState::DueToUnsubscribe);
+        counter.sync().unwrap();
+
+        assert_eq!(counter.get_state(), DatatypeState::Disabled);
+        let server = connectivity
+            .get_local_datatype_server(&resource_id)
+            .unwrap();
+        assert!(
+            server
+                .read()
+                .get_wired_datatype(&client.get_cuid())
+                .is_none()
+        );
+    }
+
+    #[test]
+    #[instrument]
+    fn can_unsubscribe_with_pending_transactions() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let (collection, key, _) = get_test_ids!();
+        let client1 = Client::builder(collection.clone(), "client1")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let client2 = Client::builder(collection, "client2")
+            .with_connectivity(connectivity)
+            .build()
+            .unwrap();
+
+        let counter1 = client1
+            .create_datatype(key.clone())
+            .build_counter()
+            .unwrap();
+        counter1.sync().unwrap();
+
+        let counter2 = client2.subscribe_datatype(key).build_counter().unwrap();
+        counter2.sync().unwrap();
+        assert_eq!(counter2.get_value(), 0);
+
+        counter1.increase_by(7).unwrap();
+        counter1.unsubscribe().unwrap();
+        counter1.sync().unwrap();
+        assert_eq!(counter1.get_state(), DatatypeState::Disabled);
+
+        counter2.sync().unwrap();
+        assert_eq!(counter2.get_value(), 7);
+    }
+
+    #[test]
+    #[instrument]
+    fn can_auto_sync_unsubscribe_in_realtime() {
+        let connectivity = LocalConnectivity::new_arc();
+        let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .with_connectivity(connectivity)
+            .build()
+            .unwrap();
+        let counter = client
+            .create_datatype(get_test_func_name!())
+            .build_counter()
+            .unwrap();
+
+        awaitility::at_most(Duration::from_secs(1))
+            .poll_interval(Duration::from_micros(100))
+            .until(|| counter.get_state() == DatatypeState::Subscribed);
+
+        counter.unsubscribe().unwrap();
+
+        awaitility::at_most(Duration::from_secs(1))
+            .poll_interval(Duration::from_micros(100))
+            .until(|| counter.get_state() == DatatypeState::Disabled);
     }
 }

@@ -28,6 +28,18 @@ impl DatatypeManager {
         self.datatypes.get(key).cloned()
     }
 
+    pub fn remove_if_same_instance(&mut self, key: &str, core_id: usize) -> Option<DatatypeSet> {
+        if self
+            .datatypes
+            .get(key)
+            .is_some_and(|dt| dt.get_core_id() == core_id)
+        {
+            self.datatypes.remove(key)
+        } else {
+            None
+        }
+    }
+
     pub fn subscribe_or_create_datatype(
         &mut self,
         key: &str,

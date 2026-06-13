@@ -3,7 +3,10 @@ use std::{collections::BTreeMap, sync::Arc};
 use crate::{
     Counter, DataType, Datatype, DatatypeState,
     clients::common::ClientCommon,
-    datatypes::{common::Attribute, option::DatatypeOption, transactional::TransactionalDatatype},
+    datatypes::{
+        common::Attribute, datatype::DatatypeBlanket, option::DatatypeOption,
+        transactional::TransactionalDatatype,
+    },
     types::common::ArcStr,
 };
 
@@ -29,6 +32,18 @@ impl DatatypeSet {
     pub fn get_state(&self) -> DatatypeState {
         match self {
             DatatypeSet::Counter(cnt) => cnt.get_state(),
+        }
+    }
+
+    pub(crate) fn get_core_id(&self) -> usize {
+        match self {
+            DatatypeSet::Counter(cnt) => cnt.get_core() as *const TransactionalDatatype as usize,
+        }
+    }
+
+    pub(crate) fn unsubscribe(&self) -> Result<(), crate::DatatypeError> {
+        match self {
+            DatatypeSet::Counter(cnt) => cnt.unsubscribe(),
         }
     }
 

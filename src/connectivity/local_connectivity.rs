@@ -185,7 +185,7 @@ impl Connectivity for LocalConnectivity {
                 local_datatype_server.process_subscribed(pushed, self.is_realtime())?
             }
             DatatypeState::DueToUnsubscribe => {
-                local_datatype_server.process_due_to_unsubscribe(pushed)?
+                local_datatype_server.process_due_to_unsubscribe(pushed, self.is_realtime())?
             }
             DatatypeState::DueToDelete => local_datatype_server.process_due_to_delete(pushed)?,
             DatatypeState::Disabled => local_datatype_server.process_disabled(pushed)?,

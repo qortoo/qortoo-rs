@@ -1,11 +1,13 @@
 use std::{
     fmt::{Debug, Display, Formatter},
-    sync::Arc,
+    sync::{Arc, Weak},
 };
 
+use parking_lot::RwLock;
 use tokio::runtime::Handle;
 
 use crate::{
+    clients::datatype_manager::DatatypeManager,
     connectivity::Connectivity,
     types::{common::ArcStr, uid::Cuid},
     utils::runtime::{get_or_init_runtime_handle, reserve_to_shutdown_runtime},
@@ -17,6 +19,7 @@ pub struct ClientCommon {
     pub alias: ArcStr,
     pub handle: Handle,
     pub connectivity: Arc<dyn Connectivity>,
+    datatype_manager: RwLock<Weak<RwLock<DatatypeManager>>>,
 }
 
 impl ClientCommon {
@@ -33,7 +36,18 @@ impl ClientCommon {
             alias,
             cuid,
             connectivity,
+            datatype_manager: RwLock::new(Weak::new()),
         })
+    }
+
+    pub(crate) fn set_datatype_manager(&self, manager: Weak<RwLock<DatatypeManager>>) {
+        *self.datatype_manager.write() = manager;
+    }
+
+    pub(crate) fn detach_datatype_if_same_instance(&self, key: &str, core_id: usize) {
+        if let Some(manager) = self.datatype_manager.read().upgrade() {
+            manager.write().remove_if_same_instance(key, core_id);
+        }
     }
 
     #[cfg(test)]

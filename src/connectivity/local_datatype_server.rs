@@ -155,25 +155,34 @@ impl LocalDatatypeServer {
         pushed: &PushPullPack,
         is_realtime: bool,
     ) -> Result<PushPullPack, ConnectivityError> {
+        Ok(self.process_client_push(pushed, DatatypeState::Subscribed, is_realtime))
+    }}
+
+    fn process_client_push(
+        &mut self,
+        pushed: &PushPullPack,
+        success_state: DatatypeState,
+        is_realtime: bool,
+    ) -> PushPullPack {
         let mut pulled = pushed.get_pulled_stub();
         if pulled.is_readonly && !pushed.transactions.is_empty() {
             pulled.error = Some(ServerPushPullError::IllegalPushRequest(
                 "readonly client cannot push transactions".to_string(),
             ));
             pulled.state = DatatypeState::Disabled;
-            return Ok(pulled);
+            return pulled;
         }
         let (cseq, pushed_any) = self.push_transactions(pushed);
         pulled.checkpoint.sseq = pushed.checkpoint.sseq;
         pulled.checkpoint.cseq = cseq;
         self.pull_transactions(&mut pulled);
-        pulled.state = DatatypeState::Subscribed;
+        pulled.state = success_state;
         if is_realtime && pushed_any {
             self.notify_pushed(&pushed.cuid);
         }
 
-        Ok(pulled)
-    }}
+        pulled
+    }
 
     #[instrument(skip_all)]
     fn notify_pushed(&self, cuid: &Cuid) {
@@ -198,8 +207,21 @@ impl LocalDatatypeServer {
     pub fn process_due_to_unsubscribe(
         &mut self,
         pushed: &PushPullPack,
+        is_realtime: bool,
     ) -> Result<PushPullPack, ConnectivityError> {
-        let pulled = pushed.get_pulled_stub();
+        let pulled = self.process_client_push(pushed, DatatypeState::Disabled, is_realtime);
+        if pulled.error.is_some() {
+            return Ok(pulled);
+        }
+
+        self.wired_map.remove(&pushed.cuid);
+        self.sender_map.remove(&pushed.cuid);
+
+        if self.creator == pushed.cuid {
+            if let Some(next_creator) = self.wired_map.keys().next() {
+                self.creator = next_creator.clone();
+            }
+        }
         Ok(pulled)
     }}
 
@@ -540,6 +562,52 @@ mod tests_local_datatype_server {
                 counter2.get_attr().get_duid()
             );
         }
+    }
+
+    #[test]
+    #[instrument]
+    fn can_reject_readonly_due_to_unsubscribe_with_transactions() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let (collection, key, resource_id) = get_test_ids!();
+
+        let client = Client::builder(collection, "client")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let counter = client.create_datatype(key).build_counter().unwrap();
+        counter.sync().unwrap();
+        counter.increase().unwrap();
+        counter.unsubscribe().unwrap();
+
+        let interceptor = connectivity
+            .get_wired_interceptor(&resource_id, &client.get_cuid())
+            .unwrap();
+        interceptor
+            .set_before_push(push_set_readonly)
+            .set_after_pull(|pull| {
+                assert_eq!(pull.state, DatatypeState::Disabled);
+                assert_eq!(
+                    pull.error,
+                    Some(ServerPushPullError::IllegalPushRequest(String::new()))
+                );
+                Ok(())
+            });
+
+        assert!(matches!(
+            counter.sync().unwrap_err(),
+            DatatypeError::FailedByServerPushPullError(_)
+        ));
+        let server = connectivity
+            .get_local_datatype_server(&resource_id)
+            .unwrap();
+        assert!(
+            server
+                .read()
+                .get_wired_datatype(&client.get_cuid())
+                .is_some()
+        );
+        assert!(client.get_datatype(counter.get_key()).is_some());
     }
 
     #[rstest]

@@ -181,6 +181,29 @@ impl MutableDatatype {
         state == DatatypeState::DueToCreate
             || state == DatatypeState::DueToSubscribe
             || state == DatatypeState::DueToSubscribeOrCreate
+            || state == DatatypeState::DueToUnsubscribe
             || self.push_buffer.last_cseq > self.checkpoint.cseq
+    }
+}
+
+#[cfg(test)]
+mod tests_wired {
+    use crate::{
+        DataType, DatatypeState,
+        datatypes::{
+            common::new_attribute, wired::WiredDatatype, wired_interceptor::WiredInterceptor,
+        },
+    };
+
+    #[test]
+    fn can_push_due_to_unsubscribe() {
+        let attr = new_attribute!(DataType::Counter);
+        let wired = WiredDatatype::new_arc_for_test(
+            attr,
+            DatatypeState::DueToUnsubscribe,
+            WiredInterceptor::new_arc(),
+        );
+
+        assert!(wired.push_if_needed());
     }
 }
