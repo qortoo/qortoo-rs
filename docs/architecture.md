@@ -20,6 +20,7 @@ flowchart TD
 ```
 
 > For event loop internals (channel architecture, BackOff, Notify flow) see [`docs/event-loop.md`](event-loop.md).
+> For error taxonomy, `DatatypeErrorWithActions`, and recovery action enums see [`docs/error-handling.md`](error-handling.md).
 
 ### Layer Responsibilities
 

@@ -283,6 +283,57 @@ mod tests_client {
 
     #[test]
     #[instrument]
+    fn can_auto_detach_after_create_failure_disables_datatype() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let collection = get_test_collection_name!();
+        let key = get_test_func_name!();
+        let client1 = Client::builder(collection.clone(), "client1")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let client2 = Client::builder(collection, "client2")
+            .with_connectivity(connectivity)
+            .build()
+            .unwrap();
+
+        client1.create_datatype(key.clone()).build_counter().unwrap().sync().unwrap();
+
+        let counter = client2.create_datatype(key.clone()).build_counter().unwrap();
+        assert!(client2.get_datatype(&key).is_some());
+        assert!(matches!(
+            counter.sync().unwrap_err(),
+            crate::DatatypeError::FailedToCreate(_)
+        ));
+
+        assert_eq!(counter.get_state(), DatatypeState::Disabled);
+        assert!(client2.get_datatype(&key).is_none());
+    }
+
+    #[test]
+    #[instrument]
+    fn can_auto_detach_after_subscribe_failure_disables_datatype() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .with_connectivity(connectivity)
+            .build()
+            .unwrap();
+        let key = get_test_func_name!();
+
+        let counter = client.subscribe_datatype(key.clone()).build_counter().unwrap();
+        assert!(client.get_datatype(&key).is_some());
+        assert!(matches!(
+            counter.sync().unwrap_err(),
+            crate::DatatypeError::FailedToSubscribe(_)
+        ));
+
+        assert_eq!(counter.get_state(), DatatypeState::Disabled);
+        assert!(client.get_datatype(&key).is_none());
+    }
+
+    #[test]
+    #[instrument]
     fn can_unsubscribe_datatype_from_client() {
         let connectivity = LocalConnectivity::new_arc();
         connectivity.set_realtime(false);

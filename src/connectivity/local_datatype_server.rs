@@ -210,10 +210,9 @@ impl LocalDatatypeServer {
         is_realtime: bool,
     ) -> Result<PushPullPack, ConnectivityError> {
         let pulled = self.process_client_push(pushed, DatatypeState::Disabled, is_realtime);
-        if pulled.error.is_some() {
-            return Ok(pulled);
-        }
 
+        // Always clean up client registration regardless of error: the client will be Disabled
+        // either way, and leaving stale entries would cause infinite unsubscribe retry loops.
         self.wired_map.remove(&pushed.cuid);
         self.sender_map.remove(&pushed.cuid);
 
@@ -598,6 +597,7 @@ mod tests_local_datatype_server {
             counter.sync().unwrap_err(),
             DatatypeError::FailedByServerPushPullError(_)
         ));
+        assert_eq!(counter.get_state(), DatatypeState::Disabled);
         let server = connectivity
             .get_local_datatype_server(&resource_id)
             .unwrap();
@@ -605,9 +605,9 @@ mod tests_local_datatype_server {
             server
                 .read()
                 .get_wired_datatype(&client.get_cuid())
-                .is_some()
+                .is_none()
         );
-        assert!(client.get_datatype(counter.get_key()).is_some());
+        assert!(client.get_datatype(counter.get_key()).is_none());
     }
 
     #[rstest]

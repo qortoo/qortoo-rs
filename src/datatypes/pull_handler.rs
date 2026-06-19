@@ -43,10 +43,7 @@ impl<'a> PullHandler<'a> {
             self.enqueue_step(Self::sync_checkpoint);
             Ok(())
         })();
-        let should_detach = result.is_ok()
-            && self.old_state == DatatypeState::DueToUnsubscribe
-            && self.new_state == DatatypeState::Disabled;
-        self.commit(should_detach)?;
+        self.commit()?;
         result
     }
 
@@ -73,18 +70,21 @@ impl<'a> PullHandler<'a> {
         match self.old_state {
             DatatypeState::DueToCreate => {
                 if self.pulled_ppp.state != DatatypeState::Subscribed {
+                    self.new_state = DatatypeState::Disabled;
                     self.process_illegal_state_response(self.old_state, self.pulled_ppp.state)?;
                 }
                 self.is_created = true;
             }
             DatatypeState::DueToSubscribe => {
                 if self.pulled_ppp.state != DatatypeState::Subscribed {
+                    self.new_state = DatatypeState::Disabled;
                     self.process_illegal_state_response(self.old_state, self.pulled_ppp.state)?;
                 }
                 self.enqueue_step(Self::apply_subscribe_response);
             }
             DatatypeState::DueToSubscribeOrCreate => {
                 if self.pulled_ppp.state != DatatypeState::Subscribed {
+                    self.new_state = DatatypeState::Disabled;
                     self.process_illegal_state_response(self.old_state, self.pulled_ppp.state)?;
                 }
                 if self.pulled_ppp.duid == self.mutable.attr.get_duid() {
@@ -95,11 +95,13 @@ impl<'a> PullHandler<'a> {
             }
             DatatypeState::Subscribed => {
                 if self.pulled_ppp.state != DatatypeState::Subscribed {
+                    self.new_state = DatatypeState::Disabled;
                     self.process_illegal_state_response(self.old_state, self.pulled_ppp.state)?;
                 }
             }
             DatatypeState::DueToUnsubscribe => {
                 if self.pulled_ppp.state != DatatypeState::Disabled {
+                    self.new_state = DatatypeState::Disabled;
                     self.process_illegal_state_response(self.old_state, self.pulled_ppp.state)?;
                 }
             }
@@ -163,15 +165,12 @@ impl<'a> PullHandler<'a> {
         Ok(())
     }
 
-    fn commit(&mut self, should_detach: bool) -> Result<(), DatatypeErrorWithActions> {
+    fn commit(&mut self) -> Result<(), DatatypeErrorWithActions> {
         let steps = std::mem::take(&mut self.pending_steps);
         for step in steps {
             step(self)?;
         }
         self.mutable.set_state(self.new_state);
-        if should_detach {
-            self.mutable.attr.detach_datatype_if_same_instance();
-        }
         Ok(())
     }
 }

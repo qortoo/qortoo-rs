@@ -261,6 +261,34 @@ mod tests_datatype_trait {
 
     #[test]
     #[instrument]
+    fn can_reject_write_and_repeated_unsubscribe_while_due_to_unsubscribe() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .with_connectivity(connectivity)
+            .build()
+            .unwrap();
+        let counter = client
+            .create_datatype(get_test_func_name!())
+            .build_counter()
+            .unwrap();
+        counter.sync().unwrap();
+
+        counter.unsubscribe().unwrap();
+
+        assert_eq!(counter.get_state(), DatatypeState::DueToUnsubscribe);
+        assert!(matches!(
+            counter.increase().unwrap_err(),
+            DatatypeError::Disallowed(_)
+        ));
+        assert!(matches!(
+            counter.unsubscribe().unwrap_err(),
+            DatatypeError::Disallowed(_)
+        ));
+    }
+
+    #[test]
+    #[instrument]
     fn can_sync_unsubscribe_to_disabled() {
         let connectivity = LocalConnectivity::new_arc();
         connectivity.set_realtime(false);
@@ -286,6 +314,36 @@ mod tests_datatype_trait {
                 .get_wired_datatype(&client.get_cuid())
                 .is_none()
         );
+    }
+
+    #[test]
+    #[instrument]
+    fn can_disable_due_to_unsubscribe_on_protocol_violation() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let (collection, key, resource_id) = get_test_ids!();
+        let client = Client::builder(collection, get_test_func_name!())
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let counter = client.create_datatype(key).build_counter().unwrap();
+        counter.sync().unwrap();
+        counter.unsubscribe().unwrap();
+
+        let interceptor = connectivity
+            .get_wired_interceptor(&resource_id, &client.get_cuid())
+            .unwrap();
+        interceptor.set_after_pull(|pull| {
+            pull.state = DatatypeState::Subscribed;
+            Ok(())
+        });
+
+        assert!(matches!(
+            counter.sync().unwrap_err(),
+            DatatypeError::FailedByProtocolViolation(_)
+        ));
+        assert_eq!(counter.get_state(), DatatypeState::Disabled);
+        assert!(client.get_datatype(counter.get_key()).is_none());
     }
 
     #[test]
