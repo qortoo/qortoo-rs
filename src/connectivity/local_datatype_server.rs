@@ -83,6 +83,10 @@ impl LocalDatatypeServer {
         self.sender_map.insert(wired.cuid(), sender);
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.wired_map.is_empty()
+    }
+
     pub fn push_transactions(&mut self, pushed: &PushPullPack) -> (u64, bool) {
         let client_cp = self
             .cseq_map
@@ -304,6 +308,11 @@ impl LocalDatatypeServer {
     #[cfg(test)]
     pub fn get_wired_datatype(&self, cuid: &Cuid) -> Option<Arc<WiredDatatype>> {
         self.wired_map.get(cuid).cloned()
+    }
+
+    #[cfg(test)]
+    pub fn creator(&self) -> &Cuid {
+        &self.creator
     }
 }
 
@@ -598,13 +607,9 @@ mod tests_local_datatype_server {
             DatatypeError::FailedByServerPushPullError(_)
         ));
         assert_eq!(counter.get_state(), DatatypeState::Disabled);
-        let server = connectivity
-            .get_local_datatype_server(&resource_id)
-            .unwrap();
         assert!(
-            server
-                .read()
-                .get_wired_datatype(&client.get_cuid())
+            connectivity
+                .get_local_datatype_server(&resource_id)
                 .is_none()
         );
         assert!(client.get_datatype(counter.get_key()).is_none());

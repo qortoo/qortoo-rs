@@ -305,13 +305,9 @@ mod tests_datatype_trait {
         counter.sync().unwrap();
 
         assert_eq!(counter.get_state(), DatatypeState::Disabled);
-        let server = connectivity
-            .get_local_datatype_server(&resource_id)
-            .unwrap();
         assert!(
-            server
-                .read()
-                .get_wired_datatype(&client.get_cuid())
+            connectivity
+                .get_local_datatype_server(&resource_id)
                 .is_none()
         );
     }

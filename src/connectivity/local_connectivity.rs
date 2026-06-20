@@ -169,27 +169,42 @@ impl Connectivity for LocalConnectivity {
     fn push_pull(&self, pushed: &PushPullPack) -> Result<PushPullPack, ConnectivityError> {
         let resource_id = pushed.resource_id();
 
-        let local_datatype_server_with_lock = self
+        let server_with_lock = self
             .get_local_datatype_server(&resource_id)
             .ok_or_else(|| ConnectivityError::ResourceNotFound(resource_id.clone()))?;
-        let mut local_datatype_server = local_datatype_server_with_lock.write();
-        let pulled = match pushed.state {
-            DatatypeState::DueToCreate => local_datatype_server.process_due_to_create(pushed)?,
-            DatatypeState::DueToSubscribe => {
-                local_datatype_server.process_due_to_subscribe(pushed)?
-            }
-            DatatypeState::DueToSubscribeOrCreate => {
-                local_datatype_server.process_due_to_subscribe_or_create(pushed)?
-            }
-            DatatypeState::Subscribed => {
-                local_datatype_server.process_subscribed(pushed, self.is_realtime())?
-            }
-            DatatypeState::DueToUnsubscribe => {
-                local_datatype_server.process_due_to_unsubscribe(pushed, self.is_realtime())?
-            }
-            DatatypeState::DueToDelete => local_datatype_server.process_due_to_delete(pushed)?,
-            DatatypeState::Disabled => local_datatype_server.process_disabled(pushed)?,
+        let (pulled, should_remove_server) = {
+            let mut server = server_with_lock.write();
+            let pulled = match pushed.state {
+                DatatypeState::DueToCreate => server.process_due_to_create(pushed)?,
+                DatatypeState::DueToSubscribe => server.process_due_to_subscribe(pushed)?,
+                DatatypeState::DueToSubscribeOrCreate => {
+                    server.process_due_to_subscribe_or_create(pushed)?
+                }
+                DatatypeState::Subscribed => {
+                    server.process_subscribed(pushed, self.is_realtime())?
+                }
+                DatatypeState::DueToUnsubscribe => {
+                    server.process_due_to_unsubscribe(pushed, self.is_realtime())?
+                }
+                DatatypeState::DueToDelete => server.process_due_to_delete(pushed)?,
+                DatatypeState::Disabled => server.process_disabled(pushed)?,
+            };
+            (
+                pulled,
+                pushed.state == DatatypeState::DueToUnsubscribe && server.is_empty(),
+            )
         };
+
+        if should_remove_server {
+            let mut datatypes = self.datatype_servers.write();
+            if datatypes
+                .get(&resource_id)
+                .is_some_and(|server| Arc::ptr_eq(server, &server_with_lock))
+            {
+                datatypes.remove(&resource_id);
+            }
+        }
+
         Ok(pulled)
     }
 
@@ -310,5 +325,91 @@ mod tests_local_connectivity {
 
         counter2.sync().unwrap();
         assert_eq!(counter2.get_value(), 7);
+    }
+
+    #[test]
+    #[instrument]
+    fn can_promote_remaining_client_when_creator_unsubscribes() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let (collection, key, resource_id) = get_test_ids!();
+        let client1 = Client::builder(collection.clone(), "client1")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let client2 = Client::builder(collection.clone(), "client2")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let client3 = Client::builder(collection, "client3")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+
+        let counter1 = client1
+            .create_datatype(key.clone())
+            .build_counter()
+            .unwrap();
+        counter1.increase_by(7).unwrap();
+        counter1.sync().unwrap();
+
+        let counter2 = client2
+            .subscribe_datatype(key.clone())
+            .build_counter()
+            .unwrap();
+        counter2.sync().unwrap();
+        assert_eq!(counter2.get_value(), 7);
+
+        counter1.unsubscribe().unwrap();
+        counter1.sync().unwrap();
+        assert_eq!(counter1.get_state(), DatatypeState::Disabled);
+
+        let server = connectivity
+            .get_local_datatype_server(&resource_id)
+            .unwrap();
+        assert_eq!(server.read().creator(), &client2.get_cuid());
+
+        counter2.increase_by(5).unwrap();
+        counter2.sync().unwrap();
+
+        let counter3 = client3.subscribe_datatype(key).build_counter().unwrap();
+        counter3.sync().unwrap();
+        assert_eq!(counter3.get_value(), 12);
+    }
+
+    #[test]
+    #[instrument]
+    fn can_remove_server_when_last_client_unsubscribes() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let (collection, key, resource_id) = get_test_ids!();
+        let client1 = Client::builder(collection.clone(), "client1")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let client2 = Client::builder(collection, "client2")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+
+        let counter1 = client1
+            .create_datatype(key.clone())
+            .build_counter()
+            .unwrap();
+        counter1.increase_by(7).unwrap();
+        counter1.sync().unwrap();
+
+        counter1.unsubscribe().unwrap();
+        counter1.sync().unwrap();
+        assert!(
+            connectivity
+                .get_local_datatype_server(&resource_id)
+                .is_none()
+        );
+
+        let counter2 = client2.create_datatype(key).build_counter().unwrap();
+        counter2.sync().unwrap();
+        assert_eq!(counter2.get_value(), 0);
+        assert_eq!(counter2.get_state(), DatatypeState::Subscribed);
     }
 }
