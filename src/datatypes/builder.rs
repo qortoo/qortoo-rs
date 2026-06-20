@@ -29,11 +29,11 @@ use crate::{
 /// let client = Client::builder("docs-example", "DatatypeBuilder-test").build().unwrap();
 /// assert_eq!(
 ///     client.subscribe_datatype("k1").build_counter().unwrap().get_state(),
-///     DatatypeState::DueToSubscribe
+///     DatatypeState::Subscribing
 /// );
 /// assert_eq!(
 ///     client.create_datatype("k2").build_counter().unwrap().get_state(),
-///     DatatypeState::DueToCreate
+///     DatatypeState::Creating
 /// );
 /// assert_eq!(
 ///     client
@@ -41,7 +41,7 @@ use crate::{
 ///         .build_counter()
 ///         .unwrap()
 ///         .get_state(),
-///     DatatypeState::DueToSubscribeOrCreate
+///     DatatypeState::SubscribingOrCreating
 /// );
 /// ```
 pub struct DatatypeBuilder<'c> {
@@ -249,7 +249,7 @@ mod tests_datatype_builder {
             .subscribe_datatype("subscribe_dt")
             .build_counter()
             .unwrap();
-        assert_eq!(counter.get_state(), DatatypeState::DueToSubscribe);
+        assert_eq!(counter.get_state(), DatatypeState::Subscribing);
         assert!(matches!(
             counter.increase().unwrap_err(),
             DatatypeError::Disallowed(_)
@@ -259,7 +259,7 @@ mod tests_datatype_builder {
             .subscribe_or_create_datatype("subscribe_or_create_dt")
             .build_counter()
             .unwrap();
-        assert_eq!(counter.get_state(), DatatypeState::DueToSubscribeOrCreate);
+        assert_eq!(counter.get_state(), DatatypeState::SubscribingOrCreating);
         assert!(counter.increase().is_ok());
     }
 

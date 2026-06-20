@@ -38,7 +38,7 @@ impl Connectivity for NullConnectivity {
         let mut pulled = pushed.get_pulled_stub();
 
         match pushed.state {
-            DatatypeState::DueToCreate | DatatypeState::DueToSubscribeOrCreate => {
+            DatatypeState::Creating | DatatypeState::SubscribingOrCreating => {
                 if pushed.is_readonly {
                     self.set_illegal_push_request(
                         &mut pulled,
@@ -49,7 +49,7 @@ impl Connectivity for NullConnectivity {
                 pulled.state = DatatypeState::Subscribed;
                 self.push_transaction(pushed, &mut pulled);
             }
-            DatatypeState::DueToSubscribe => {
+            DatatypeState::Subscribing => {
                 if !pushed.transactions.is_empty() {
                     self.set_illegal_push_request(
                         &mut pulled,
@@ -63,10 +63,11 @@ impl Connectivity for NullConnectivity {
                 pulled.state = DatatypeState::Subscribed;
                 self.push_transaction(pushed, &mut pulled);
             }
-            DatatypeState::DueToUnsubscribe => {
-                todo!()
+            DatatypeState::Unsubscribing => {
+                pulled.state = DatatypeState::Disabled;
+                self.push_transaction(pushed, &mut pulled);
             }
-            DatatypeState::DueToDelete => {
+            DatatypeState::Deleting => {
                 todo!()
             }
             DatatypeState::Disabled => {
@@ -99,7 +100,7 @@ mod tests_null_connectivity {
         let null_connectivity = NullConnectivity {};
         let attr = new_attribute!(DataType::Counter);
 
-        let mut pushed1 = PushPullPack::new(&attr, DatatypeState::DueToCreate);
+        let mut pushed1 = PushPullPack::new(&attr, DatatypeState::Creating);
         pushed1.is_readonly = true;
         let res1 = null_connectivity.push_pull(&pushed1);
         assert!(res1.is_ok());
@@ -109,7 +110,7 @@ mod tests_null_connectivity {
             ServerPushPullError::IllegalPushRequest(String::new())
         );
 
-        let mut pushed2 = PushPullPack::new(&attr, DatatypeState::DueToSubscribe);
+        let mut pushed2 = PushPullPack::new(&attr, DatatypeState::Subscribing);
         let mut op_id = OperationId::new();
         let cseq = op_id.next_cseq();
         pushed2
@@ -122,5 +123,16 @@ mod tests_null_connectivity {
             pulled2.error.unwrap(),
             ServerPushPullError::IllegalPushRequest(String::new())
         );
+
+        let mut pushed3 = PushPullPack::new(&attr, DatatypeState::Unsubscribing);
+        let cseq = op_id.next_cseq();
+        pushed3
+            .transactions
+            .push(Arc::new(Transaction::new(&op_id.cuid, cseq)));
+        let res3 = null_connectivity.push_pull(&pushed3);
+        assert!(res3.is_ok());
+        let pulled3 = res3.unwrap();
+        assert_eq!(pulled3.state, DatatypeState::Disabled);
+        assert_eq!(pulled3.checkpoint.cseq, pushed3.checkpoint.cseq);
     }
 }

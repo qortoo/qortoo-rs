@@ -19,7 +19,9 @@ flowchart TD
     API --> TX --> MU --> WI --> CR
 ```
 
+> For datatype lifecycle states and write-access rules see [`docs/datatype-state.md`](datatype-state.md).
 > For event loop internals (channel architecture, BackOff, Notify flow) see [`docs/event-loop.md`](event-loop.md).
+> For error taxonomy, `DatatypeErrorWithActions`, and recovery action enums see [`docs/error-handling.md`](error-handling.md).
 
 ### Layer Responsibilities
 
@@ -104,4 +106,4 @@ flowchart TD
 | `TxRecord` | `src/datatypes/tx_record.rs` | Pending transaction buffer + rollback save point |
 | `PushPullPack` | `src/types/push_pull_pack.rs` | Wire format for push/pull exchange |
 | `Attribute` | `src/datatypes/common.rs` | Immutable per-datatype config shared across layers |
-| `DatatypeState` | `src/types/datatype.rs` | Lifecycle state machine |
+| `DatatypeState` | `src/types/datatype.rs` | Lifecycle state machine; see [`docs/datatype-state.md`](datatype-state.md) |

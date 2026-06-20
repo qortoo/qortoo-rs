@@ -83,6 +83,10 @@ impl LocalDatatypeServer {
         self.sender_map.insert(wired.cuid(), sender);
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.wired_map.is_empty()
+    }
+
     pub fn push_transactions(&mut self, pushed: &PushPullPack) -> (u64, bool) {
         let client_cp = self
             .cseq_map
@@ -106,7 +110,7 @@ impl LocalDatatypeServer {
     }
 
     datatype_server_instrument! {
-    pub fn process_due_to_create(
+    pub fn process_creating(
         &mut self,
         pushed: &PushPullPack,
     ) -> Result<PushPullPack, ConnectivityError> {
@@ -138,14 +142,14 @@ impl LocalDatatypeServer {
     }}
 
     datatype_server_instrument! {
-    pub fn process_due_to_subscribe_or_create(
+    pub fn process_subscribing_or_creating(
         &mut self,
         pushed: &PushPullPack,
     ) -> Result<PushPullPack, ConnectivityError> {
         if self.created {
-            self.process_due_to_subscribe(pushed)
+            self.process_subscribing(pushed)
         } else {
-            self.process_due_to_create(pushed)
+            self.process_creating(pushed)
         }
     }}
 
@@ -155,25 +159,34 @@ impl LocalDatatypeServer {
         pushed: &PushPullPack,
         is_realtime: bool,
     ) -> Result<PushPullPack, ConnectivityError> {
+        Ok(self.process_client_push(pushed, DatatypeState::Subscribed, is_realtime))
+    }}
+
+    fn process_client_push(
+        &mut self,
+        pushed: &PushPullPack,
+        success_state: DatatypeState,
+        is_realtime: bool,
+    ) -> PushPullPack {
         let mut pulled = pushed.get_pulled_stub();
         if pulled.is_readonly && !pushed.transactions.is_empty() {
             pulled.error = Some(ServerPushPullError::IllegalPushRequest(
                 "readonly client cannot push transactions".to_string(),
             ));
             pulled.state = DatatypeState::Disabled;
-            return Ok(pulled);
+            return pulled;
         }
         let (cseq, pushed_any) = self.push_transactions(pushed);
         pulled.checkpoint.sseq = pushed.checkpoint.sseq;
         pulled.checkpoint.cseq = cseq;
         self.pull_transactions(&mut pulled);
-        pulled.state = DatatypeState::Subscribed;
+        pulled.state = success_state;
         if is_realtime && pushed_any {
             self.notify_pushed(&pushed.cuid);
         }
 
-        Ok(pulled)
-    }}
+        pulled
+    }
 
     #[instrument(skip_all)]
     fn notify_pushed(&self, cuid: &Cuid) {
@@ -195,16 +208,28 @@ impl LocalDatatypeServer {
     }
 
     datatype_server_instrument! {
-    pub fn process_due_to_unsubscribe(
+    pub fn process_unsubscribing(
         &mut self,
         pushed: &PushPullPack,
+        is_realtime: bool,
     ) -> Result<PushPullPack, ConnectivityError> {
-        let pulled = pushed.get_pulled_stub();
+        let pulled = self.process_client_push(pushed, DatatypeState::Disabled, is_realtime);
+
+        // Always clean up client registration regardless of error: the client will be Disabled
+        // either way, and leaving stale entries would cause infinite unsubscribe retry loops.
+        self.wired_map.remove(&pushed.cuid);
+        self.sender_map.remove(&pushed.cuid);
+
+        if self.creator == pushed.cuid {
+            if let Some(next_creator) = self.wired_map.keys().next() {
+                self.creator = next_creator.clone();
+            }
+        }
         Ok(pulled)
     }}
 
     datatype_server_instrument! {
-    pub fn process_due_to_delete(
+    pub fn process_deleting(
         &mut self,
         pushed: &PushPullPack,
     ) -> Result<PushPullPack, ConnectivityError> {
@@ -222,7 +247,7 @@ impl LocalDatatypeServer {
     }}
 
     datatype_server_instrument! {
-    pub fn process_due_to_subscribe(
+    pub fn process_subscribing(
         &mut self,
         pushed: &PushPullPack,
     ) -> Result<PushPullPack, ConnectivityError> {
@@ -283,6 +308,11 @@ impl LocalDatatypeServer {
     #[cfg(test)]
     pub fn get_wired_datatype(&self, cuid: &Cuid) -> Option<Arc<WiredDatatype>> {
         self.wired_map.get(cuid).cloned()
+    }
+
+    #[cfg(test)]
+    pub fn creator(&self) -> &Cuid {
+        &self.creator
     }
 }
 
@@ -368,7 +398,7 @@ mod tests_local_datatype_server {
         10,
     )]
     #[instrument]
-    fn can_process_due_to_create(
+    fn can_process_creating(
         #[case] pre_create: bool,
         #[case] modify_push: fn(&mut PushPullPack),
         #[case] expected_is_readonly: bool,
@@ -466,7 +496,7 @@ mod tests_local_datatype_server {
         CheckPoint::new(0, 0),
     )]
     #[instrument]
-    fn can_process_due_to_subscribe(
+    fn can_process_subscribing(
         #[case] creator_sync: bool,
         #[case] modify_push: fn(&mut PushPullPack),
         #[case] expected_error: Option<ServerPushPullError>,
@@ -540,6 +570,49 @@ mod tests_local_datatype_server {
                 counter2.get_attr().get_duid()
             );
         }
+    }
+
+    #[test]
+    #[instrument]
+    fn can_reject_readonly_unsubscribing_with_transactions() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let (collection, key, resource_id) = get_test_ids!();
+
+        let client = Client::builder(collection, "client")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let counter = client.create_datatype(key).build_counter().unwrap();
+        counter.sync().unwrap();
+        counter.increase().unwrap();
+        counter.unsubscribe().unwrap();
+
+        let interceptor = connectivity
+            .get_wired_interceptor(&resource_id, &client.get_cuid())
+            .unwrap();
+        interceptor
+            .set_before_push(push_set_readonly)
+            .set_after_pull(|pull| {
+                assert_eq!(pull.state, DatatypeState::Disabled);
+                assert_eq!(
+                    pull.error,
+                    Some(ServerPushPullError::IllegalPushRequest(String::new()))
+                );
+                Ok(())
+            });
+
+        assert!(matches!(
+            counter.sync().unwrap_err(),
+            DatatypeError::FailedByServerPushPullError(_)
+        ));
+        assert_eq!(counter.get_state(), DatatypeState::Disabled);
+        assert!(
+            connectivity
+                .get_local_datatype_server(&resource_id)
+                .is_none()
+        );
+        assert!(client.get_datatype(counter.get_key()).is_none());
     }
 
     #[rstest]

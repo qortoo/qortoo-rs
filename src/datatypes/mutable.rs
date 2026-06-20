@@ -170,6 +170,9 @@ impl MutableDatatype {
             self.state = new_state;
             self.handlers_manager
                 .notify_state_change(old_state, new_state);
+            if new_state == DatatypeState::Disabled {
+                self.attr.detach_datatype_if_same_instance();
+            }
         }
     }
 

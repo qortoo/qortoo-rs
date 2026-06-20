@@ -135,7 +135,7 @@ mod tests_push_pull_pack {
     #[test]
     fn can_use_push_pull_pack() {
         let attr = new_attribute!(DataType::Counter);
-        let mut ppp = PushPullPack::new(&attr, DatatypeState::DueToCreate);
+        let mut ppp = PushPullPack::new(&attr, DatatypeState::Creating);
         info!("{}", ppp.resource_id());
         assert_eq!(
             ppp.resource_id(),

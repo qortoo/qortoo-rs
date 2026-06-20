@@ -68,20 +68,23 @@ impl<'a> PullHandler<'a> {
         }
 
         match self.old_state {
-            DatatypeState::DueToCreate => {
+            DatatypeState::Creating => {
                 if self.pulled_ppp.state != DatatypeState::Subscribed {
+                    self.new_state = DatatypeState::Disabled;
                     self.process_illegal_state_response(self.old_state, self.pulled_ppp.state)?;
                 }
                 self.is_created = true;
             }
-            DatatypeState::DueToSubscribe => {
+            DatatypeState::Subscribing => {
                 if self.pulled_ppp.state != DatatypeState::Subscribed {
+                    self.new_state = DatatypeState::Disabled;
                     self.process_illegal_state_response(self.old_state, self.pulled_ppp.state)?;
                 }
                 self.enqueue_step(Self::apply_subscribe_response);
             }
-            DatatypeState::DueToSubscribeOrCreate => {
+            DatatypeState::SubscribingOrCreating => {
                 if self.pulled_ppp.state != DatatypeState::Subscribed {
+                    self.new_state = DatatypeState::Disabled;
                     self.process_illegal_state_response(self.old_state, self.pulled_ppp.state)?;
                 }
                 if self.pulled_ppp.duid == self.mutable.attr.get_duid() {
@@ -92,13 +95,17 @@ impl<'a> PullHandler<'a> {
             }
             DatatypeState::Subscribed => {
                 if self.pulled_ppp.state != DatatypeState::Subscribed {
+                    self.new_state = DatatypeState::Disabled;
                     self.process_illegal_state_response(self.old_state, self.pulled_ppp.state)?;
                 }
             }
-            DatatypeState::DueToUnsubscribe => {
-                todo!()
+            DatatypeState::Unsubscribing => {
+                if self.pulled_ppp.state != DatatypeState::Disabled {
+                    self.new_state = DatatypeState::Disabled;
+                    self.process_illegal_state_response(self.old_state, self.pulled_ppp.state)?;
+                }
             }
-            DatatypeState::DueToDelete => {
+            DatatypeState::Deleting => {
                 todo!()
             }
             DatatypeState::Disabled => {

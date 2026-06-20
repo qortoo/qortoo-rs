@@ -3,7 +3,10 @@ use std::{collections::BTreeMap, sync::Arc};
 use crate::{
     Counter, DataType, Datatype, DatatypeState,
     clients::common::ClientCommon,
-    datatypes::{common::Attribute, option::DatatypeOption, transactional::TransactionalDatatype},
+    datatypes::{
+        common::Attribute, datatype::DatatypeBlanket, option::DatatypeOption,
+        transactional::TransactionalDatatype,
+    },
     types::common::ArcStr,
 };
 
@@ -25,10 +28,22 @@ impl DatatypeSet {
     }
 
     /// Returns [`DatatypeState`] of the internal datatype in this wrapper,
-    /// e.g., `DatatypeState::DueToCreate`
+    /// e.g., `DatatypeState::Creating`
     pub fn get_state(&self) -> DatatypeState {
         match self {
             DatatypeSet::Counter(cnt) => cnt.get_state(),
+        }
+    }
+
+    pub(crate) fn get_core_id(&self) -> usize {
+        match self {
+            DatatypeSet::Counter(cnt) => cnt.get_core() as *const TransactionalDatatype as usize,
+        }
+    }
+
+    pub(crate) fn unsubscribe(&self) -> Result<(), crate::DatatypeError> {
+        match self {
+            DatatypeSet::Counter(cnt) => cnt.unsubscribe(),
         }
     }
 
@@ -87,7 +102,7 @@ mod tests_datatype_set {
         let ds1 = DatatypeSet::new(
             DataType::Counter,
             "k1".into(),
-            DatatypeState::DueToCreate,
+            DatatypeState::Creating,
             new_client_common!(),
             Default::default(),
             false,
