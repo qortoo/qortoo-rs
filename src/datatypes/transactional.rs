@@ -113,9 +113,7 @@ impl Datatype for TransactionalDatatype {
 
     fn unsubscribe(&self) -> Result<(), DatatypeError> {
         self.check_subscribed("unsubscribe")?;
-        self.mutable
-            .write()
-            .set_state(DatatypeState::DueToUnsubscribe);
+        self.mutable.write().set_state(DatatypeState::Unsubscribing);
         self.event_loop.send_push_transaction_with_best_effort();
         Ok(())
     }

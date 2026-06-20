@@ -140,7 +140,7 @@ impl Client {
     /// Unsubscribes the datatype identified by `key` from this client.
     ///
     /// This is a key-based convenience API over [`Datatype::unsubscribe`](crate::Datatype::unsubscribe):
-    /// it marks the datatype as `DueToUnsubscribe` and returns the handle in that state.
+    /// it marks the datatype as `Unsubscribing` and returns the handle in that state.
     /// The client manager entry is removed only after the backend confirms `Disabled` via
     /// the auto-detach hook — not immediately — so a sync failure leaves the datatype
     /// reachable and retryable through the manager.
@@ -170,25 +170,25 @@ impl Client {
     /// Get `DatatypeBuilder` to subscribe a `Datatype` identified by `key`.
     ///
     /// The `Datatype` built by this builder will be marked
-    /// with [`DatatypeState::DueToSubscribe`].
+    /// with [`DatatypeState::Subscribing`].
     pub fn subscribe_datatype(&self, key: impl IntoString) -> DatatypeBuilder<'_> {
-        DatatypeBuilder::new(self, key.into(), DatatypeState::DueToSubscribe)
+        DatatypeBuilder::new(self, key.into(), DatatypeState::Subscribing)
     }
 
     /// Get `DatatypeBuilder` to create a `Datatype` identified by `key`.
     ///
     /// The `Datatype` built by this builder will be marked
-    /// with [`DatatypeState::DueToCreate`].
+    /// with [`DatatypeState::Creating`].
     pub fn create_datatype(&self, key: impl IntoString) -> DatatypeBuilder<'_> {
-        DatatypeBuilder::new(self, key.into(), DatatypeState::DueToCreate)
+        DatatypeBuilder::new(self, key.into(), DatatypeState::Creating)
     }
 
     /// Get `DatatypeBuilder` to subscribe or create a `Datatype` identified by `key`.
     ///
     /// The `Datatype` built by this builder will be marked
-    /// with [`DatatypeState::DueToSubscribeOrCreate`].
+    /// with [`DatatypeState::SubscribingOrCreating`].
     pub fn subscribe_or_create_datatype(&self, key: impl IntoString) -> DatatypeBuilder<'_> {
-        DatatypeBuilder::new(self, key.into(), DatatypeState::DueToSubscribeOrCreate)
+        DatatypeBuilder::new(self, key.into(), DatatypeState::SubscribingOrCreating)
     }
 
     #[cfg(test)]
@@ -234,14 +234,14 @@ mod tests_client {
 
         assert!(client1.get_datatype("k1").is_none());
         let counter1 = client1.subscribe_datatype("k1").build_counter().unwrap();
-        assert_eq!(DatatypeState::DueToSubscribe, counter1.get_state());
+        assert_eq!(DatatypeState::Subscribing, counter1.get_state());
         assert!(client1.get_datatype("k1").is_some());
 
         let client2 = Client::builder(get_test_collection_name!(), get_test_collection_name!())
             .build()
             .unwrap();
         let counter2 = client2.create_datatype("k1").build_counter().unwrap();
-        assert_eq!(DatatypeState::DueToCreate, counter2.get_state());
+        assert_eq!(DatatypeState::Creating, counter2.get_state());
 
         let client3 = Client::builder(get_test_collection_name!(), get_test_collection_name!())
             .build()
@@ -250,7 +250,7 @@ mod tests_client {
             .subscribe_or_create_datatype("k1")
             .build_counter()
             .unwrap();
-        assert_eq!(counter3.get_state(), DatatypeState::DueToSubscribeOrCreate);
+        assert_eq!(counter3.get_state(), DatatypeState::SubscribingOrCreating);
     }
 
     #[test]
@@ -297,9 +297,17 @@ mod tests_client {
             .build()
             .unwrap();
 
-        client1.create_datatype(key.clone()).build_counter().unwrap().sync().unwrap();
+        client1
+            .create_datatype(key.clone())
+            .build_counter()
+            .unwrap()
+            .sync()
+            .unwrap();
 
-        let counter = client2.create_datatype(key.clone()).build_counter().unwrap();
+        let counter = client2
+            .create_datatype(key.clone())
+            .build_counter()
+            .unwrap();
         assert!(client2.get_datatype(&key).is_some());
         assert!(matches!(
             counter.sync().unwrap_err(),
@@ -321,7 +329,10 @@ mod tests_client {
             .unwrap();
         let key = get_test_func_name!();
 
-        let counter = client.subscribe_datatype(key.clone()).build_counter().unwrap();
+        let counter = client
+            .subscribe_datatype(key.clone())
+            .build_counter()
+            .unwrap();
         assert!(client.get_datatype(&key).is_some());
         assert!(matches!(
             counter.sync().unwrap_err(),
@@ -350,7 +361,7 @@ mod tests_client {
         let old_core = counter.get_core() as *const _;
 
         let removed = client.unsubscribe_datatype(counter.get_key()).unwrap();
-        assert_eq!(removed.get_state(), DatatypeState::DueToUnsubscribe);
+        assert_eq!(removed.get_state(), DatatypeState::Unsubscribing);
         assert!(client.get_datatype(counter.get_key()).is_some());
 
         counter.sync().unwrap();
@@ -441,7 +452,7 @@ mod tests_client {
             .until(|| counter.get_state() == DatatypeState::Subscribed);
 
         let removed = client.unsubscribe_datatype(counter.get_key()).unwrap();
-        assert_eq!(removed.get_state(), DatatypeState::DueToUnsubscribe);
+        assert_eq!(removed.get_state(), DatatypeState::Unsubscribing);
         assert!(client.get_datatype(counter.get_key()).is_some());
 
         awaitility::at_most(std::time::Duration::from_secs(1))

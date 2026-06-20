@@ -28,7 +28,7 @@ impl DatatypeSet {
     }
 
     /// Returns [`DatatypeState`] of the internal datatype in this wrapper,
-    /// e.g., `DatatypeState::DueToCreate`
+    /// e.g., `DatatypeState::Creating`
     pub fn get_state(&self) -> DatatypeState {
         match self {
             DatatypeSet::Counter(cnt) => cnt.get_state(),
@@ -102,7 +102,7 @@ mod tests_datatype_set {
         let ds1 = DatatypeSet::new(
             DataType::Counter,
             "k1".into(),
-            DatatypeState::DueToCreate,
+            DatatypeState::Creating,
             new_client_common!(),
             Default::default(),
             false,

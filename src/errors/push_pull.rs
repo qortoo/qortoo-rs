@@ -28,10 +28,8 @@ impl ServerPushPullError {
         match self {
             ServerPushPullError::IllegalPushRequest(msg) => {
                 let data_err = match old_state {
-                    DatatypeState::DueToCreate => DatatypeError::FailedToCreate(msg.to_owned()),
-                    DatatypeState::DueToSubscribe => {
-                        DatatypeError::FailedToSubscribe(msg.to_owned())
-                    }
+                    DatatypeState::Creating => DatatypeError::FailedToCreate(msg.to_owned()),
+                    DatatypeState::Subscribing => DatatypeError::FailedToSubscribe(msg.to_owned()),
                     _ => DatatypeError::FailedByServerPushPullError(self.clone()),
                 };
                 DatatypeErrorWithActions::new(

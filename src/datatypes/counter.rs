@@ -214,7 +214,7 @@ mod tests_counter {
     #[test]
     #[instrument]
     fn can_use_counter_operations() {
-        let counter = Counter::new_for_test(DatatypeState::DueToCreate);
+        let counter = Counter::new_for_test(DatatypeState::Creating);
         assert_eq!(1, counter.increase().unwrap());
         assert_eq!(11, counter.increase_by(10).unwrap());
         assert_eq!(11, counter.get_value());
@@ -244,7 +244,7 @@ mod tests_counter {
     #[tokio::test(flavor = "multi_thread", worker_threads = 10)]
     #[instrument]
     async fn can_run_transactions_concurrently() {
-        let counter = Counter::new_for_test(DatatypeState::DueToCreate);
+        let counter = Counter::new_for_test(DatatypeState::Creating);
         let mut join_handles = vec![];
         let parent_span = Span::current();
 

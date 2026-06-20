@@ -110,7 +110,7 @@ impl LocalDatatypeServer {
     }
 
     datatype_server_instrument! {
-    pub fn process_due_to_create(
+    pub fn process_creating(
         &mut self,
         pushed: &PushPullPack,
     ) -> Result<PushPullPack, ConnectivityError> {
@@ -142,14 +142,14 @@ impl LocalDatatypeServer {
     }}
 
     datatype_server_instrument! {
-    pub fn process_due_to_subscribe_or_create(
+    pub fn process_subscribing_or_creating(
         &mut self,
         pushed: &PushPullPack,
     ) -> Result<PushPullPack, ConnectivityError> {
         if self.created {
-            self.process_due_to_subscribe(pushed)
+            self.process_subscribing(pushed)
         } else {
-            self.process_due_to_create(pushed)
+            self.process_creating(pushed)
         }
     }}
 
@@ -208,7 +208,7 @@ impl LocalDatatypeServer {
     }
 
     datatype_server_instrument! {
-    pub fn process_due_to_unsubscribe(
+    pub fn process_unsubscribing(
         &mut self,
         pushed: &PushPullPack,
         is_realtime: bool,
@@ -229,7 +229,7 @@ impl LocalDatatypeServer {
     }}
 
     datatype_server_instrument! {
-    pub fn process_due_to_delete(
+    pub fn process_deleting(
         &mut self,
         pushed: &PushPullPack,
     ) -> Result<PushPullPack, ConnectivityError> {
@@ -247,7 +247,7 @@ impl LocalDatatypeServer {
     }}
 
     datatype_server_instrument! {
-    pub fn process_due_to_subscribe(
+    pub fn process_subscribing(
         &mut self,
         pushed: &PushPullPack,
     ) -> Result<PushPullPack, ConnectivityError> {
@@ -398,7 +398,7 @@ mod tests_local_datatype_server {
         10,
     )]
     #[instrument]
-    fn can_process_due_to_create(
+    fn can_process_creating(
         #[case] pre_create: bool,
         #[case] modify_push: fn(&mut PushPullPack),
         #[case] expected_is_readonly: bool,
@@ -496,7 +496,7 @@ mod tests_local_datatype_server {
         CheckPoint::new(0, 0),
     )]
     #[instrument]
-    fn can_process_due_to_subscribe(
+    fn can_process_subscribing(
         #[case] creator_sync: bool,
         #[case] modify_push: fn(&mut PushPullPack),
         #[case] expected_error: Option<ServerPushPullError>,
@@ -574,7 +574,7 @@ mod tests_local_datatype_server {
 
     #[test]
     #[instrument]
-    fn can_reject_readonly_due_to_unsubscribe_with_transactions() {
+    fn can_reject_readonly_unsubscribing_with_transactions() {
         let connectivity = LocalConnectivity::new_arc();
         connectivity.set_realtime(false);
         let (collection, key, resource_id) = get_test_ids!();

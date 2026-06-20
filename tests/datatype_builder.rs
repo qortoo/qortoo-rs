@@ -18,7 +18,7 @@ mod tests_datatype_builder {
         assert_eq!(DataType::Counter, counter.get_type());
         assert!(matches!(
             counter.get_state(),
-            DatatypeState::DueToCreate | DatatypeState::Subscribed
+            DatatypeState::Creating | DatatypeState::Subscribed
         ));
         assert_eq!(counter.get_value(), 42);
     }

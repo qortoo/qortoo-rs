@@ -94,20 +94,20 @@ mod tests_datatype_manager {
         let res1 = dm.subscribe_or_create_datatype(
             "k1",
             DataType::Counter,
-            DatatypeState::DueToCreate,
+            DatatypeState::Creating,
             Default::default(),
             false,
             Default::default(),
         );
         assert!(res1.is_ok());
         let dt1 = res1.unwrap();
-        assert_eq!(dt1.get_state(), DatatypeState::DueToCreate);
+        assert_eq!(dt1.get_state(), DatatypeState::Creating);
         assert_eq!(dt1.get_type(), DataType::Counter);
 
         let res2 = dm.subscribe_or_create_datatype(
             "k1",
             DataType::Map,
-            DatatypeState::DueToCreate,
+            DatatypeState::Creating,
             Default::default(),
             false,
             Default::default(),
@@ -120,7 +120,7 @@ mod tests_datatype_manager {
         let res3 = dm.subscribe_or_create_datatype(
             "k1",
             DataType::Counter,
-            DatatypeState::DueToSubscribeOrCreate,
+            DatatypeState::SubscribingOrCreating,
             Default::default(),
             false,
             Default::default(),

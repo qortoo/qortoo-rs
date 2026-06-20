@@ -197,12 +197,33 @@ Exponential backoff is implemented via `backon::ExponentialBuilder`.
 
 On push_pull failure, `DatatypeErrorWithActions.datatype_action` determines the datatype state change.
 
+For the full datatype lifecycle and write-access rules, see [`docs/datatype-state.md`](datatype-state.md).
+
 | Action | Effect |
 |--------|--------|
 | `Normal` | No state change |
-| `Restart` | Transition to `DueToSubscribeOrCreate` (reconnect attempt) |
+| `Restart` | Transition to `SubscribingOrCreating` (reconnect attempt) |
 | `Disable` | Transition to `Disabled` (sync permanently stopped) |
 | `Reset` | Call `do_rollback()` to undo the pending local transaction; the next sync cycle re-fetches state from the server |
+
+## Unsubscribe Lifecycle
+
+`Datatype::unsubscribe()` records local intent by moving the datatype from
+`Subscribed` to `Unsubscribing`. It does not wait for backend acknowledgement.
+
+```text
+Subscribed -> Unsubscribing -> Disabled -> manager detach
+```
+
+In realtime connectivity, the event loop can automatically schedule the
+push/pull because `Unsubscribing` is a push target. In manual connectivity, the
+caller must invoke `sync()` to send the unsubscribe request and receive the
+`Disabled` response.
+
+When `Disabled` is committed, a client-managed datatype asks its
+`DatatypeManager` to detach the same core instance. This keeps the public
+`Client` map aligned with the lifecycle without adding a separate public detach
+API.
 
 ---
 

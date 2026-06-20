@@ -180,7 +180,7 @@ mod tests_handers_manager {
             DatatypeHandler::new().set_on_state_change(move |_ds, old_state, new_state| {
                 let a = count_for_h1.fetch_add(1, Ordering::Relaxed);
                 assert_eq!(a, 0);
-                assert_eq!(old_state, DatatypeState::DueToCreate);
+                assert_eq!(old_state, DatatypeState::Creating);
                 assert_eq!(new_state, DatatypeState::Subscribed);
             });
 
@@ -188,7 +188,7 @@ mod tests_handers_manager {
             DatatypeHandler::new().set_on_state_change(move |_ds, old_state, new_state| {
                 let a = count_for_h2.fetch_add(1, Ordering::Relaxed);
                 assert_eq!(a, 1);
-                assert_eq!(old_state, DatatypeState::DueToCreate);
+                assert_eq!(old_state, DatatypeState::Creating);
                 assert_eq!(new_state, DatatypeState::Subscribed);
             });
 
@@ -241,7 +241,7 @@ mod tests_handers_manager {
             .with_handler(0, handler2)
             .build_counter()
             .unwrap();
-        assert_eq!(counter1.get_state(), DatatypeState::DueToSubscribe);
+        assert_eq!(counter1.get_state(), DatatypeState::Subscribing);
         assert!(matches!(
             counter1.sync().unwrap_err(),
             DatatypeError::FailedToSubscribe(_)

@@ -21,7 +21,7 @@ use crate::{
 /// let counter = client.create_datatype("test-counter".to_string()).build_counter().unwrap();
 /// assert_eq!(counter.get_key(), "test-counter");
 /// assert_eq!(counter.get_type(), DataType::Counter);
-/// assert_eq!(counter.get_state(), DatatypeState::DueToCreate);
+/// assert_eq!(counter.get_state(), DatatypeState::Creating);
 /// ```
 pub trait Datatype {
     /// Returns a unique identifier used to distinguish instances in a collection.
@@ -76,8 +76,14 @@ pub trait Datatype {
 
     /// Unsubscribes this datatype from the connectivity backend.
     ///
-    /// After a successful unsubscribe, the datatype transitions to
-    /// [`DatatypeState::Disabled`] and should no longer be used for writes or sync.
+    /// This records local intent by transitioning the datatype to
+    /// [`DatatypeState::Unsubscribing`]. Backend acknowledgement happens on the
+    /// next push/pull: realtime connectivity can trigger it automatically, while
+    /// manual connectivity requires an explicit [`sync()`](Self::sync).
+    ///
+    /// Once the backend confirms unsubscribe, the datatype transitions to
+    /// [`DatatypeState::Disabled`] and client-managed datatypes are detached from
+    /// their owning client.
     fn unsubscribe(&self) -> Result<(), DatatypeError>;
 
     fn set_handler(&self, id: usize, handler: DatatypeHandler);
@@ -168,12 +174,12 @@ mod tests_datatype_trait {
         let key = attr.key.as_ref();
         let data = TransactionalDatatype::new_arc(
             attr.clone(),
-            DatatypeState::DueToCreate,
+            DatatypeState::Creating,
             Default::default(),
         );
         assert_eq!(data.get_key(), key);
         assert_eq!(data.get_type(), DataType::Counter);
-        assert_eq!(data.get_state(), DatatypeState::DueToCreate);
+        assert_eq!(data.get_state(), DatatypeState::Creating);
         assert_eq!(data.get_server_version(), 0);
         assert_eq!(data.get_client_version(), 0);
         assert_eq!(data.get_synced_client_version(), 0);
@@ -209,7 +215,7 @@ mod tests_datatype_trait {
             counter1.sync().unwrap_err(),
             DatatypeError::FailedByClientPushPullError(ClientPushPullError::ExceedMaxMemSize)
         );
-        assert_eq!(counter1.get_state(), DatatypeState::DueToCreate);
+        assert_eq!(counter1.get_state(), DatatypeState::Creating);
 
         // make a success case
         interceptor1.set_after_pull(|_pull| Ok(()));
@@ -235,12 +241,12 @@ mod tests_datatype_trait {
             counter.unsubscribe().unwrap_err(),
             DatatypeError::Disallowed(_)
         ));
-        assert_eq!(counter.get_state(), DatatypeState::DueToCreate);
+        assert_eq!(counter.get_state(), DatatypeState::Creating);
     }
 
     #[test]
     #[instrument]
-    fn can_mark_due_to_unsubscribe() {
+    fn can_mark_unsubscribing() {
         let connectivity = LocalConnectivity::new_arc();
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
@@ -256,12 +262,12 @@ mod tests_datatype_trait {
 
         counter.unsubscribe().unwrap();
 
-        assert_eq!(counter.get_state(), DatatypeState::DueToUnsubscribe);
+        assert_eq!(counter.get_state(), DatatypeState::Unsubscribing);
     }
 
     #[test]
     #[instrument]
-    fn can_reject_write_and_repeated_unsubscribe_while_due_to_unsubscribe() {
+    fn can_reject_write_and_repeated_unsubscribe_while_unsubscribing() {
         let connectivity = LocalConnectivity::new_arc();
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
@@ -276,7 +282,7 @@ mod tests_datatype_trait {
 
         counter.unsubscribe().unwrap();
 
-        assert_eq!(counter.get_state(), DatatypeState::DueToUnsubscribe);
+        assert_eq!(counter.get_state(), DatatypeState::Unsubscribing);
         assert!(matches!(
             counter.increase().unwrap_err(),
             DatatypeError::Disallowed(_)
@@ -301,7 +307,7 @@ mod tests_datatype_trait {
         counter.sync().unwrap();
 
         counter.unsubscribe().unwrap();
-        assert_eq!(counter.get_state(), DatatypeState::DueToUnsubscribe);
+        assert_eq!(counter.get_state(), DatatypeState::Unsubscribing);
         counter.sync().unwrap();
 
         assert_eq!(counter.get_state(), DatatypeState::Disabled);
@@ -314,7 +320,7 @@ mod tests_datatype_trait {
 
     #[test]
     #[instrument]
-    fn can_disable_due_to_unsubscribe_on_protocol_violation() {
+    fn can_disable_unsubscribing_on_protocol_violation() {
         let connectivity = LocalConnectivity::new_arc();
         connectivity.set_realtime(false);
         let (collection, key, resource_id) = get_test_ids!();

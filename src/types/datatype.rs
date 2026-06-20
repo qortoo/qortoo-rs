@@ -46,37 +46,37 @@ pub enum DataType {
 ///
 /// let client = Client::builder("doc-example", "state-test").build().unwrap();
 ///
-/// // DueToCreate state allows writing
+/// // Creating state allows writing
 /// let counter1 = client.create_datatype("c1").build_counter().unwrap();
-/// assert_eq!(counter1.get_state(), DatatypeState::DueToCreate);
+/// assert_eq!(counter1.get_state(), DatatypeState::Creating);
 /// assert!(counter1.increase().is_ok());
 ///
-/// // DueToSubscribe state prevents writing (state-based)
+/// // Subscribing state prevents writing (state-based)
 /// let counter2 = client.subscribe_datatype("c2").build_counter().unwrap();
-/// assert_eq!(counter2.get_state(), DatatypeState::DueToSubscribe);
+/// assert_eq!(counter2.get_state(), DatatypeState::Subscribing);
 /// assert!(counter2.increase().is_err());
 ///
 /// // Explicit read-only flag prevents writing (flag-based)
 /// let counter3 = client.create_datatype("c3").with_readonly().build_counter().unwrap();
-/// assert_eq!(counter3.get_state(), DatatypeState::DueToCreate);
+/// assert_eq!(counter3.get_state(), DatatypeState::Creating);
 /// assert!(counter3.increase().is_err()); // read-only despite writable state
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, strum_macros::Display)]
 #[repr(i32)]
 pub enum DatatypeState {
-    /// The datatype is scheduled to be created on the server (writable).
+    /// The datatype is scheduled to be created and subscribed on the server (writable).
     #[default]
-    DueToCreate = 0,
+    Creating = 0,
     /// The datatype is scheduled to be subscribed on the server (read-only).
-    DueToSubscribe = 1,
+    Subscribing = 1,
     /// The datatype is scheduled to be subscribed or created if it doesn't exist (writable).
-    DueToSubscribeOrCreate = 2,
+    SubscribingOrCreating = 2,
     /// The datatype has been successfully subscribed on the server (writable).
     Subscribed = 3,
     /// The datatype is scheduled to be unsubscribed from the server (read-only).
-    DueToUnsubscribe = 4,
+    Unsubscribing = 4,
     /// The datatype is scheduled to be deleted from the server (read-only).
-    DueToDelete = 5,
+    Deleting = 5,
     /// The datatype is neither enabled nor synchronized with the server (read-only).
     Disabled = 6,
 }
@@ -85,8 +85,8 @@ impl DatatypeState {
     /// Returns whether this state allows write operations.
     ///
     /// A datatype is writable when it is in one of these states:
-    /// - `DueToCreate` - scheduled for creation
-    /// - `DueToSubscribeOrCreate` - scheduled for subscription or creation
+    /// - `Creating` - scheduled for creation
+    /// - `SubscribingOrCreating` - scheduled for subscription or creation
     /// - `Subscribed` - actively subscribed
     ///
     /// **Important:** This method only checks the lifecycle state. The actual
@@ -97,16 +97,16 @@ impl DatatypeState {
     ///
     /// ```
     /// # use qortoo::DatatypeState;
-    /// assert!(DatatypeState::DueToCreate.is_read_writable());
+    /// assert!(DatatypeState::Creating.is_read_writable());
     /// assert!(DatatypeState::Subscribed.is_read_writable());
-    /// assert!(!DatatypeState::DueToSubscribe.is_read_writable());
+    /// assert!(!DatatypeState::Subscribing.is_read_writable());
     /// assert!(!DatatypeState::Disabled.is_read_writable());
     /// ```
     pub fn is_read_writable(&self) -> bool {
         matches!(
             self,
-            DatatypeState::DueToCreate
-                | DatatypeState::DueToSubscribeOrCreate
+            DatatypeState::Creating
+                | DatatypeState::SubscribingOrCreating
                 | DatatypeState::Subscribed
         )
     }
@@ -119,8 +119,8 @@ impl DatatypeState {
     ///
     /// ```
     /// # use qortoo::DatatypeState;
-    /// assert!(!DatatypeState::DueToCreate.is_readonly());
-    /// assert!(DatatypeState::DueToSubscribe.is_readonly());
+    /// assert!(!DatatypeState::Creating.is_readonly());
+    /// assert!(DatatypeState::Subscribing.is_readonly());
     /// assert!(DatatypeState::Disabled.is_readonly());
     /// ```
     pub fn is_readonly(&self) -> bool {
@@ -147,10 +147,10 @@ mod tests_datatype {
     }
 
     #[rstest]
-    #[case::due_to_create(DatatypeState::DueToCreate, true)]
+    #[case::creating(DatatypeState::Creating, true)]
     #[case::subscribed(DatatypeState::Subscribed, true)]
-    #[case::due_to_subscribe_or_create(DatatypeState::DueToSubscribeOrCreate, true)]
-    #[case::due_to_subscribe(DatatypeState::DueToSubscribe, false)]
+    #[case::subscribing_or_creating(DatatypeState::SubscribingOrCreating, true)]
+    #[case::subscribing(DatatypeState::Subscribing, false)]
     #[case::disabled(DatatypeState::Disabled, false)]
     fn can_check_accessibility_of_datatype_state(
         #[case] state: DatatypeState,
@@ -167,14 +167,14 @@ mod tests_datatype {
             .build()
             .unwrap();
 
-        // DueToCreate state allows writing
+        // Creating state allows writing
         let counter1 = client.create_datatype("c1").build_counter().unwrap();
-        assert_eq!(counter1.get_state(), DatatypeState::DueToCreate);
+        assert_eq!(counter1.get_state(), DatatypeState::Creating);
         assert!(counter1.increase().is_ok());
 
-        // DueToSubscribe state prevents writing (state-based)
+        // Subscribing state prevents writing (state-based)
         let counter2 = client.subscribe_datatype("c2").build_counter().unwrap();
-        assert_eq!(counter2.get_state(), DatatypeState::DueToSubscribe);
+        assert_eq!(counter2.get_state(), DatatypeState::Subscribing);
         assert!(counter2.increase().is_err());
 
         // Explicit read-only flag prevents writing (flag-based)
@@ -183,7 +183,7 @@ mod tests_datatype {
             .with_readonly()
             .build_counter()
             .unwrap();
-        assert_eq!(counter3.get_state(), DatatypeState::DueToCreate);
+        assert_eq!(counter3.get_state(), DatatypeState::Creating);
         assert!(counter3.increase().is_err()); // read-only despite writable state
     }
 }

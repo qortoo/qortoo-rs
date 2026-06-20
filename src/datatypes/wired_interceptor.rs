@@ -85,11 +85,8 @@ mod tests_wired_interceptor {
                 Ok(())
             });
 
-        let wd = WiredDatatype::new_arc_for_test(
-            attr,
-            DatatypeState::DueToCreate,
-            wd_interceptor.clone(),
-        );
+        let wd =
+            WiredDatatype::new_arc_for_test(attr, DatatypeState::Creating, wd_interceptor.clone());
 
         let _ = wd.push_pull();
         let _ = rx.recv();

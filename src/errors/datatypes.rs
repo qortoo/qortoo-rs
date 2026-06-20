@@ -85,12 +85,12 @@ pub enum DatatypeAction {
 impl From<DatatypeState> for DatatypeAction {
     fn from(value: DatatypeState) -> Self {
         match value {
-            DatatypeState::DueToCreate => DatatypeAction::Restart,
-            DatatypeState::DueToSubscribe => DatatypeAction::Restart,
-            DatatypeState::DueToSubscribeOrCreate => DatatypeAction::Restart,
+            DatatypeState::Creating => DatatypeAction::Restart,
+            DatatypeState::Subscribing => DatatypeAction::Restart,
+            DatatypeState::SubscribingOrCreating => DatatypeAction::Restart,
             DatatypeState::Subscribed => DatatypeAction::Normal,
-            DatatypeState::DueToUnsubscribe => DatatypeAction::Normal,
-            DatatypeState::DueToDelete => DatatypeAction::Normal,
+            DatatypeState::Unsubscribing => DatatypeAction::Normal,
+            DatatypeState::Deleting => DatatypeAction::Normal,
             DatatypeState::Disabled => DatatypeAction::Disable,
         }
     }
@@ -123,12 +123,12 @@ mod tests_datatypes {
     use crate::{DatatypeState, errors::datatypes::DatatypeAction};
 
     #[rstest]
-    #[case(DatatypeState::DueToCreate, DatatypeAction::Restart)]
-    #[case(DatatypeState::DueToSubscribe, DatatypeAction::Restart)]
-    #[case(DatatypeState::DueToSubscribeOrCreate, DatatypeAction::Restart)]
+    #[case(DatatypeState::Creating, DatatypeAction::Restart)]
+    #[case(DatatypeState::Subscribing, DatatypeAction::Restart)]
+    #[case(DatatypeState::SubscribingOrCreating, DatatypeAction::Restart)]
     #[case(DatatypeState::Subscribed, DatatypeAction::Normal)]
-    #[case(DatatypeState::DueToUnsubscribe, DatatypeAction::Normal)]
-    #[case(DatatypeState::DueToDelete, DatatypeAction::Normal)]
+    #[case(DatatypeState::Unsubscribing, DatatypeAction::Normal)]
+    #[case(DatatypeState::Deleting, DatatypeAction::Normal)]
     #[case(DatatypeState::Disabled, DatatypeAction::Disable)]
     fn can_convert_datatype_state_into_action(
         #[case] state: DatatypeState,

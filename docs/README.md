@@ -33,6 +33,7 @@ Each datatype is composed of five layers stacked vertically. A user operation pa
 | Document | Description |
 |----------|-------------|
 | [Architecture](architecture.md) | Layer stack, shared state model, operation flow, and concurrency model |
+| [Datatype State](datatype-state.md) | `DatatypeState` lifecycle, write access, sync intent states, and unsubscribe cleanup |
 | [Transaction and Rollback](transaction-and-rollback.md) | `TxRecord` structure, transaction lifecycle, and inverse-operation rollback |
 | [Event Loop](event-loop.md) | Priority-based event processing, channel types, and exponential backoff behavior |
 | [Observability](observability.md) | Tracing, log layer, Prometheus metrics, and Pyroscope profiling integration |

@@ -73,7 +73,7 @@ impl WiredDatatype {
             DatatypeAction::Restart => {
                 let mut mutable = self.mutable.write();
                 mutable.reset();
-                mutable.set_state(DatatypeState::DueToSubscribeOrCreate);
+                mutable.set_state(DatatypeState::SubscribingOrCreating);
             }
             DatatypeAction::Disable => self.mutable.write().disable(),
             DatatypeAction::Reset => {
@@ -178,10 +178,10 @@ impl MutableDatatype {
 
     fn need_push(&self) -> bool {
         let state = self.get_state();
-        state == DatatypeState::DueToCreate
-            || state == DatatypeState::DueToSubscribe
-            || state == DatatypeState::DueToSubscribeOrCreate
-            || state == DatatypeState::DueToUnsubscribe
+        state == DatatypeState::Creating
+            || state == DatatypeState::Subscribing
+            || state == DatatypeState::SubscribingOrCreating
+            || state == DatatypeState::Unsubscribing
             || self.push_buffer.last_cseq > self.checkpoint.cseq
     }
 }
@@ -196,11 +196,11 @@ mod tests_wired {
     };
 
     #[test]
-    fn can_push_due_to_unsubscribe() {
+    fn can_push_unsubscribing() {
         let attr = new_attribute!(DataType::Counter);
         let wired = WiredDatatype::new_arc_for_test(
             attr,
-            DatatypeState::DueToUnsubscribe,
+            DatatypeState::Unsubscribing,
             WiredInterceptor::new_arc(),
         );
 

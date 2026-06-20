@@ -318,7 +318,7 @@ mod tests_event_loop {
         let err = counter.sync().unwrap_err();
         assert!(matches!(err, DatatypeError::FailedByClientPushPullError(_)));
         // DatatypeAction::Normal → no state change
-        assert_eq!(counter.get_state(), DatatypeState::DueToCreate);
+        assert_eq!(counter.get_state(), DatatypeState::Creating);
 
         // explicit sync() sends to unbounded channel → bypasses 500ms BackOff wait
         interceptor.set_after_pull(|_| Ok(()));
@@ -356,7 +356,7 @@ mod tests_event_loop {
             }
         });
 
-        assert_eq!(counter.get_state(), DatatypeState::DueToCreate);
+        assert_eq!(counter.get_state(), DatatypeState::Creating);
 
         awaitility::at_most(Duration::from_secs(10))
             .poll_interval(Duration::from_millis(100))
