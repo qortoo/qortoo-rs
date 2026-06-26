@@ -1,15 +1,13 @@
 use thiserror::Error;
 
 use crate::{
-    ConnectivityError, DatatypeError, DatatypeState,
-    errors::datatypes::{DatatypeAction, DatatypeErrorWithActions, EventLoopAction},
+    DatatypeError, DatatypeState,
+    errors::datatypes::{DatatypeErrorWithActions, EventLoopAction},
 };
-
-pub(crate) const CLIENT_PUSHPULL_ERR_MSG_NO_SNAPSHOT: &str = "no snapshot operation";
 
 #[non_exhaustive]
 #[repr(i32)]
-#[derive(Debug, Error /*PartialEq*/, Eq, Clone)]
+#[derive(Debug, Error, Eq, Clone)]
 pub enum ServerPushPullError {
     #[error("[ServerPushPullError] illegal push request - {0}")]
     IllegalPushRequest(String) = 301,
@@ -55,54 +53,5 @@ impl ServerPushPullError {
 impl PartialEq for ServerPushPullError {
     fn eq(&self, other: &Self) -> bool {
         std::mem::discriminant(self) == std::mem::discriminant(other)
-    }
-}
-
-#[non_exhaustive]
-#[derive(Debug, Error, PartialEq, Eq, Clone)]
-pub enum ClientPushPullError {
-    #[error("[ClientPushPullError] pushBuffer exceeded max size of memory")]
-    ExceedMaxMemSize,
-    #[error("[ClientPushPullError] an operation of nonsequential cseq is enqueued into PushBuffer")]
-    NonSequentialCseq,
-    #[error("[ClientPushPullError] failed to get after")]
-    FailToGetPushingTransactions,
-    #[error("[ClientPushPullError] failed in Connectivity: {0}")]
-    FailedInConnectivity(ConnectivityError),
-    #[error("[ClientPushPullError] failed with protocol violation: {0}")]
-    FailedWithProtocolViolation(String),
-}
-
-impl ClientPushPullError {
-    pub fn mapping(self) -> DatatypeErrorWithActions {
-        match self {
-            ClientPushPullError::ExceedMaxMemSize => todo!(),
-            ClientPushPullError::NonSequentialCseq => DatatypeErrorWithActions::new(
-                DatatypeError::FailedByClientPushPullError(self),
-                EventLoopAction::Normal,
-                DatatypeAction::Reset,
-            ),
-            ClientPushPullError::FailToGetPushingTransactions => DatatypeErrorWithActions::new(
-                DatatypeError::FailedByClientPushPullError(self),
-                EventLoopAction::PauseSync,
-                DatatypeAction::Disable,
-            ),
-            ClientPushPullError::FailedInConnectivity(_) => DatatypeErrorWithActions::new(
-                DatatypeError::FailedByClientPushPullError(self),
-                EventLoopAction::BackOff,
-                DatatypeAction::Normal,
-            ),
-            ClientPushPullError::FailedWithProtocolViolation(_) => DatatypeErrorWithActions::new(
-                DatatypeError::FailedByClientPushPullError(self),
-                EventLoopAction::PauseSync,
-                DatatypeAction::Disable,
-            ),
-        }
-    }
-}
-
-impl From<ConnectivityError> for ClientPushPullError {
-    fn from(ce: ConnectivityError) -> Self {
-        ClientPushPullError::FailedInConnectivity(ce)
     }
 }

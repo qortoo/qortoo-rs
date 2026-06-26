@@ -1,9 +1,6 @@
 use thiserror::Error;
 
-use crate::{
-    ConnectivityError, DatatypeState,
-    errors::push_pull::{ClientPushPullError, ServerPushPullError},
-};
+use crate::{ConnectivityError, DatatypeState, errors::push_pull::ServerPushPullError};
 
 /// Errors that can occur while working with Qortoo datatypes.
 ///
@@ -47,8 +44,8 @@ pub enum DatatypeError {
 
     #[error("[DatatypeError] failed in connectivity: {0}")]
     FailedInConnectivity(ConnectivityError) = 210,
-    #[error("[DatatypeError] failed by client push-pull error: {0}")]
-    FailedByClientPushPullError(ClientPushPullError) = 211,
+    #[error("[DatatypeError] pushBuffer exceeded max size of memory")]
+    PushBufferExceededMaxMemSize = 211,
     #[error("[DatatypeError] failed by server push-pull error: {0}")]
     FailedByServerPushPullError(ServerPushPullError) = 212,
     #[error("[DatatypeError] failed by protocol violation: {0}")]
@@ -57,6 +54,47 @@ pub enum DatatypeError {
     FailedToCreate(String) = 214,
     #[error("[DatatypeError] failed to subscribe datatype: {0}")]
     FailedToSubscribe(String) = 215,
+    #[error("[DatatypeError] an operation of nonsequential cseq is enqueued into PushBuffer")]
+    NonSequentialCseq = 216,
+    #[error("[DatatypeError] failed to get pushing transactions")]
+    FailedToGetPushingTransactions = 217,
+}
+
+impl DatatypeError {
+    pub(crate) fn mapping(self) -> DatatypeErrorWithActions {
+        let event_loop_action = match &self {
+            DatatypeError::FailedInConnectivity(_) => EventLoopAction::BackOff,
+            DatatypeError::NonSequentialCseq => EventLoopAction::Normal,
+            DatatypeError::FailedTransaction(_)
+            | DatatypeError::FailedToDeserialize(_)
+            | DatatypeError::FailedToExecuteOperation(_)
+            | DatatypeError::FailedInEventLoop(_)
+            | DatatypeError::Disallowed(_)
+            | DatatypeError::PushBufferExceededMaxMemSize
+            | DatatypeError::FailedByServerPushPullError(_)
+            | DatatypeError::FailedByProtocolViolation(_)
+            | DatatypeError::FailedToCreate(_)
+            | DatatypeError::FailedToSubscribe(_)
+            | DatatypeError::FailedToGetPushingTransactions => EventLoopAction::PauseSync,
+        };
+        let datatype_action = match &self {
+            DatatypeError::FailedInConnectivity(_) => DatatypeAction::Normal,
+            DatatypeError::NonSequentialCseq => DatatypeAction::Reset,
+            DatatypeError::FailedTransaction(_)
+            | DatatypeError::FailedToDeserialize(_)
+            | DatatypeError::FailedToExecuteOperation(_)
+            | DatatypeError::FailedInEventLoop(_)
+            | DatatypeError::Disallowed(_)
+            | DatatypeError::PushBufferExceededMaxMemSize
+            | DatatypeError::FailedByServerPushPullError(_)
+            | DatatypeError::FailedByProtocolViolation(_)
+            | DatatypeError::FailedToCreate(_)
+            | DatatypeError::FailedToSubscribe(_)
+            | DatatypeError::FailedToGetPushingTransactions => DatatypeAction::Disable,
+        };
+
+        DatatypeErrorWithActions::new(self, event_loop_action, datatype_action)
+    }
 }
 
 // impl PartialEq for DatatypeError {

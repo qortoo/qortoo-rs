@@ -11,13 +11,12 @@ use crate::{
         push_buffer::{MemoryPushBuffer, PushBuffer},
         tx_record::TxRecord,
     },
-    errors::{
-        push_pull::{CLIENT_PUSHPULL_ERR_MSG_NO_SNAPSHOT, ClientPushPullError},
-        with_err_out,
-    },
+    errors::with_err_out,
     operations::{Operation, body::OperationBody, transaction::Transaction},
     types::{checkpoint::CheckPoint, operation_id::OperationId},
 };
+
+pub(crate) const DATATYPE_ERR_MSG_NO_SNAPSHOT: &str = "no snapshot operation";
 
 #[derive(Debug)]
 pub struct MutableDatatype {
@@ -64,10 +63,10 @@ impl MutableDatatype {
     pub fn apply_snapshot_transaction(
         &mut self,
         tx: Arc<Transaction>,
-    ) -> Result<(), ClientPushPullError> {
+    ) -> Result<(), DatatypeError> {
         if tx.operations.is_empty() {
-            return Err(ClientPushPullError::FailedWithProtocolViolation(
-                CLIENT_PUSHPULL_ERR_MSG_NO_SNAPSHOT.to_owned(),
+            return Err(DatatypeError::FailedByProtocolViolation(
+                DATATYPE_ERR_MSG_NO_SNAPSHOT.to_owned(),
             ));
         }
         let snap_op = &tx.operations[0];
@@ -77,8 +76,8 @@ impl MutableDatatype {
             self.op_id.lamport = snap_op.lamport;
             self.reset();
         } else {
-            return Err(ClientPushPullError::FailedWithProtocolViolation(
-                CLIENT_PUSHPULL_ERR_MSG_NO_SNAPSHOT.to_owned(),
+            return Err(DatatypeError::FailedByProtocolViolation(
+                DATATYPE_ERR_MSG_NO_SNAPSHOT.to_owned(),
             ));
         }
         Ok(())
@@ -108,10 +107,10 @@ impl MutableDatatype {
             let tx = Arc::new(tx);
             if tx.cuid == self.op_id.cuid {
                 if let Err(err) = self.push_buffer.enqueue(tx.clone()) {
-                    if err == ClientPushPullError::ExceedMaxMemSize {
+                    if err == DatatypeError::PushBufferExceededMaxMemSize {
                         todo!("should reduce the push buffer size");
                     }
-                    if err == ClientPushPullError::NonSequentialCseq {
+                    if err == DatatypeError::NonSequentialCseq {
                         unreachable!("this should not happen");
                     }
                 }

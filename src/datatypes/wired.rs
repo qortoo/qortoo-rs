@@ -12,10 +12,7 @@ use crate::{
         push_buffer::PushBuffer,
     },
     defaults,
-    errors::{
-        datatypes::{DatatypeAction, DatatypeErrorWithActions},
-        push_pull::ClientPushPullError,
-    },
+    errors::datatypes::{DatatypeAction, DatatypeErrorWithActions},
     observability::{metrics, trace::add_span_event},
     operations::transaction::Transaction,
     types::{notification::Notification, push_pull_pack::PushPullPack, uid::Cuid},
@@ -163,7 +160,7 @@ impl WiredDatatype {
 
 impl MutableDatatype {
     #[instrument(skip_all)]
-    fn create_push_pull_pack(&mut self) -> Result<PushPullPack, ClientPushPullError> {
+    fn create_push_pull_pack(&mut self) -> Result<PushPullPack, DatatypeError> {
         let mut ppp = PushPullPack::new(&self.attr, self.get_state());
 
         let (transactions, _tx_size) = self.push_buffer.get_pushing_transactions(

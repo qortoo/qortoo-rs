@@ -64,10 +64,9 @@ mod tests_metrics {
     use tracing::instrument;
 
     use crate::{
-        Client, ConnectivityError,
+        Client, ConnectivityError, DatatypeError,
         connectivity::local_connectivity::LocalConnectivity,
         datatypes::datatype::Datatype,
-        errors::push_pull::ClientPushPullError,
         utils::test_utils::{get_test_collection_name, get_test_func_name, get_test_ids},
     };
 
@@ -157,7 +156,7 @@ mod tests_metrics {
             .unwrap();
         interceptor.set_after_pull(|_| {
             Err(
-                ClientPushPullError::FailedInConnectivity(ConnectivityError::ResourceNotFound(
+                DatatypeError::FailedInConnectivity(ConnectivityError::ResourceNotFound(
                     "injected".into(),
                 ))
                 .mapping(),

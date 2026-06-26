@@ -278,19 +278,19 @@ mod tests_event_loop {
         Client, ConnectivityError, DatatypeError, DatatypeState,
         connectivity::local_connectivity::LocalConnectivity,
         datatypes::datatype::Datatype,
-        errors::{datatypes::DatatypeErrorWithActions, push_pull::ClientPushPullError},
+        errors::datatypes::DatatypeErrorWithActions,
         utils::test_utils::{get_test_collection_name, get_test_func_name, get_test_ids},
     };
 
     fn make_backoff_error() -> DatatypeErrorWithActions {
-        ClientPushPullError::FailedInConnectivity(ConnectivityError::ResourceNotFound(
+        DatatypeError::FailedInConnectivity(ConnectivityError::ResourceNotFound(
             "injected".to_string(),
         ))
         .mapping()
     }
 
     fn make_pause_sync_error() -> DatatypeErrorWithActions {
-        ClientPushPullError::FailedWithProtocolViolation("injected".to_string()).mapping()
+        DatatypeError::FailedByProtocolViolation("injected".to_string()).mapping()
     }
 
     /// Test that an explicit sync() call bypasses the BackOff wait via the unbounded channel.
@@ -316,7 +316,7 @@ mod tests_event_loop {
         interceptor.set_after_pull(|_| Err(make_backoff_error()));
 
         let err = counter.sync().unwrap_err();
-        assert!(matches!(err, DatatypeError::FailedByClientPushPullError(_)));
+        assert!(matches!(err, DatatypeError::FailedInConnectivity(_)));
         // DatatypeAction::Normal → no state change
         assert_eq!(counter.get_state(), DatatypeState::Creating);
 

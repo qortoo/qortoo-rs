@@ -1,19 +1,19 @@
 use std::{collections::VecDeque, fmt::Display, sync::Arc};
 
 use crate::{
+    DatatypeError,
     datatypes::option::DatatypeOption,
-    errors::push_pull::ClientPushPullError,
     operations::{MemoryMeasurable, transaction::Transaction},
 };
 
 #[allow(dead_code)]
 pub trait PushBuffer {
-    fn enqueue(&mut self, tx: Arc<Transaction>) -> Result<(), ClientPushPullError>;
+    fn enqueue(&mut self, tx: Arc<Transaction>) -> Result<(), DatatypeError>;
     fn get_pushing_transactions(
         &mut self,
         cseq: u64,
         max_mem_size: u64,
-    ) -> Result<(Vec<Arc<Transaction>>, u64), ClientPushPullError>;
+    ) -> Result<(Vec<Arc<Transaction>>, u64), DatatypeError>;
     fn deque(&mut self, upto_cseq: u64) -> Vec<Arc<Transaction>>;
 }
 
@@ -54,12 +54,12 @@ impl MemoryPushBuffer {
 }
 
 impl PushBuffer for MemoryPushBuffer {
-    fn enqueue(&mut self, tx: Arc<Transaction>) -> Result<(), ClientPushPullError> {
+    fn enqueue(&mut self, tx: Arc<Transaction>) -> Result<(), DatatypeError> {
         if self.last_cseq != 0 && self.last_cseq + 1 != tx.cseq {
-            return Err(ClientPushPullError::NonSequentialCseq);
+            return Err(DatatypeError::NonSequentialCseq);
         }
         if self.mem_size + tx.size() > self.option.max_mem_size_of_push_buffer {
-            return Err(ClientPushPullError::ExceedMaxMemSize);
+            return Err(DatatypeError::PushBufferExceededMaxMemSize);
         }
         if self.first_cseq == 0 {
             self.first_cseq = tx.cseq;
@@ -74,10 +74,10 @@ impl PushBuffer for MemoryPushBuffer {
         &mut self,
         cseq: u64,
         max_mem_size: u64,
-    ) -> Result<(Vec<Arc<Transaction>>, u64), ClientPushPullError> {
+    ) -> Result<(Vec<Arc<Transaction>>, u64), DatatypeError> {
         let mut popped = vec![];
         if cseq == 0 || cseq < self.first_cseq {
-            return Err(ClientPushPullError::FailToGetPushingTransactions);
+            return Err(DatatypeError::FailedToGetPushingTransactions);
         }
 
         let mut total_size: u64 = 0;
@@ -148,9 +148,10 @@ mod tests_push_buffer {
     use tracing::{info, instrument};
 
     use crate::{
+        DatatypeError,
         datatypes::{
             option::DatatypeOption,
-            push_buffer::{ClientPushPullError, MemoryPushBuffer, PushBuffer},
+            push_buffer::{MemoryPushBuffer, PushBuffer},
         },
         operations::{MemoryMeasurable, transaction::Transaction},
         types::operation_id::OperationId,
@@ -188,7 +189,7 @@ mod tests_push_buffer {
         let cseq2 = op_id2.next_cseq();
         let tx_not_sequential = Arc::new(Transaction::new(&op_id2.cuid, cseq2));
         let result = push_buffer.enqueue(tx_not_sequential);
-        assert_eq!(result.unwrap_err(), ClientPushPullError::NonSequentialCseq);
+        assert_eq!(result.unwrap_err(), DatatypeError::NonSequentialCseq);
 
         loop {
             let cseq = op_id.next_cseq();
@@ -196,7 +197,7 @@ mod tests_push_buffer {
             if push_buffer.mem_size + tx.size() > MAX_SIZE {
                 assert_eq!(
                     push_buffer.enqueue(tx).unwrap_err(),
-                    ClientPushPullError::ExceedMaxMemSize
+                    DatatypeError::PushBufferExceededMaxMemSize
                 );
                 break;
             }
