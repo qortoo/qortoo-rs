@@ -1,50 +1,53 @@
 use thiserror::Error;
 
 use crate::{
-    DatatypeError, DatatypeState,
-    errors::datatypes::{DatatypeErrorWithActions, EventLoopAction},
+    DatatypeError,
+    errors::datatypes::{DatatypeAction, DatatypeErrorWithActions, EventLoopAction},
 };
 
 #[non_exhaustive]
 #[repr(i32)]
 #[derive(Debug, Error, Eq, Clone)]
 pub enum ServerPushPullError {
-    #[error("[ServerPushPullError] illegal push request - {0}")]
-    IllegalPushRequest(String) = 301,
-    #[error("[ServerPushPull] fail to create - {0}")]
-    FailedToCreate(String) = 302,
-    #[error("[ServerPushPull] fail to subscribe - {0}")]
-    FailedToSubscribe(String) = 303,
+    #[error("[PushPullError] illegal push request - {0}")]
+    FailedByIllegalRequest(String) = 301,
+    #[error("[PushPullError] readonly client attempted write operation")]
+    FailedByReadonlyRestriction = 302,
+    #[error("[PushPullError] fail to create - {0}")]
+    FailedToCreate(String) = 303,
+    #[error("[PushPullError] fail to subscribe - {0}")]
+    FailedToSubscribe(String) = 304,
+    #[error("[PushPullError] client's datatype is not subscribed on this server - {0}")]
+    FailedByMissingSubscription(String) = 305,
 }
 
 impl ServerPushPullError {
-    pub fn mapping(
-        &self,
-        old_state: DatatypeState,
-        new_state: DatatypeState,
-    ) -> DatatypeErrorWithActions {
+    pub fn mapping(&self) -> DatatypeErrorWithActions {
         match self {
-            ServerPushPullError::IllegalPushRequest(msg) => {
-                let data_err = match old_state {
-                    DatatypeState::Creating => DatatypeError::FailedToCreate(msg.to_owned()),
-                    DatatypeState::Subscribing => DatatypeError::FailedToSubscribe(msg.to_owned()),
-                    _ => DatatypeError::FailedByServerPushPullError(self.clone()),
-                };
-                DatatypeErrorWithActions::new(
-                    data_err,
-                    EventLoopAction::PauseSync,
-                    new_state.into(),
-                )
-            }
+            ServerPushPullError::FailedByIllegalRequest(msg) => DatatypeErrorWithActions::new(
+                DatatypeError::FailedByProtocolViolation(msg.to_owned()),
+                EventLoopAction::PauseSync,
+                DatatypeAction::Disable,
+            ),
+            ServerPushPullError::FailedByReadonlyRestriction => DatatypeErrorWithActions::new(
+                DatatypeError::Disallowed("readonly client attempted write operation".to_owned()),
+                EventLoopAction::PauseSync,
+                DatatypeAction::Disable,
+            ),
             ServerPushPullError::FailedToCreate(msg) => DatatypeErrorWithActions::new(
                 DatatypeError::FailedToCreate(msg.to_owned()),
                 EventLoopAction::PauseSync,
-                new_state.into(),
+                DatatypeAction::Disable,
             ),
             ServerPushPullError::FailedToSubscribe(msg) => DatatypeErrorWithActions::new(
                 DatatypeError::FailedToSubscribe(msg.to_owned()),
                 EventLoopAction::PauseSync,
-                new_state.into(),
+                DatatypeAction::Disable,
+            ),
+            ServerPushPullError::FailedByMissingSubscription(msg) => DatatypeErrorWithActions::new(
+                DatatypeError::FailedToSubscribe(msg.to_owned()),
+                EventLoopAction::PauseSync,
+                DatatypeAction::Restart,
             ),
         }
     }

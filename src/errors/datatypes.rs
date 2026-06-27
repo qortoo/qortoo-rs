@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::{ConnectivityError, DatatypeState, errors::push_pull::ServerPushPullError};
+use crate::{ConnectivityError, DatatypeState};
 
 /// Errors that can occur while working with Qortoo datatypes.
 ///
@@ -46,8 +46,6 @@ pub enum DatatypeError {
     FailedInConnectivity(ConnectivityError) = 210,
     #[error("[DatatypeError] pushBuffer exceeded max size of memory")]
     PushBufferExceededMaxMemSize = 211,
-    #[error("[DatatypeError] failed by server push-pull error: {0}")]
-    FailedByServerPushPullError(ServerPushPullError) = 212,
     #[error("[DatatypeError] failed by protocol violation: {0}")]
     FailedByProtocolViolation(String) = 213,
     #[error("[DatatypeError] failed to create datatype: {0}")]
@@ -71,7 +69,6 @@ impl DatatypeError {
             | DatatypeError::FailedInEventLoop(_)
             | DatatypeError::Disallowed(_)
             | DatatypeError::PushBufferExceededMaxMemSize
-            | DatatypeError::FailedByServerPushPullError(_)
             | DatatypeError::FailedByProtocolViolation(_)
             | DatatypeError::FailedToCreate(_)
             | DatatypeError::FailedToSubscribe(_)
@@ -86,7 +83,6 @@ impl DatatypeError {
             | DatatypeError::FailedInEventLoop(_)
             | DatatypeError::Disallowed(_)
             | DatatypeError::PushBufferExceededMaxMemSize
-            | DatatypeError::FailedByServerPushPullError(_)
             | DatatypeError::FailedByProtocolViolation(_)
             | DatatypeError::FailedToCreate(_)
             | DatatypeError::FailedToSubscribe(_)

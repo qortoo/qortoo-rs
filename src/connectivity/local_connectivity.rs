@@ -134,6 +134,17 @@ impl LocalConnectivity {
         let wired_datatype = server.read().get_wired_datatype(cuid)?;
         Some(wired_datatype.get_wired_interceptor())
     }
+
+    #[cfg(test)]
+    pub fn remove_client_subscription(
+        &self,
+        resource_id: &ResourceID,
+        cuid: &crate::types::uid::Cuid,
+    ) {
+        if let Some(server) = self.get_local_datatype_server(resource_id) {
+            server.write().remove_client_subscription(cuid);
+        }
+    }
 }
 
 impl Debug for LocalConnectivity {

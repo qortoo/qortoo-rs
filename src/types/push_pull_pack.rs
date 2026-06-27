@@ -143,7 +143,7 @@ mod tests_push_pull_pack {
         );
         assert_eq!(format!("{ppp}"), format!("{ppp:?}"));
         info!("{ppp}");
-        ppp.error = Some(ServerPushPullError::IllegalPushRequest(
+        ppp.error = Some(ServerPushPullError::FailedByIllegalRequest(
             "some error".to_owned(),
         ));
         assert_eq!(format!("{ppp}"), format!("{ppp:?}"));

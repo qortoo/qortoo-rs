@@ -64,7 +64,7 @@ impl<'a> PullHandler<'a> {
     fn handle_error_and_datatype_state(&mut self) -> Result<(), DatatypeErrorWithActions> {
         self.new_state = self.pulled_ppp.state;
         if let Some(sppe) = self.pulled_ppp.error.as_ref() {
-            return Err(sppe.mapping(self.old_state, self.pulled_ppp.state));
+            return Err(sppe.mapping());
         }
 
         match self.old_state {

@@ -24,7 +24,7 @@ impl NullConnectivity {
     }
 
     fn set_illegal_push_request(&self, pulled: &mut PushPullPack, reason: &str) {
-        pulled.error = Some(ServerPushPullError::IllegalPushRequest(reason.to_owned()));
+        pulled.error = Some(ServerPushPullError::FailedByIllegalRequest(reason.to_owned()));
         pulled.state = DatatypeState::Disabled;
     }
 }
@@ -40,10 +40,8 @@ impl Connectivity for NullConnectivity {
         match pushed.state {
             DatatypeState::Creating | DatatypeState::SubscribingOrCreating => {
                 if pushed.is_readonly {
-                    self.set_illegal_push_request(
-                        &mut pulled,
-                        "readonly client cannot create datatype",
-                    );
+                    pulled.error = Some(ServerPushPullError::FailedByReadonlyRestriction);
+                    pulled.state = DatatypeState::Disabled;
                     return Ok(pulled);
                 }
                 pulled.state = DatatypeState::Subscribed;
@@ -105,10 +103,7 @@ mod tests_null_connectivity {
         let res1 = null_connectivity.push_pull(&pushed1);
         assert!(res1.is_ok());
         let pulled1 = res1.unwrap();
-        assert_eq!(
-            pulled1.error.unwrap(),
-            ServerPushPullError::IllegalPushRequest(String::new())
-        );
+        assert_eq!(pulled1.error.unwrap(), ServerPushPullError::FailedByReadonlyRestriction);
 
         let mut pushed2 = PushPullPack::new(&attr, DatatypeState::Subscribing);
         let mut op_id = OperationId::new();
@@ -121,7 +116,7 @@ mod tests_null_connectivity {
         let pulled2 = res2.unwrap();
         assert_eq!(
             pulled2.error.unwrap(),
-            ServerPushPullError::IllegalPushRequest(String::new())
+            ServerPushPullError::FailedByIllegalRequest(String::new())
         );
 
         let mut pushed3 = PushPullPack::new(&attr, DatatypeState::Unsubscribing);

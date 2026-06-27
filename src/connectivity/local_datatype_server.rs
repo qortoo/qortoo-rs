@@ -87,7 +87,13 @@ impl LocalDatatypeServer {
         self.wired_map.is_empty()
     }
 
-    pub fn push_transactions(&mut self, pushed: &PushPullPack) -> (u64, bool) {
+    #[cfg(test)]
+    pub fn remove_client_subscription(&mut self, cuid: &Cuid) {
+        self.wired_map.remove(cuid);
+        self.sender_map.remove(cuid);
+    }
+
+    fn push_transactions(&mut self, pushed: &PushPullPack) -> (u64, bool) {
         let client_cp = self
             .cseq_map
             .entry(pushed.cuid.clone())
@@ -125,9 +131,7 @@ impl LocalDatatypeServer {
             return Ok(pulled);
         }
         if pulled.is_readonly {
-            pulled.error = Some(ServerPushPullError::IllegalPushRequest(
-                "readonly client cannot create datatype".to_string(),
-            ));
+            pulled.error = Some(ServerPushPullError::FailedByReadonlyRestriction);
             pulled.state = DatatypeState::Disabled;
             return Ok(pulled);
         }
@@ -159,6 +163,27 @@ impl LocalDatatypeServer {
         pushed: &PushPullPack,
         is_realtime: bool,
     ) -> Result<PushPullPack, ConnectivityError> {
+        let mut pulled = pushed.get_pulled_stub();
+        if !self.wired_map.contains_key(&pushed.cuid) {
+            pulled.error = Some(ServerPushPullError::FailedByMissingSubscription(
+                format!(
+                    "cuid '{}' has no active datatype subscription on this server",
+                    pushed.cuid
+                ),
+            ));
+            pulled.state = DatatypeState::Disabled;
+            return Ok(pulled);
+        }
+        if self.r#type != pushed.r#type {
+            pulled.error = Some(ServerPushPullError::FailedByIllegalRequest(format!(
+                "type mismatch for '{}': expected {} but got {}",
+                pushed.resource_id(),
+                self.r#type,
+                pushed.r#type,
+            )));
+            pulled.state = DatatypeState::Disabled;
+            return Ok(pulled);
+        }
         Ok(self.process_client_push(pushed, DatatypeState::Subscribed, is_realtime))
     }}
 
@@ -170,9 +195,7 @@ impl LocalDatatypeServer {
     ) -> PushPullPack {
         let mut pulled = pushed.get_pulled_stub();
         if pulled.is_readonly && !pushed.transactions.is_empty() {
-            pulled.error = Some(ServerPushPullError::IllegalPushRequest(
-                "readonly client cannot push transactions".to_string(),
-            ));
+            pulled.error = Some(ServerPushPullError::FailedByReadonlyRestriction);
             pulled.state = DatatypeState::Disabled;
             return pulled;
         }
@@ -213,9 +236,17 @@ impl LocalDatatypeServer {
         pushed: &PushPullPack,
         is_realtime: bool,
     ) -> Result<PushPullPack, ConnectivityError> {
+        // If the client's datatype is not subscribed on this server, skip push processing to avoid
+        // polluting cseq_map, and return Disabled directly since that is the desired state.
+        if !self.wired_map.contains_key(&pushed.cuid) {
+            let mut pulled = pushed.get_pulled_stub();
+            pulled.state = DatatypeState::Disabled;
+            return Ok(pulled);
+        }
+
         let pulled = self.process_client_push(pushed, DatatypeState::Disabled, is_realtime);
 
-        // Always clean up client registration regardless of error: the client will be Disabled
+        // Always clean up client subscription regardless of error: the client will be Disabled
         // either way, and leaving stale entries would cause infinite unsubscribe retry loops.
         self.wired_map.remove(&pushed.cuid);
         self.sender_map.remove(&pushed.cuid);
@@ -242,7 +273,11 @@ impl LocalDatatypeServer {
         &mut self,
         pushed: &PushPullPack,
     ) -> Result<PushPullPack, ConnectivityError> {
-        let pulled = pushed.get_pulled_stub();
+        let mut pulled = pushed.get_pulled_stub();
+        pulled.error = Some(ServerPushPullError::FailedByIllegalRequest(
+            "disabled client attempted push".to_string(),
+        ));
+        pulled.state = DatatypeState::Disabled;
         Ok(pulled)
     }}
 
@@ -272,7 +307,7 @@ impl LocalDatatypeServer {
             return Ok(pulled);
         }
         if !pushed.transactions.is_empty() {
-            pulled.error = Some(ServerPushPullError::IllegalPushRequest(
+            pulled.error = Some(ServerPushPullError::FailedByIllegalRequest(
                 "cannot push transactions when subscribing".to_string(),
             ));
             pulled.state = DatatypeState::Disabled;
@@ -280,9 +315,17 @@ impl LocalDatatypeServer {
         }
 
         pulled.duid = self.duid.clone();
-        let wired_of_creator = self
-            .get_creator_wired_datatype()
-            .ok_or(ConnectivityError::ResourceNotFound(pushed.resource_id()))?;
+        let wired_of_creator = match self.get_creator_wired_datatype() {
+            Some(w) => w,
+            None => {
+                pulled.error = Some(ServerPushPullError::FailedToSubscribe(format!(
+                    "internal server error for '{}'",
+                    pushed.resource_id()
+                )));
+                pulled.state = DatatypeState::Disabled;
+                return Ok(pulled);
+            }
+        };
         let tx = wired_of_creator.get_subscribe_snapshot();
         pulled.checkpoint.sseq = tx.sseq;
         pulled.snapshot_transaction = Some(Arc::new(tx));
@@ -345,6 +388,9 @@ mod tests_local_datatype_server {
     fn push_set_variable_type(push: &mut PushPullPack) {
         push.r#type = DataType::Variable;
     }
+    fn push_set_disabled_state(push: &mut PushPullPack) {
+        push.state = DatatypeState::Disabled;
+    }
     fn push_add_transaction(push: &mut PushPullPack) {
         push.transactions.push(Arc::new(Transaction::default()));
     }
@@ -381,7 +427,7 @@ mod tests_local_datatype_server {
         false,
         push_set_readonly,
         true,
-        Some(ServerPushPullError::IllegalPushRequest("".to_string())),
+        Some(ServerPushPullError::FailedByReadonlyRestriction),
         CheckPoint::new(0, 0),
         false,
         0,
@@ -459,12 +505,13 @@ mod tests_local_datatype_server {
             });
 
         let sync_result = counter1.sync();
-        if expected_error.is_some() {
-            assert!(matches!(
-                sync_result.unwrap_err(),
-                DatatypeError::FailedToCreate(_)
-            ));
-            // assert!(equal_errors!(&sync_result.unwrap_err(), &expected_error.unwrap()));
+        if let Some(ref sppe) = *expected_error {
+            let err = sync_result.unwrap_err();
+            if matches!(sppe, ServerPushPullError::FailedByReadonlyRestriction) {
+                assert!(matches!(err, DatatypeError::Disallowed(_)));
+            } else {
+                assert!(matches!(err, DatatypeError::FailedToCreate(_)));
+            }
             assert_eq!(counter1.get_state(), DatatypeState::Disabled);
         } else {
             assert!(sync_result.is_ok());
@@ -492,7 +539,7 @@ mod tests_local_datatype_server {
     #[case::with_transactions(
         true,
         push_add_transaction,
-        Some(ServerPushPullError::IllegalPushRequest("".to_string())),
+        Some(ServerPushPullError::FailedByIllegalRequest("".to_string())),
         CheckPoint::new(0, 0),
     )]
     #[instrument]
@@ -551,11 +598,13 @@ mod tests_local_datatype_server {
             });
 
         let sync_result = counter2.sync();
-        if expected_error.is_some() {
-            assert!(matches!(
-                sync_result.unwrap_err(),
-                DatatypeError::FailedToSubscribe(_)
-            ));
+        if let Some(ref sppe) = *expected_error {
+            let err = sync_result.unwrap_err();
+            if matches!(sppe, ServerPushPullError::FailedByIllegalRequest(_)) {
+                assert!(matches!(err, DatatypeError::FailedByProtocolViolation(_)));
+            } else {
+                assert!(matches!(err, DatatypeError::FailedToSubscribe(_)));
+            }
             assert_eq!(counter2.get_state(), DatatypeState::Disabled);
         } else {
             assert!(sync_result.is_ok());
@@ -595,16 +644,13 @@ mod tests_local_datatype_server {
             .set_before_push(push_set_readonly)
             .set_after_pull(|pull| {
                 assert_eq!(pull.state, DatatypeState::Disabled);
-                assert_eq!(
-                    pull.error,
-                    Some(ServerPushPullError::IllegalPushRequest(String::new()))
-                );
+                assert_eq!(pull.error, Some(ServerPushPullError::FailedByReadonlyRestriction));
                 Ok(())
             });
 
         assert!(matches!(
             counter.sync().unwrap_err(),
-            DatatypeError::FailedByServerPushPullError(_)
+            DatatypeError::Disallowed(_)
         ));
         assert_eq!(counter.get_state(), DatatypeState::Disabled);
         assert!(
@@ -622,7 +668,7 @@ mod tests_local_datatype_server {
         false,
         push_set_readonly,
         true,
-        Some(ServerPushPullError::IllegalPushRequest("".to_string())),
+        Some(ServerPushPullError::FailedByReadonlyRestriction),
         CheckPoint::new(0, 0),
         0,
     )]
@@ -738,12 +784,7 @@ mod tests_local_datatype_server {
     fn check_error(expected_error: Arc<Option<ServerPushPullError>>, counter: &Counter) {
         let sync_result = counter.sync();
         if expected_error.is_some() {
-            assert_eq!(
-                sync_result.unwrap_err(),
-                DatatypeError::FailedByServerPushPullError(
-                    ServerPushPullError::IllegalPushRequest("".to_string())
-                )
-            );
+            assert!(matches!(sync_result.unwrap_err(), DatatypeError::Disallowed(_)));
             assert_eq!(counter.get_state(), DatatypeState::Disabled);
         } else {
             assert!(sync_result.is_ok());
@@ -861,5 +902,177 @@ mod tests_local_datatype_server {
         counter2.sync().unwrap();
         assert_eq!(counter1.get_value(), value_before);
         assert_eq!(counter2.get_value(), value_before);
+    }
+
+    #[test]
+    #[instrument]
+    fn can_reject_subscribed_push_from_unsubscribed_client() {
+        use std::time::Duration;
+
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let (collection, key, resource_id) = get_test_ids!();
+
+        let client1 = Client::builder(collection.clone(), get_test_func_name!())
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+
+        let counter1 = client1
+            .create_datatype(key.clone())
+            .build_counter()
+            .unwrap();
+
+        counter1.sync().unwrap();
+        assert_eq!(counter1.get_state(), DatatypeState::Subscribed);
+
+        // Simulate the server losing the client's subscription (e.g., after a server restart).
+        connectivity.remove_client_subscription(&resource_id, &client1.get_cuid());
+
+        // The next sync must fail with FailedToSubscribe and trigger a Restart action.
+        let result = counter1.sync();
+        assert!(matches!(result.unwrap_err(), DatatypeError::FailedToSubscribe(_)));
+        awaitility::at_most(Duration::from_secs(1))
+            .poll_interval(Duration::from_micros(100))
+            .until(|| counter1.get_state() == DatatypeState::SubscribingOrCreating);
+    }
+
+    #[test]
+    #[instrument]
+    fn can_unsubscribe_not_subscribed_client_gracefully() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let (collection, key, resource_id) = get_test_ids!();
+
+        let client1 = Client::builder(collection.clone(), get_test_func_name!())
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+
+        let counter1 = client1
+            .create_datatype(key.clone())
+            .build_counter()
+            .unwrap();
+
+        counter1.sync().unwrap();
+        assert_eq!(counter1.get_state(), DatatypeState::Subscribed);
+
+        // Simulate the server losing the client's subscription.
+        connectivity.remove_client_subscription(&resource_id, &client1.get_cuid());
+
+        // Unsubscribing a client whose server-side subscription is gone must complete
+        // gracefully: no error, and the datatype reaches Disabled.
+        // Manual mode: send_push_transaction_with_best_effort skips the event, so call
+        // sync() explicitly to drive the Unsubscribing → Disabled transition.
+        counter1.unsubscribe().unwrap();
+        assert_eq!(counter1.get_state(), DatatypeState::Unsubscribing);
+        counter1.sync().unwrap();
+        assert_eq!(counter1.get_state(), DatatypeState::Disabled);
+    }
+
+    #[test]
+    #[instrument]
+    fn can_reject_type_mismatch_in_subscribed_push() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let (collection, key, resource_id) = get_test_ids!();
+
+        let client = Client::builder(collection.clone(), get_test_func_name!())
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let counter = client.create_datatype(key.clone()).build_counter().unwrap();
+        counter.sync().unwrap();
+        assert_eq!(counter.get_state(), DatatypeState::Subscribed);
+
+        // Simulate a client sending a push with a different DataType after subscription.
+        let interceptor = connectivity
+            .get_wired_interceptor(&resource_id, &client.get_cuid())
+            .unwrap();
+        interceptor.set_before_push(push_set_variable_type);
+
+        let result = counter.sync();
+        assert!(matches!(
+            result.unwrap_err(),
+            DatatypeError::FailedByProtocolViolation(_)
+        ));
+        assert_eq!(counter.get_state(), DatatypeState::Disabled);
+    }
+
+    #[test]
+    #[instrument]
+    fn can_reject_push_from_disabled_client() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let (collection, key, resource_id) = get_test_ids!();
+
+        let client = Client::builder(collection.clone(), get_test_func_name!())
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+
+        let counter = client.create_datatype(key.clone()).build_counter().unwrap();
+        counter.sync().unwrap();
+        assert_eq!(counter.get_state(), DatatypeState::Subscribed);
+
+        // Simulate a buggy or malicious client sending a push with Disabled state.
+        let interceptor = connectivity
+            .get_wired_interceptor(&resource_id, &client.get_cuid())
+            .unwrap();
+        interceptor.set_before_push(push_set_disabled_state);
+
+        let result = counter.sync();
+        assert!(matches!(
+            result.unwrap_err(),
+            DatatypeError::FailedByProtocolViolation(_)
+        ));
+        assert_eq!(counter.get_state(), DatatypeState::Disabled);
+    }
+
+    #[test]
+    #[instrument]
+    fn can_fail_subscribe_when_creator_is_unavailable() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let (collection, key, resource_id) = get_test_ids!();
+
+        // client1 creates the datatype and becomes the creator.
+        let client1 = Client::builder(collection.clone(), "creator")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let counter1 = client1.create_datatype(key.clone()).build_counter().unwrap();
+        counter1.sync().unwrap();
+        assert_eq!(counter1.get_state(), DatatypeState::Subscribed);
+
+        // client2 subscribes so the server is not empty after the creator is removed.
+        let client2 = Client::builder(collection.clone(), "subscriber")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let counter2 = client2.subscribe_datatype(key.clone()).build_counter().unwrap();
+        counter2.sync().unwrap();
+        assert_eq!(counter2.get_state(), DatatypeState::Subscribed);
+
+        // Remove creator from wired_map without going through the normal unsubscribe flow,
+        // leaving server.creator pointing to a stale cuid.
+        let creator_cuid = connectivity
+            .get_local_datatype_server(&resource_id)
+            .unwrap()
+            .read()
+            .creator()
+            .clone();
+        connectivity.remove_client_subscription(&resource_id, &creator_cuid);
+
+        // A new subscriber must receive FailedToSubscribe (PauseSync + Disable),
+        // not ConnectivityError (which would cause infinite BackOff retries).
+        let client3 = Client::builder(collection.clone(), "new-subscriber")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let counter3 = client3.subscribe_datatype(key.clone()).build_counter().unwrap();
+        let result = counter3.sync();
+        assert!(matches!(result.unwrap_err(), DatatypeError::FailedToSubscribe(_)));
+        assert_eq!(counter3.get_state(), DatatypeState::Disabled);
     }
 }
