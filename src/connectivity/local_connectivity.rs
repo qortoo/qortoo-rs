@@ -14,6 +14,7 @@ use crate::{
     ConnectivityError, DatatypeState,
     connectivity::{Connectivity, local_datatype_server::LocalDatatypeServer},
     datatypes::{event_loop::Event, wired::WiredDatatype},
+    errors::push_pull::ServerPushPullError,
     types::{common::ResourceID, push_pull_pack::PushPullPack},
 };
 
@@ -180,9 +181,12 @@ impl Connectivity for LocalConnectivity {
     fn push_pull(&self, pushed: &PushPullPack) -> Result<PushPullPack, ConnectivityError> {
         let resource_id = pushed.resource_id();
 
-        let server_with_lock = self
-            .get_local_datatype_server(&resource_id)
-            .ok_or_else(|| ConnectivityError::ResourceNotFound(resource_id.clone()))?;
+        let Some(server_with_lock) = self.get_local_datatype_server(&resource_id) else {
+            let mut pulled = pushed.get_pulled_stub();
+            pulled.error = Some(ServerPushPullError::FailedByResourceNotFound(resource_id.clone()));
+            pulled.state = DatatypeState::Disabled;
+            return Ok(pulled);
+        };
         let (pulled, should_remove_server) = {
             let mut server = server_with_lock.write();
             let pulled = match pushed.state {

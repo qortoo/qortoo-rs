@@ -5,7 +5,7 @@ use crate::operations::body::OperationBody;
 use crate::{
     DataType, DatatypeError,
     datatypes::{common::ReturnType, crdts::counter_crdt::CounterCrdt},
-    errors::with_err_out,
+    errors::{datatypes::InternalReason, with_err_out},
     operations::Operation,
 };
 
@@ -30,7 +30,7 @@ impl Crdt {
             if let OperationBody::Delay4Test(body) = &op.body {
                 return match body.run() {
                     Ok(_) => Ok(ReturnType::None),
-                    Err(_) => Err(DatatypeError::FailedToExecuteOperation(format!("{body}"))),
+                    Err(_) => Err(InternalReason::ExecuteOperation(format!("{body}")).into_error()),
                 };
             }
         }
@@ -48,7 +48,7 @@ impl Crdt {
             if let OperationBody::Delay4Test(body) = &op.body {
                 return match body.run() {
                     Ok(_) => Ok(ReturnType::None),
-                    Err(_) => Err(DatatypeError::FailedToExecuteOperation(format!("{body}"))),
+                    Err(_) => Err(InternalReason::ExecuteOperation(format!("{body}")).into_error()),
                 };
             }
         }
@@ -76,9 +76,9 @@ impl Crdt {
         match self {
             Self::Counter(c) => {
                 if serialized.len() != 8 {
-                    with_err_out!(DatatypeError::FailedToDeserialize(format!(
+                    with_err_out!(InternalReason::Deserialize(format!(
                         "counter crdt: {serialized:?}, and will recover to counter value 0"
-                    )));
+                    )).into_error());
                     *c = CounterCrdt::default();
                     return;
                 }

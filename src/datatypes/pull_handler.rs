@@ -1,9 +1,9 @@
 use tracing::{debug, instrument};
 
 use crate::{
-    DatatypeError, DatatypeState,
+    DatatypeError, DatatypeState, ServerRejectReason,
     datatypes::mutable::MutableDatatype,
-    errors::datatypes::{DatatypeAction, DatatypeErrorWithActions, EventLoopAction},
+    errors::datatypes::DatatypeErrorWithActions,
     observability::trace::add_span_event,
     types::{checkpoint::CheckPoint, push_pull_pack::PushPullPack},
 };
@@ -52,19 +52,16 @@ impl<'a> PullHandler<'a> {
         old: DatatypeState,
         new: DatatypeState,
     ) -> Result<(), DatatypeErrorWithActions> {
-        Err(DatatypeErrorWithActions::new(
-            DatatypeError::FailedByProtocolViolation(format!(
-                "illegal state from push-pull: received {new} for {old}"
-            )),
-            EventLoopAction::PauseSync,
-            DatatypeAction::Disable,
-        ))
+        Err(DatatypeError::ServerRejected(ServerRejectReason::ProtocolViolation(format!(
+            "illegal state from push-pull: received {new} for {old}"
+        )))
+        .mapping())
     }
 
     fn handle_error_and_datatype_state(&mut self) -> Result<(), DatatypeErrorWithActions> {
         self.new_state = self.pulled_ppp.state;
         if let Some(sppe) = self.pulled_ppp.error.as_ref() {
-            return Err(sppe.mapping());
+            return Err(sppe.to_datatype_error().mapping());
         }
 
         match self.old_state {
@@ -151,9 +148,7 @@ impl<'a> PullHandler<'a> {
     fn execute_transactions(&mut self) -> Result<(), DatatypeErrorWithActions> {
         let transactions = self.pulled_ppp.transactions[self.skip..].to_vec();
         for tx in transactions {
-            self.mutable.execute_remote_transaction(tx).map_err(|e| {
-                DatatypeErrorWithActions::new(e, EventLoopAction::Normal, DatatypeAction::Restart)
-            })?;
+            self.mutable.execute_remote_transaction(tx).map_err(|e| e.mapping())?;
         }
         Ok(())
     }

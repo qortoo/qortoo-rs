@@ -10,7 +10,7 @@ use crate::{
         datatype::DatatypeBlanket,
         transactional::{TransactionContext, TransactionalDatatype},
     },
-    errors::BoxedError,
+    errors::{BoxedError, datatypes::InternalReason},
     operations::Operation,
 };
 
@@ -70,7 +70,7 @@ impl Counter {
         trace!("increased by {delta} -> {ret:?}");
         match ret {
             ReturnType::Counter(cv) => Ok(cv),
-            _ => Err(DatatypeError::FailedToExecuteOperation("unexpected return type".into()))
+            _ => Err(InternalReason::ExecuteOperation("unexpected return type".into()).into_error())
         }
     }}
 
@@ -172,7 +172,7 @@ impl Counter {
             counter_clone.tx_ctx = this_tx_ctx_clone.clone();
             match tx_func(counter_clone) {
                 Ok(_) => Ok(()),
-                Err(e) => Err(DatatypeError::FailedTransaction(e.to_string())),
+                Err(e) => Err(DatatypeError::TransactionFailed(e.to_string())),
             }
         };
         self.datatype.do_transaction(this_tx_ctx, do_tx_func)

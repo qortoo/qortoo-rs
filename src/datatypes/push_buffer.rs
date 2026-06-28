@@ -3,6 +3,7 @@ use std::{collections::VecDeque, fmt::Display, sync::Arc};
 use crate::{
     DatatypeError,
     datatypes::option::DatatypeOption,
+    errors::datatypes::InternalReason,
     operations::{MemoryMeasurable, transaction::Transaction},
 };
 
@@ -56,7 +57,7 @@ impl MemoryPushBuffer {
 impl PushBuffer for MemoryPushBuffer {
     fn enqueue(&mut self, tx: Arc<Transaction>) -> Result<(), DatatypeError> {
         if self.last_cseq != 0 && self.last_cseq + 1 != tx.cseq {
-            return Err(DatatypeError::NonSequentialCseq);
+            return Err(InternalReason::NonSequentialCseq.into_error());
         }
         if self.mem_size + tx.size() > self.option.max_mem_size_of_push_buffer {
             return Err(DatatypeError::PushBufferExceededMaxMemSize);
@@ -77,7 +78,7 @@ impl PushBuffer for MemoryPushBuffer {
     ) -> Result<(Vec<Arc<Transaction>>, u64), DatatypeError> {
         let mut popped = vec![];
         if cseq == 0 || cseq < self.first_cseq {
-            return Err(DatatypeError::FailedToGetPushingTransactions);
+            return Err(InternalReason::GetPushingTransactions.into_error());
         }
 
         let mut total_size: u64 = 0;
@@ -189,7 +190,7 @@ mod tests_push_buffer {
         let cseq2 = op_id2.next_cseq();
         let tx_not_sequential = Arc::new(Transaction::new(&op_id2.cuid, cseq2));
         let result = push_buffer.enqueue(tx_not_sequential);
-        assert_eq!(result.unwrap_err(), DatatypeError::NonSequentialCseq);
+        assert!(matches!(result.unwrap_err(), DatatypeError::Internal(_)));
 
         loop {
             let cseq = op_id.next_cseq();

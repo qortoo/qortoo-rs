@@ -64,7 +64,7 @@ mod tests_metrics {
     use tracing::instrument;
 
     use crate::{
-        Client, ConnectivityError, DatatypeError,
+        Client, DatatypeError,
         connectivity::local_connectivity::LocalConnectivity,
         datatypes::datatype::Datatype,
         utils::test_utils::{get_test_collection_name, get_test_func_name, get_test_ids},
@@ -155,12 +155,7 @@ mod tests_metrics {
             .get_wired_interceptor(&resource_id, &client.get_cuid())
             .unwrap();
         interceptor.set_after_pull(|_| {
-            Err(
-                DatatypeError::FailedInConnectivity(ConnectivityError::ResourceNotFound(
-                    "injected".into(),
-                ))
-                .mapping(),
-            )
+            Err(DatatypeError::SyncFailed("injected".into()).mapping())
         });
 
         let _ = counter.sync();

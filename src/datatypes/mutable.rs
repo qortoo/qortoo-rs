@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use tracing::instrument;
 
 use crate::{
-    DatatypeError, DatatypeHandler, DatatypeState,
+    DatatypeError, DatatypeHandler, DatatypeState, ServerRejectReason,
     datatypes::{
         common::{Attribute, ReturnType},
         crdts::Crdt,
@@ -65,9 +65,9 @@ impl MutableDatatype {
         tx: Arc<Transaction>,
     ) -> Result<(), DatatypeError> {
         if tx.operations.is_empty() {
-            return Err(DatatypeError::FailedByProtocolViolation(
+            return Err(DatatypeError::ServerRejected(ServerRejectReason::ProtocolViolation(
                 DATATYPE_ERR_MSG_NO_SNAPSHOT.to_owned(),
-            ));
+            )));
         }
         let snap_op = &tx.operations[0];
         if let OperationBody::Snapshot(body) = &snap_op.body {
@@ -76,9 +76,9 @@ impl MutableDatatype {
             self.op_id.lamport = snap_op.lamport;
             self.reset();
         } else {
-            return Err(DatatypeError::FailedByProtocolViolation(
+            return Err(DatatypeError::ServerRejected(ServerRejectReason::ProtocolViolation(
                 DATATYPE_ERR_MSG_NO_SNAPSHOT.to_owned(),
-            ));
+            )));
         }
         Ok(())
     }
@@ -110,9 +110,7 @@ impl MutableDatatype {
                     if err == DatatypeError::PushBufferExceededMaxMemSize {
                         todo!("should reduce the push buffer size");
                     }
-                    if err == DatatypeError::NonSequentialCseq {
-                        unreachable!("this should not happen");
-                    }
+                    unreachable!("unexpected enqueue error: {err:?}");
                 }
             }
         }

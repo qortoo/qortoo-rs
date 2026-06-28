@@ -12,7 +12,7 @@ use crate::{
     datatypes::wired::WiredDatatype,
     defaults::DEFAULT_EVENT_LOOP_TIMEOUT_MS,
     errors::{
-        datatypes::{DatatypeAction, EventLoopAction},
+        datatypes::{DatatypeAction, EventLoopAction, InternalReason},
         with_err_out,
     },
     observability::{metrics, trace::add_span_event},
@@ -104,12 +104,10 @@ impl EventLoop {
                                 break;
                             }
                             Event::PushTransaction(resp_tx) => {
-                                if matches!(event_loop_action, EventLoopAction::PauseSync) {
+                                if matches!(event_loop_action, EventLoopAction::StopSync) {
                                     Self::process_blocking_resp(
                                         resp_tx,
-                                        Some(DatatypeError::FailedInEventLoop(
-                                            "event loop paused".into(),
-                                        )),
+                                        Some(InternalReason::EventLoop("event loop stopped".into()).into_error()),
                                     );
                                     continue;
                                 }
@@ -172,7 +170,7 @@ impl EventLoop {
     ) -> Result<Event, DatatypeError> {
         let (push_if_needed, backoff_duration) = match event_loop_action {
             EventLoopAction::Normal => (true, None),
-            EventLoopAction::PauseSync => (false, None),
+            EventLoopAction::StopSync => (false, None),
             EventLoopAction::BackOff => {
                 let backoff_iter = backoff.get_or_insert_with(Self::build_backoff);
                 let d = backoff_iter.next().unwrap_or(BACKOFF_MAX_DELAY);
@@ -186,7 +184,7 @@ impl EventLoop {
 
         let map_err = |e, ch: &str| {
             let err_msg = format!("{ch} channel error {e:?}; stopping event loop");
-            with_err_out!(DatatypeError::FailedInEventLoop(err_msg))
+            with_err_out!(InternalReason::EventLoop(err_msg).into_error())
         };
 
         if let Some(duration) = backoff_duration {
@@ -226,14 +224,14 @@ impl EventLoop {
     fn send_to_unbounded(&self, ev: Event) -> Result<(), DatatypeError> {
         self.unbounded_tx
             .try_send(ev)
-            .map_err(|e| with_err_out!(DatatypeError::FailedInEventLoop(format!("{e:?}"))))
+            .map_err(|e| with_err_out!(InternalReason::EventLoop(format!("{e:?}")).into_error()))
     }
 
     fn send_to_bounded(&self, ev: Event) -> Result<(), DatatypeError> {
         let ev_str = format!("{ev}");
         self.bounded_tx.try_send(ev).map_err(|e| {
             add_span_event!(ev_str, "result"=>"fail");
-            DatatypeError::FailedInEventLoop(format!("{e:?}"))
+            InternalReason::EventLoop(format!("{e:?}")).into_error()
         })?;
         add_span_event!(ev_str, "result"=>"succeed");
         Ok(())
@@ -254,9 +252,9 @@ impl EventLoop {
             match rx.await {
                 Ok(Some(err)) => Err(err),
                 Ok(None) => Ok(()),
-                Err(e) => Err(DatatypeError::FailedInEventLoop(format!(
+                Err(e) => Err(InternalReason::EventLoop(format!(
                     "failed to receive response of sync(): {e}"
-                ))),
+                )).into_error()),
             }
         })
     }
@@ -275,7 +273,7 @@ mod tests_event_loop {
     use tracing::instrument;
 
     use crate::{
-        Client, ConnectivityError, DatatypeError, DatatypeState,
+        Client, DatatypeError, DatatypeState, ServerRejectReason,
         connectivity::local_connectivity::LocalConnectivity,
         datatypes::datatype::Datatype,
         errors::datatypes::DatatypeErrorWithActions,
@@ -283,18 +281,18 @@ mod tests_event_loop {
     };
 
     fn make_backoff_error() -> DatatypeErrorWithActions {
-        DatatypeError::FailedInConnectivity(ConnectivityError::ResourceNotFound(
+        DatatypeError::SyncFailed("injected".to_string()).mapping()
+    }
+
+    fn make_pause_sync_error() -> DatatypeErrorWithActions {
+        DatatypeError::ServerRejected(ServerRejectReason::ProtocolViolation(
             "injected".to_string(),
         ))
         .mapping()
     }
 
-    fn make_pause_sync_error() -> DatatypeErrorWithActions {
-        DatatypeError::FailedByProtocolViolation("injected".to_string()).mapping()
-    }
-
     /// Test that an explicit sync() call bypasses the BackOff wait via the unbounded channel.
-    /// After a FailedInConnectivity error sets BackOff on the event loop, the next sync()
+    /// After a SyncFailed error sets BackOff on the event loop, the next sync()
     /// is still processed immediately (not after the 500ms delay).
     #[test]
     #[instrument]
@@ -312,11 +310,11 @@ mod tests_event_loop {
             .get_wired_interceptor(&resource_id, &client.get_cuid())
             .unwrap();
 
-        // inject FailedInConnectivity → maps to EventLoopAction::BackOff, DatatypeAction::Normal
+        // inject SyncFailed → maps to EventLoopAction::BackOff, DatatypeAction::Normal
         interceptor.set_after_pull(|_| Err(make_backoff_error()));
 
         let err = counter.sync().unwrap_err();
-        assert!(matches!(err, DatatypeError::FailedInConnectivity(_)));
+        assert!(matches!(err, DatatypeError::SyncFailed(_)));
         // DatatypeAction::Normal → no state change
         assert_eq!(counter.get_state(), DatatypeState::Creating);
 
@@ -410,7 +408,7 @@ mod tests_event_loop {
         assert_eq!(pull_count.load(Ordering::SeqCst), 2);
     }
 
-    /// Test that PauseSync + Disable transitions datatype to Disabled and
+    /// Test that StopSync + Disable transitions datatype to Disabled and
     /// does not keep retrying automatically afterward.
     #[test]
     #[instrument]

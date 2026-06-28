@@ -66,7 +66,10 @@ pub use crate::{
         handler::DatatypeHandler,
     },
     errors::{
-        BoxedError, clients::ClientError, connectivity::ConnectivityError, datatypes::DatatypeError,
+        BoxedError,
+        clients::ClientError,
+        connectivity::ConnectivityError,
+        datatypes::{DatatypeError, ServerRejectReason},
     },
     types::{
         common::IntoString,

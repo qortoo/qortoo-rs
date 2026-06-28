@@ -160,7 +160,6 @@ mod tests_datatype_trait {
         datatypes::{
             common::new_attribute, datatype::Datatype, transactional::TransactionalDatatype,
         },
-        errors::datatypes::{DatatypeAction, DatatypeErrorWithActions, EventLoopAction},
         utils::test_utils::{get_test_collection_name, get_test_func_name, get_test_ids},
     };
 
@@ -201,17 +200,13 @@ mod tests_datatype_trait {
 
         // produce push_pull error
         interceptor1.set_after_pull(|_pull| {
-            Err(DatatypeErrorWithActions::new(
-                DatatypeError::PushBufferExceededMaxMemSize,
-                EventLoopAction::BackOff,
-                DatatypeAction::Reset,
-            ))
+            Err(DatatypeError::SyncFailed("injected".into()).mapping())
         });
 
-        assert_eq!(
+        assert!(matches!(
             counter1.sync().unwrap_err(),
-            DatatypeError::PushBufferExceededMaxMemSize
-        );
+            DatatypeError::SyncFailed(_)
+        ));
         assert_eq!(counter1.get_state(), DatatypeState::Creating);
 
         // make a success case
@@ -236,7 +231,7 @@ mod tests_datatype_trait {
 
         assert!(matches!(
             counter.unsubscribe().unwrap_err(),
-            DatatypeError::Disallowed(_)
+            DatatypeError::NotWritable(_)
         ));
         assert_eq!(counter.get_state(), DatatypeState::Creating);
     }
@@ -282,11 +277,11 @@ mod tests_datatype_trait {
         assert_eq!(counter.get_state(), DatatypeState::Unsubscribing);
         assert!(matches!(
             counter.increase().unwrap_err(),
-            DatatypeError::Disallowed(_)
+            DatatypeError::NotWritable(_)
         ));
         assert!(matches!(
             counter.unsubscribe().unwrap_err(),
-            DatatypeError::Disallowed(_)
+            DatatypeError::NotWritable(_)
         ));
     }
 
@@ -339,7 +334,7 @@ mod tests_datatype_trait {
 
         assert!(matches!(
             counter.sync().unwrap_err(),
-            DatatypeError::FailedByProtocolViolation(_)
+            DatatypeError::ServerRejected(_)
         ));
         assert_eq!(counter.get_state(), DatatypeState::Disabled);
         assert!(client.get_datatype(counter.get_key()).is_none());

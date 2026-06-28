@@ -174,17 +174,14 @@ impl TransactionalDatatype {
 
         let state = self.get_state();
         if !state.is_read_writable() {
-            return Err(with_err_out!(DatatypeError::Disallowed(format!(
+            return Err(with_err_out!(DatatypeError::NotWritable(format!(
                 "Datatype '{}' cannot be modified for {:?} state",
                 self.attr.key, state
             ))));
         }
 
         if self.attr.is_readonly {
-            return Err(with_err_out!(DatatypeError::Disallowed(format!(
-                "Datatype '{}' is readonly",
-                self.attr.key
-            ))));
+            return Err(with_err_out!(DatatypeError::ReadonlyViolation));
         }
 
         Ok(())
@@ -192,7 +189,7 @@ impl TransactionalDatatype {
 
     fn check_disabled(&self, op: &str) -> Result<(), DatatypeError> {
         if self.mutable.read().get_state() == DatatypeState::Disabled {
-            return Err(DatatypeError::Disallowed(format!(
+            return Err(DatatypeError::NotWritable(format!(
                 "{} is not allowed in Disabled state",
                 op
             )));
@@ -203,7 +200,7 @@ impl TransactionalDatatype {
     fn check_subscribed(&self, op: &str) -> Result<(), DatatypeError> {
         let state = self.mutable.read().get_state();
         if state != DatatypeState::Subscribed {
-            return Err(with_err_out!(DatatypeError::Disallowed(format!(
+            return Err(with_err_out!(DatatypeError::NotWritable(format!(
                 "{} is only allowed in Subscribed state, current state is {:?}",
                 op, state
             ))));

@@ -1,6 +1,49 @@
 use thiserror::Error;
 
-use crate::{ConnectivityError, DatatypeState};
+
+/// Internal SDK error reason, used by the event loop for action routing.
+///
+/// Not exposed to users. Internal callers use this to construct `DatatypeError::Internal`
+/// via `into_error()`.
+#[derive(Debug, Error)]
+pub(crate) enum InternalReason {
+    #[error("deserialize: {0}")]
+    Deserialize(String),
+    #[error("execute operation: {0}")]
+    ExecuteOperation(String),
+    #[error("event loop: {0}")]
+    EventLoop(String),
+    /// Cseq was non-sequential in the push buffer.
+    /// Requires `Normal + Rollback` instead of the default `StopSync + Disable`.
+    #[error("non-sequential cseq in push buffer")]
+    NonSequentialCseq,
+    #[error("failed to get pushing transactions")]
+    GetPushingTransactions,
+}
+
+impl InternalReason {
+    /// Converts to `DatatypeError::Internal` with the formatted reason message.
+    pub(crate) fn into_error(self) -> DatatypeError {
+        DatatypeError::Internal(self.to_string())
+    }
+}
+
+/// Reason a server permanently rejected a datatype operation.
+///
+/// Carried by [`DatatypeError::ServerRejected`]. New lifecycle operations
+/// (e.g., delete, merge) add variants here without touching `DatatypeError` itself.
+#[non_exhaustive]
+#[derive(Debug, Clone)]
+pub enum ServerRejectReason {
+    /// The server refused to create the datatype (e.g., already exists).
+    CreateFailed(String),
+    /// The requested resource does not exist or has an incompatible type.
+    ResourceNotFound(String),
+    /// The server-side subscription entry is missing (e.g., server restarted and lost state).
+    MissingSubscription(String),
+    /// The push violated the wire protocol (e.g., unexpected state transition, type mismatch).
+    ProtocolViolation(String),
+}
 
 /// Errors that can occur while working with Qortoo datatypes.
 ///
@@ -14,120 +57,102 @@ use crate::{ConnectivityError, DatatypeState};
 ///
 #[non_exhaustive]
 #[repr(i32)]
-#[derive(Debug, Error, PartialEq, Eq, Clone)]
+#[derive(Debug, Error, Clone)]
 pub enum DatatypeError {
     /// Transaction execution failed.
     ///
     /// Returned when a closure passed to `transaction` returns an error or when the
     /// transactional context cannot be committed. The datatype state is left unchanged
     /// if a rollback succeeds.
-    #[error("[DatatypeError] failed to do transaction: {0}")]
-    FailedTransaction(String) = 201,
-    /// Deserialization from bytes failed.
+    #[error("[DatatypeError] transaction failed: {0}")]
+    TransactionFailed(String) = 201,
+    /// An internal SDK error that is not caused by user code.
     ///
-    /// Returned when decoding a datatype, operation, or internal state from a byte
-    /// sequence is not possible (e.g., invalid length, unexpected format, or version
-    /// mismatch).
-    #[error("[DatatypeError] failed to deserialize: {0}")]
-    FailedToDeserialize(String) = 202,
-    /// Applying a local operation failed.
-    ///
-    /// Returned when an operation cannot be executed in the current state (e.g.,
-    /// unsupported operation kind, precondition violations, or internal invariants
-    /// not satisfied).
-    #[error("[DatatypeError] failed to execute operation: {0}")]
-    FailedToExecuteOperation(String) = 203,
-    #[error("[DatatypeError] failure in EventLoop")]
-    FailedInEventLoop(String) = 204,
+    /// The message describes the internal failure. This error is not user-actionable;
+    /// please report it as a bug.
+    #[error("[DatatypeError] internal error: {0}")]
+    Internal(String) = 202,
+    /// Access denied for a reason other than state or readonly flag (e.g., key not managed by this client).
     #[error("[DatatypeError] disallowed to {0}")]
     Disallowed(String) = 205,
+    /// Write rejected because the datatype state does not allow writes.
+    #[error("[DatatypeError] not writable: {0}")]
+    NotWritable(String) = 206,
+    /// Write rejected because the datatype is configured as readonly.
+    #[error("[DatatypeError] readonly violation")]
+    ReadonlyViolation = 207,
 
-    #[error("[DatatypeError] failed in connectivity: {0}")]
-    FailedInConnectivity(ConnectivityError) = 210,
+    /// A transient sync failure that warrants a retry with backoff.
+    ///
+    /// The connectivity backend failed to complete the push-pull exchange.
+    /// The datatype state is not changed; the event loop will retry with exponential backoff.
+    #[error("[DatatypeError] sync failed: {0}")]
+    SyncFailed(String) = 210,
     #[error("[DatatypeError] pushBuffer exceeded max size of memory")]
     PushBufferExceededMaxMemSize = 211,
-    #[error("[DatatypeError] failed by protocol violation: {0}")]
-    FailedByProtocolViolation(String) = 213,
-    #[error("[DatatypeError] failed to create datatype: {0}")]
-    FailedToCreate(String) = 214,
-    #[error("[DatatypeError] failed to subscribe datatype: {0}")]
-    FailedToSubscribe(String) = 215,
-    #[error("[DatatypeError] an operation of nonsequential cseq is enqueued into PushBuffer")]
-    NonSequentialCseq = 216,
-    #[error("[DatatypeError] failed to get pushing transactions")]
-    FailedToGetPushingTransactions = 217,
+    /// The server permanently rejected the operation. The datatype transitions to `Disabled`.
+    #[error("[DatatypeError] server rejected: {0:?}")]
+    ServerRejected(ServerRejectReason) = 213,
 }
 
 impl DatatypeError {
+    /// Converts this error into event-loop routing actions.
+    ///
+    /// This is the single source of truth for action routing. Variants handled here:
+    /// - `SyncFailed`       — transient connectivity failure → retry with backoff
+    /// - `Internal`         — fatal SDK-internal fault → stop sync, disable
+    /// - `ServerRejected`   — server permanently rejected the operation → stop sync, disable
+    /// - `ReadonlyViolation`— server rejected a write from a readonly client → stop sync, disable
+    ///
+    /// Variants that are returned directly to API callers must never reach this method.
     pub(crate) fn mapping(self) -> DatatypeErrorWithActions {
-        let event_loop_action = match &self {
-            DatatypeError::FailedInConnectivity(_) => EventLoopAction::BackOff,
-            DatatypeError::NonSequentialCseq => EventLoopAction::Normal,
-            DatatypeError::FailedTransaction(_)
-            | DatatypeError::FailedToDeserialize(_)
-            | DatatypeError::FailedToExecuteOperation(_)
-            | DatatypeError::FailedInEventLoop(_)
+        match self {
+            DatatypeError::SyncFailed(_) => {
+                DatatypeErrorWithActions::new(self, EventLoopAction::BackOff, DatatypeAction::Normal)
+            }
+            DatatypeError::Internal(_)
+            | DatatypeError::ServerRejected(_)
+            | DatatypeError::ReadonlyViolation => {
+                DatatypeErrorWithActions::new(self, EventLoopAction::StopSync, DatatypeAction::Disable)
+            }
+            // These variants are returned directly to API callers and are never routed through
+            // the event loop. Reaching here indicates a misrouted error.
+            DatatypeError::TransactionFailed(_)
             | DatatypeError::Disallowed(_)
-            | DatatypeError::PushBufferExceededMaxMemSize
-            | DatatypeError::FailedByProtocolViolation(_)
-            | DatatypeError::FailedToCreate(_)
-            | DatatypeError::FailedToSubscribe(_)
-            | DatatypeError::FailedToGetPushingTransactions => EventLoopAction::PauseSync,
-        };
-        let datatype_action = match &self {
-            DatatypeError::FailedInConnectivity(_) => DatatypeAction::Normal,
-            DatatypeError::NonSequentialCseq => DatatypeAction::Reset,
-            DatatypeError::FailedTransaction(_)
-            | DatatypeError::FailedToDeserialize(_)
-            | DatatypeError::FailedToExecuteOperation(_)
-            | DatatypeError::FailedInEventLoop(_)
-            | DatatypeError::Disallowed(_)
-            | DatatypeError::PushBufferExceededMaxMemSize
-            | DatatypeError::FailedByProtocolViolation(_)
-            | DatatypeError::FailedToCreate(_)
-            | DatatypeError::FailedToSubscribe(_)
-            | DatatypeError::FailedToGetPushingTransactions => DatatypeAction::Disable,
-        };
-
-        DatatypeErrorWithActions::new(self, event_loop_action, datatype_action)
+            | DatatypeError::NotWritable(_)
+            | DatatypeError::PushBufferExceededMaxMemSize => {
+                unreachable!("variant {:?} must not be routed through DatatypeError::mapping()", self)
+            }
+        }
     }
 }
 
-// impl PartialEq for DatatypeError {
-//     fn eq(&self, other: &Self) -> bool {
-//         std::mem::discriminant(self) == std::mem::discriminant(other)
-//     }
-// }
+impl PartialEq for DatatypeError {
+    fn eq(&self, other: &Self) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+}
+
+// Manual impl (not #[derive(Eq)]) because derive would add `ServerRejectReason: Eq` as a where
+// bound, which fails since ServerRejectReason does not implement Eq. The unconditional impl is
+// sound because the custom PartialEq above is discriminant-only, so reflexivity always holds.
+impl Eq for DatatypeError {}
 
 pub enum EventLoopAction {
     Normal,
     BackOff,
-    PauseSync,
+    StopSync,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum DatatypeAction {
     Normal,
-    // set the datatype state to 'Due_To_SubscribeOrCreate' so that the datatype should restart sync.
+    // set the datatype state to 'SubscribingOrCreating' so that the datatype should restart sync.
     Restart,
     // set the datatype state to 'Disabled' so that the datatype should stop sync.
     Disable,
-    // set the datatype state to 'Subscribed' and reset the datatype with the snapshot sent by the server.
-    Reset,
-}
-
-impl From<DatatypeState> for DatatypeAction {
-    fn from(value: DatatypeState) -> Self {
-        match value {
-            DatatypeState::Creating => DatatypeAction::Restart,
-            DatatypeState::Subscribing => DatatypeAction::Restart,
-            DatatypeState::SubscribingOrCreating => DatatypeAction::Restart,
-            DatatypeState::Subscribed => DatatypeAction::Normal,
-            DatatypeState::Unsubscribing => DatatypeAction::Normal,
-            DatatypeState::Deleting => DatatypeAction::Normal,
-            DatatypeState::Disabled => DatatypeAction::Disable,
-        }
-    }
+    // rolls back the in-progress transaction, leaving the datatype state unchanged.
+    Rollback,
 }
 
 pub struct DatatypeErrorWithActions {
@@ -137,7 +162,7 @@ pub struct DatatypeErrorWithActions {
 }
 
 impl DatatypeErrorWithActions {
-    pub fn new(
+    pub(crate) fn new(
         error: DatatypeError,
         event_loop_action: EventLoopAction,
         datatype_action: DatatypeAction,
@@ -150,25 +175,3 @@ impl DatatypeErrorWithActions {
     }
 }
 
-#[cfg(test)]
-mod tests_datatypes {
-    use rstest::rstest;
-
-    use crate::{DatatypeState, errors::datatypes::DatatypeAction};
-
-    #[rstest]
-    #[case(DatatypeState::Creating, DatatypeAction::Restart)]
-    #[case(DatatypeState::Subscribing, DatatypeAction::Restart)]
-    #[case(DatatypeState::SubscribingOrCreating, DatatypeAction::Restart)]
-    #[case(DatatypeState::Subscribed, DatatypeAction::Normal)]
-    #[case(DatatypeState::Unsubscribing, DatatypeAction::Normal)]
-    #[case(DatatypeState::Deleting, DatatypeAction::Normal)]
-    #[case(DatatypeState::Disabled, DatatypeAction::Disable)]
-    fn can_convert_datatype_state_into_action(
-        #[case] state: DatatypeState,
-        #[case] expected_action: DatatypeAction,
-    ) {
-        let datatype_action: DatatypeAction = state.into();
-        assert_eq!(datatype_action, expected_action);
-    }
-}

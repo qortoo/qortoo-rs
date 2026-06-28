@@ -288,7 +288,7 @@ impl LocalDatatypeServer {
     ) -> Result<PushPullPack, ConnectivityError> {
         let mut pulled = pushed.get_pulled_stub();
         if !self.created {
-            pulled.error = Some(ServerPushPullError::FailedToSubscribe(format!(
+            pulled.error = Some(ServerPushPullError::FailedByResourceNotFound(format!(
                 "{} '{}' not exists",
                 pushed.r#type,
                 pushed.resource_id(),
@@ -297,7 +297,7 @@ impl LocalDatatypeServer {
             return Ok(pulled);
         }
         if self.r#type != pushed.r#type {
-            pulled.error = Some(ServerPushPullError::FailedToSubscribe(format!(
+            pulled.error = Some(ServerPushPullError::FailedByResourceNotFound(format!(
                 "mismatched types for '{}': pushed type-{} but existed type {}",
                 pushed.resource_id(),
                 pushed.r#type,
@@ -318,11 +318,10 @@ impl LocalDatatypeServer {
         let wired_of_creator = match self.get_creator_wired_datatype() {
             Some(w) => w,
             None => {
-                pulled.error = Some(ServerPushPullError::FailedToSubscribe(format!(
-                    "internal server error for '{}'",
+                pulled.error = Some(ServerPushPullError::FailedByServerInternalError(format!(
+                    "creator unavailable for '{}'",
                     pushed.resource_id()
                 )));
-                pulled.state = DatatypeState::Disabled;
                 return Ok(pulled);
             }
         };
@@ -366,17 +365,7 @@ mod tests_local_datatype_server {
     use rstest::rstest;
     use tracing::{info, instrument};
 
-    use crate::{
-        Client, Counter, DataType, Datatype, DatatypeError, DatatypeState,
-        connectivity::local_connectivity::LocalConnectivity,
-        errors::{
-            datatypes::{DatatypeAction, DatatypeErrorWithActions, EventLoopAction},
-            push_pull::ServerPushPullError,
-        },
-        operations::transaction::Transaction,
-        types::{checkpoint::CheckPoint, push_pull_pack::PushPullPack, uid::Duid},
-        utils::test_utils::{get_test_collection_name, get_test_func_name, get_test_ids},
-    };
+    use crate::{Client, Counter, DataType, Datatype, DatatypeError, DatatypeState, connectivity::local_connectivity::LocalConnectivity, errors::push_pull::ServerPushPullError, operations::transaction::Transaction, types::{checkpoint::CheckPoint, push_pull_pack::PushPullPack, uid::Duid}, utils::test_utils::{get_test_collection_name, get_test_func_name, get_test_ids}, ConnectivityError};
 
     fn push_no_change(_push: &mut PushPullPack) {}
     fn push_set_readonly(push: &mut PushPullPack) {
@@ -412,14 +401,6 @@ mod tests_local_datatype_server {
 
         assert_eq!(pulled.error, error);
         assert_eq!(pulled.transactions.len(), tx_len);
-    }
-
-    fn make_create_error() -> DatatypeErrorWithActions {
-        DatatypeErrorWithActions::new(
-            DatatypeError::FailedToCreate("".to_owned()),
-            EventLoopAction::Normal,
-            DatatypeAction::Normal,
-        )
     }
 
     #[rstest]
@@ -478,8 +459,7 @@ mod tests_local_datatype_server {
 
         if pre_create {
             wired_interceptor1
-                .set_before_push(|_push| {})
-                .set_after_pull(|_pull| Err(make_create_error()));
+                .set_after_pull(|_pull| Err(ConnectivityError::TimedOut("".to_owned()).to_datatype_error().mapping()));
             let _ = counter1.sync();
             assert!(server.read().created);
         }
@@ -508,9 +488,9 @@ mod tests_local_datatype_server {
         if let Some(ref sppe) = *expected_error {
             let err = sync_result.unwrap_err();
             if matches!(sppe, ServerPushPullError::FailedByReadonlyRestriction) {
-                assert!(matches!(err, DatatypeError::Disallowed(_)));
+                assert!(matches!(err, DatatypeError::ReadonlyViolation));
             } else {
-                assert!(matches!(err, DatatypeError::FailedToCreate(_)));
+                assert!(matches!(err, DatatypeError::ServerRejected(_)));
             }
             assert_eq!(counter1.get_state(), DatatypeState::Disabled);
         } else {
@@ -527,13 +507,13 @@ mod tests_local_datatype_server {
     #[case::not_created(
         false,
         push_no_change,
-        Some(ServerPushPullError::FailedToSubscribe("".to_string())),
+        Some(ServerPushPullError::FailedByResourceNotFound("".to_string())),
         CheckPoint::new(0, 0),
     )]
     #[case::type_mismatch(
         true,
         push_set_variable_type,
-        Some(ServerPushPullError::FailedToSubscribe("".to_string())),
+        Some(ServerPushPullError::FailedByResourceNotFound("".to_string())),
         CheckPoint::new(0, 0),
     )]
     #[case::with_transactions(
@@ -601,9 +581,9 @@ mod tests_local_datatype_server {
         if let Some(ref sppe) = *expected_error {
             let err = sync_result.unwrap_err();
             if matches!(sppe, ServerPushPullError::FailedByIllegalRequest(_)) {
-                assert!(matches!(err, DatatypeError::FailedByProtocolViolation(_)));
+                assert!(matches!(err, DatatypeError::ServerRejected(_)));
             } else {
-                assert!(matches!(err, DatatypeError::FailedToSubscribe(_)));
+                assert!(matches!(err, DatatypeError::ServerRejected(_)));
             }
             assert_eq!(counter2.get_state(), DatatypeState::Disabled);
         } else {
@@ -650,7 +630,7 @@ mod tests_local_datatype_server {
 
         assert!(matches!(
             counter.sync().unwrap_err(),
-            DatatypeError::Disallowed(_)
+            DatatypeError::ReadonlyViolation
         ));
         assert_eq!(counter.get_state(), DatatypeState::Disabled);
         assert!(
@@ -784,7 +764,7 @@ mod tests_local_datatype_server {
     fn check_error(expected_error: Arc<Option<ServerPushPullError>>, counter: &Counter) {
         let sync_result = counter.sync();
         if expected_error.is_some() {
-            assert!(matches!(sync_result.unwrap_err(), DatatypeError::Disallowed(_)));
+            assert!(matches!(sync_result.unwrap_err(), DatatypeError::ReadonlyViolation));
             assert_eq!(counter.get_state(), DatatypeState::Disabled);
         } else {
             assert!(sync_result.is_ok());
@@ -929,12 +909,12 @@ mod tests_local_datatype_server {
         // Simulate the server losing the client's subscription (e.g., after a server restart).
         connectivity.remove_client_subscription(&resource_id, &client1.get_cuid());
 
-        // The next sync must fail with FailedToSubscribe and trigger a Restart action.
+        // The next sync must fail with ServerRejected and disable the datatype.
         let result = counter1.sync();
-        assert!(matches!(result.unwrap_err(), DatatypeError::FailedToSubscribe(_)));
+        assert!(matches!(result.unwrap_err(), DatatypeError::ServerRejected(_)));
         awaitility::at_most(Duration::from_secs(1))
             .poll_interval(Duration::from_micros(100))
-            .until(|| counter1.get_state() == DatatypeState::SubscribingOrCreating);
+            .until(|| counter1.get_state() == DatatypeState::Disabled);
     }
 
     #[test]
@@ -994,7 +974,7 @@ mod tests_local_datatype_server {
         let result = counter.sync();
         assert!(matches!(
             result.unwrap_err(),
-            DatatypeError::FailedByProtocolViolation(_)
+            DatatypeError::ServerRejected(_)
         ));
         assert_eq!(counter.get_state(), DatatypeState::Disabled);
     }
@@ -1024,7 +1004,7 @@ mod tests_local_datatype_server {
         let result = counter.sync();
         assert!(matches!(
             result.unwrap_err(),
-            DatatypeError::FailedByProtocolViolation(_)
+            DatatypeError::ServerRejected(_)
         ));
         assert_eq!(counter.get_state(), DatatypeState::Disabled);
     }
@@ -1064,15 +1044,16 @@ mod tests_local_datatype_server {
             .clone();
         connectivity.remove_client_subscription(&resource_id, &creator_cuid);
 
-        // A new subscriber must receive FailedToSubscribe (PauseSync + Disable),
-        // not ConnectivityError (which would cause infinite BackOff retries).
+        // A new subscriber receives FailedByServerInternalError → SyncFailed (BackOff + Normal).
+        // The server does not override the state, so the client remains in Subscribing and
+        // retries with exponential backoff.
         let client3 = Client::builder(collection.clone(), "new-subscriber")
             .with_connectivity(connectivity.clone())
             .build()
             .unwrap();
         let counter3 = client3.subscribe_datatype(key.clone()).build_counter().unwrap();
         let result = counter3.sync();
-        assert!(matches!(result.unwrap_err(), DatatypeError::FailedToSubscribe(_)));
-        assert_eq!(counter3.get_state(), DatatypeState::Disabled);
+        assert!(matches!(result.unwrap_err(), DatatypeError::SyncFailed(_)));
+        assert_eq!(counter3.get_state(), DatatypeState::Subscribing);
     }
 }

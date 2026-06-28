@@ -73,7 +73,7 @@ impl WiredDatatype {
                 mutable.set_state(DatatypeState::SubscribingOrCreating);
             }
             DatatypeAction::Disable => self.mutable.write().disable(),
-            DatatypeAction::Reset => {
+            DatatypeAction::Rollback => {
                 self.mutable.write().do_rollback();
             }
         }
@@ -132,7 +132,7 @@ impl WiredDatatype {
         #[cfg_attr(not(test), allow(unused_mut))]
         let mut pulled_ppp = connectivity
             .push_pull(&pushing_ppp)
-            .map_err(|e| e.mapping())?;
+            .map_err(|e| e.to_datatype_error().mapping())?;
 
         #[cfg(test)]
         self.interceptor.after_pull(&mut pulled_ppp)?;

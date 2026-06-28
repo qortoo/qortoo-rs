@@ -311,7 +311,7 @@ mod tests_client {
         assert!(client2.get_datatype(&key).is_some());
         assert!(matches!(
             counter.sync().unwrap_err(),
-            crate::DatatypeError::FailedToCreate(_)
+            crate::DatatypeError::ServerRejected(_)
         ));
 
         assert_eq!(counter.get_state(), DatatypeState::Disabled);
@@ -336,7 +336,7 @@ mod tests_client {
         assert!(client.get_datatype(&key).is_some());
         assert!(matches!(
             counter.sync().unwrap_err(),
-            crate::DatatypeError::FailedToSubscribe(_)
+            crate::DatatypeError::ServerRejected(_)
         ));
 
         assert_eq!(counter.get_state(), DatatypeState::Disabled);
