@@ -36,6 +36,7 @@ Each datatype is composed of five layers stacked vertically. A user operation pa
 | [Datatype State](datatype-state.md) | `DatatypeState` lifecycle, write access, sync intent states, and unsubscribe cleanup |
 | [Transaction and Rollback](transaction-and-rollback.md) | `TxRecord` structure, transaction lifecycle, and inverse-operation rollback |
 | [Event Loop](event-loop.md) | Priority-based event processing, channel types, and exponential backoff behavior |
+| [Error Handling](error-handling.md) | Error taxonomy, `RecoveryAction` routing, and sync-path vs commit-path recovery |
 | [Observability](observability.md) | Tracing, log layer, Prometheus metrics, and Pyroscope profiling integration |
 
 ## Usage Guides
@@ -46,7 +47,6 @@ Each datatype is composed of five layers stacked vertically. A user operation pa
 | Client and DatatypeBuilder | TBD — `Client` builder pattern, collection scoping, and datatype registration |
 | Datatypes Reference | TBD — Counter API; planned `Variable` and `Map` types |
 | Connectivity Backends | TBD — `NullConnectivity`, `LocalConnectivity`, and implementing a custom backend |
-| Error Handling | TBD — Error types, `DatatypeErrorWithActions`, `EventLoopAction`, and recovery strategies |
 | Handler System | TBD — `DatatypeHandler`, `HandlersManager`, priority-based callback dispatch |
 | Testing Guide | TBD — Test macros, `LocalConnectivity` realtime pitfall, and async test patterns |
 

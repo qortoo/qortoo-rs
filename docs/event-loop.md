@@ -63,26 +63,29 @@ pub enum Event {
 
 ---
 
-## EventLoopAction States
+## LoopMode States
 
-The event loop tracks its current sync policy via `EventLoopAction`.
+The event loop tracks its scheduling mode via `LoopMode`, a loop-private enum derived
+from the routed `RecoveryAction` (`impl From<RecoveryAction> for LoopMode`). The routing
+decision lives in `RecoveryAction` (see [`docs/error-handling.md`](error-handling.md));
+`LoopMode` only tracks how the loop schedules the next sync attempt.
 
 ```mermaid
 flowchart LR
     N(["Normal"])
     B(["BackOff"])
-    P(["PauseSync"])
+    S(["Stopped"])
 
-    N -->|"error: BackOff"| B
-    N -->|"error: PauseSync"| P
+    N -->|"error: RetryWithBackOff"| B
+    N -->|"error: Disable"| S
     B -->|"timer expires or\nexplicit sync() succeeds"| N
 ```
 
-| State | Behavior |
-|-------|----------|
+| Mode | Behavior |
+|------|----------|
 | `Normal` | Auto-push allowed; both channels polled |
 | `BackOff` | Auto-push blocked; only `unbounded_rx` polled; retries after timeout |
-| `PauseSync` | Auto-push blocked; any `PushTransaction` immediately returns an error |
+| `Stopped` | Auto-push blocked; any `PushTransaction` immediately returns an error |
 
 ---
 
@@ -93,22 +96,22 @@ flowchart LR
 ```mermaid
 flowchart TD
     RE["receive_event()"]
-    State{"EventLoopAction?"}
+    State{"LoopMode?"}
 
     AutoPush["[Normal] push_if_needed &&\nwired.push_if_needed()\n→ return Ok(Event::PushTransaction(None))"]
 
     BOSelect["[BackOff]\ncompute next backoff duration\ncrossbeam select!"]
     BOUnbounded["recv(unbounded_rx)\n→ handle immediately\n(Stop, explicit sync, Notify)"]
-    BOTimer["default(duration)\n→ timer expired\n→ return Ok(Event::BackOff)"]
+    BOTimer["default(duration)\n→ timer expired\n→ loop_mode = Normal\n→ return Ok(Event::BackOff)"]
 
-    NPSelect["[Normal / PauseSync]\ncrossbeam select!"]
+    NPSelect["[Normal / Stopped]\ncrossbeam select!"]
     NPUnbounded["recv(unbounded_rx) → handle"]
     NPBounded["recv(bounded_rx) → handle"]
 
     RE --> State
     State -->|"Normal (push needed)"| AutoPush
     State -->|"BackOff"| BOSelect
-    State -->|"Normal / PauseSync\n(no push needed)"| NPSelect
+    State -->|"Normal / Stopped\n(no push needed)"| NPSelect
     BOSelect --> BOUnbounded
     BOSelect --> BOTimer
     NPSelect --> NPUnbounded
@@ -126,11 +129,11 @@ flowchart TD
 ```mermaid
 flowchart TD
     PT["PushTransaction(resp_tx)"]
-    Pause{"[PauseSync]?"}
+    Pause{"[Stopped]?"}
     PauseErr["immediately return error\n→ process_blocking_resp()"]
     PushPull["wired.push_pull()"]
-    Ok["Ok\nevent_loop_action = Normal\nbackoff = None\nprocess_blocking_resp(None)"]
-    Err["Err(DatatypeErrorWithActions)\nevent_loop_action = dewa.event_loop_action\nwired.handle_error(error, datatype_action)\nprocess_blocking_resp(Some(error))"]
+    Ok["Ok\nloop_mode = Normal\nbackoff = None\nprocess_blocking_resp(None)"]
+    Err["Err(DatatypeErrorWithAction)\nloop_mode = LoopMode::from(dewa.recovery)\nwired.handle_error(error, recovery)\nprocess_blocking_resp(Some(error))"]
 
     PT --> Pause
     Pause -->|"Yes"| PauseErr
@@ -185,7 +188,7 @@ Exponential backoff is implemented via `backon::ExponentialBuilder`.
 | Max retry count | Unlimited |
 | Growth factor | Exponential (×2) |
 
-**BackOff entry**: Transient errors such as `ClientPushPullError::FailedInConnectivity` map to `EventLoopAction::BackOff` via `.mapping()`.
+**BackOff entry**: Transient errors such as `DatatypeError::SyncFailed` (connectivity timeout, server internal error) map to `RecoveryAction::RetryWithBackOff` via `.mapping()`, which the loop derives into `LoopMode::BackOff`.
 
 **BackOff exit**:
 - Explicit `sync()` succeeds (via unbounded channel, bypasses wait)
@@ -193,18 +196,25 @@ Exponential backoff is implemented via `backon::ExponentialBuilder`.
 
 ---
 
-## DatatypeAction — Post-Error State Transitions
+## RecoveryAction — Post-Error Side Effects
 
-On push_pull failure, `DatatypeErrorWithActions.datatype_action` determines the datatype state change.
+On push_pull failure, `DatatypeErrorWithAction.recovery` determines both the loop's next
+scheduling mode (`LoopMode::from(recovery)`) and the datatype state change
+(`wired.handle_error` → `MutableDatatype::apply_action`). The full routing table lives
+in [`docs/error-handling.md`](error-handling.md); for the datatype lifecycle and
+write-access rules, see [`docs/datatype-state.md`](datatype-state.md).
 
-For the full datatype lifecycle and write-access rules, see [`docs/datatype-state.md`](datatype-state.md).
+| RecoveryAction | Lifecycle effect | LoopMode |
+|----------------|------------------|----------|
+| `NotifyOnly` *(reserved)* | None — `on_error` only | `Normal` |
+| `RetryWithBackOff` | No state change | `BackOff` |
+| `Resubscribe` *(reserved)* | `reset()` + transition to `SubscribingOrCreating` | `Normal` |
+| `ResubscribeWithBackOff` *(reserved)* | Same as `Resubscribe` | `BackOff` |
+| `Disable` | Transition to `Disabled` (sync permanently stopped) | `Stopped` |
 
-| Action | Effect |
-|--------|--------|
-| `Normal` | No state change |
-| `Restart` | Transition to `SubscribingOrCreating` (reconnect attempt) |
-| `Disable` | Transition to `Disabled` (sync permanently stopped) |
-| `Reset` | Call `do_rollback()` to undo the pending local transaction; the next sync cycle re-fetches state from the server |
+`RecoveryAction::RollbackTransaction` never reaches the event loop — it is consumed on
+the user thread by `TransactionalDatatype::end_transaction()` (guarded by a
+`debug_assert` in `LoopMode::from`).
 
 ## Unsubscribe Lifecycle
 
