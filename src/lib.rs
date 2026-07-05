@@ -68,7 +68,6 @@ pub use crate::{
     errors::{
         BoxedError,
         clients::ClientError,
-        connectivity::ConnectivityError,
         datatypes::{DatatypeError, ServerRejectReason},
     },
     types::{

@@ -3,13 +3,19 @@ use std::{collections::VecDeque, fmt::Display, sync::Arc};
 use crate::{
     DatatypeError,
     datatypes::option::DatatypeOption,
-    errors::datatypes::InternalReason,
+    errors::datatypes::{DatatypeErrorWithAction, InternalReason},
     operations::{MemoryMeasurable, transaction::Transaction},
 };
 
 #[allow(dead_code)]
 pub trait PushBuffer {
-    fn enqueue(&mut self, tx: Arc<Transaction>) -> Result<(), DatatypeError>;
+    /// Enqueues a committed transaction.
+    ///
+    /// Errors are returned with their routing actions already resolved, because the
+    /// `NonSequentialCseq` reason would lose its routing override once erased into
+    /// `DatatypeError::Internal`. The routing pairs themselves are still defined in the
+    /// errors module (`InternalReason::mapping` / `DatatypeError::mapping`).
+    fn enqueue(&mut self, tx: Arc<Transaction>) -> Result<(), DatatypeErrorWithAction>;
     fn get_pushing_transactions(
         &mut self,
         cseq: u64,
@@ -55,12 +61,12 @@ impl MemoryPushBuffer {
 }
 
 impl PushBuffer for MemoryPushBuffer {
-    fn enqueue(&mut self, tx: Arc<Transaction>) -> Result<(), DatatypeError> {
+    fn enqueue(&mut self, tx: Arc<Transaction>) -> Result<(), DatatypeErrorWithAction> {
         if self.last_cseq != 0 && self.last_cseq + 1 != tx.cseq {
-            return Err(InternalReason::NonSequentialCseq.into_error());
+            return Err(InternalReason::NonSequentialCseq.mapping());
         }
         if self.mem_size + tx.size() > self.option.max_mem_size_of_push_buffer {
-            return Err(DatatypeError::PushBufferExceededMaxMemSize);
+            return Err(DatatypeError::PushBufferExceededMaxMemSize.mapping());
         }
         if self.first_cseq == 0 {
             self.first_cseq = tx.cseq;
@@ -190,14 +196,17 @@ mod tests_push_buffer {
         let cseq2 = op_id2.next_cseq();
         let tx_not_sequential = Arc::new(Transaction::new(&op_id2.cuid, cseq2));
         let result = push_buffer.enqueue(tx_not_sequential);
-        assert!(matches!(result.unwrap_err(), DatatypeError::Internal(_)));
+        assert!(matches!(
+            result.unwrap_err().error,
+            DatatypeError::Internal(_)
+        ));
 
         loop {
             let cseq = op_id.next_cseq();
             let tx = Arc::new(Transaction::new(&op_id.cuid, cseq));
             if push_buffer.mem_size + tx.size() > MAX_SIZE {
                 assert_eq!(
-                    push_buffer.enqueue(tx).unwrap_err(),
+                    push_buffer.enqueue(tx).unwrap_err().error,
                     DatatypeError::PushBufferExceededMaxMemSize
                 );
                 break;

@@ -1,22 +1,45 @@
 use thiserror::Error;
 
-
 /// Internal SDK error reason, used by the event loop for action routing.
 ///
 /// Not exposed to users. Internal callers use this to construct `DatatypeError::Internal`
 /// via `into_error()`.
 #[derive(Debug, Error)]
 pub(crate) enum InternalReason {
+    /// A server snapshot could not be deserialized into the CRDT.
+    ///
+    /// Route: `apply_snapshot_transaction()` → `pull_handler::apply_subscribe_response()`
+    /// → `mapping()` → `RecoveryAction::Disable`.
     #[error("deserialize: {0}")]
     Deserialize(String),
+    /// A CRDT operation failed to execute.
+    ///
+    /// Routes:
+    /// - remote: `execute_transactions()` → `mapping()` → `RecoveryAction::Disable`
+    /// - local: returned directly to the user API caller (does not reach the event loop)
     #[error("execute operation: {0}")]
     ExecuteOperation(String),
+    /// An event-loop channel operation failed.
+    ///
+    /// Routes:
+    /// - `receive_event()` Err → `handle_error(_, RecoveryAction::Disable)` directly,
+    ///   bypassing `mapping()` (the loop is stopping anyway)
+    /// - send/response failures and stopped-loop rejections: returned directly to the
+    ///   API caller (e.g., `sync()`), without event-loop routing
     #[error("event loop: {0}")]
     EventLoop(String),
     /// Cseq was non-sequential in the push buffer.
-    /// Requires `Normal + Rollback` instead of the default `StopSync + Disable`.
+    ///
+    /// Routed at the enqueue site via [`InternalReason::mapping`] before the reason is
+    /// erased into `DatatypeError::Internal`:
+    /// `enqueue()` → `end_transaction()` → `RecoveryAction::RollbackTransaction`
+    /// (the unbuffered transaction is rolled back and the datatype stays alive).
     #[error("non-sequential cseq in push buffer")]
     NonSequentialCseq,
+    /// The push buffer could not provide the transactions to push (cseq out of range).
+    ///
+    /// Route: `create_push_pull_pack()` → `do_push_pull()` → `mapping()`
+    /// → `RecoveryAction::Disable`.
     #[error("failed to get pushing transactions")]
     GetPushingTransactions,
 }
@@ -25,6 +48,24 @@ impl InternalReason {
     /// Converts to `DatatypeError::Internal` with the formatted reason message.
     pub(crate) fn into_error(self) -> DatatypeError {
         DatatypeError::Internal(self.to_string())
+    }
+
+    /// Converts this reason into its recovery action.
+    ///
+    /// `into_error()` erases the reason into `DatatypeError::Internal(String)`, so a variant
+    /// that needs a routing other than the `Internal` default (`RecoveryAction::Disable`) must
+    /// be mapped here, at its creation site, before the erasure. All other variants delegate to
+    /// [`DatatypeError::mapping`], which remains the single source of truth per error variant.
+    pub(crate) fn mapping(self) -> DatatypeErrorWithAction {
+        match self {
+            InternalReason::NonSequentialCseq => {
+                DatatypeErrorWithAction::new(self.into_error(), RecoveryAction::RollbackTransaction)
+            }
+            InternalReason::Deserialize(_)
+            | InternalReason::ExecuteOperation(_)
+            | InternalReason::EventLoop(_)
+            | InternalReason::GetPushingTransactions => self.into_error().mapping(),
+        }
     }
 }
 
@@ -96,32 +137,40 @@ pub enum DatatypeError {
 }
 
 impl DatatypeError {
-    /// Converts this error into event-loop routing actions.
+    /// Converts this error into its recovery action.
     ///
     /// This is the single source of truth for action routing. Variants handled here:
-    /// - `SyncFailed`       — transient connectivity failure → retry with backoff
-    /// - `Internal`         — fatal SDK-internal fault → stop sync, disable
-    /// - `ServerRejected`   — server permanently rejected the operation → stop sync, disable
-    /// - `ReadonlyViolation`— server rejected a write from a readonly client → stop sync, disable
+    /// - `SyncFailed`       — transient connectivity failure → `RetryWithBackOff`
+    /// - `Internal`         — fatal SDK-internal fault → `Disable`
+    ///   (reason-level overrides live in [`InternalReason::mapping`])
+    /// - `ServerRejected`   — server permanently rejected the operation → `Disable`
+    /// - `ReadonlyViolation`— server rejected a write from a readonly client → `Disable`
+    /// - `PushBufferExceededMaxMemSize` — the transaction cannot be buffered
+    ///   → `RollbackTransaction`
     ///
     /// Variants that are returned directly to API callers must never reach this method.
-    pub(crate) fn mapping(self) -> DatatypeErrorWithActions {
+    pub(crate) fn mapping(self) -> DatatypeErrorWithAction {
         match self {
             DatatypeError::SyncFailed(_) => {
-                DatatypeErrorWithActions::new(self, EventLoopAction::BackOff, DatatypeAction::Normal)
+                DatatypeErrorWithAction::new(self, RecoveryAction::RetryWithBackOff)
             }
             DatatypeError::Internal(_)
             | DatatypeError::ServerRejected(_)
             | DatatypeError::ReadonlyViolation => {
-                DatatypeErrorWithActions::new(self, EventLoopAction::StopSync, DatatypeAction::Disable)
+                DatatypeErrorWithAction::new(self, RecoveryAction::Disable)
+            }
+            DatatypeError::PushBufferExceededMaxMemSize => {
+                DatatypeErrorWithAction::new(self, RecoveryAction::RollbackTransaction)
             }
             // These variants are returned directly to API callers and are never routed through
             // the event loop. Reaching here indicates a misrouted error.
             DatatypeError::TransactionFailed(_)
             | DatatypeError::Disallowed(_)
-            | DatatypeError::NotWritable(_)
-            | DatatypeError::PushBufferExceededMaxMemSize => {
-                unreachable!("variant {:?} must not be routed through DatatypeError::mapping()", self)
+            | DatatypeError::NotWritable(_) => {
+                unreachable!(
+                    "variant {:?} must not be routed through DatatypeError::mapping()",
+                    self
+                )
             }
         }
     }
@@ -138,40 +187,52 @@ impl PartialEq for DatatypeError {
 // sound because the custom PartialEq above is discriminant-only, so reflexivity always holds.
 impl Eq for DatatypeError {}
 
-pub enum EventLoopAction {
-    Normal,
-    BackOff,
-    StopSync,
-}
-
-#[derive(Debug, PartialEq)]
-pub enum DatatypeAction {
-    Normal,
-    // set the datatype state to 'SubscribingOrCreating' so that the datatype should restart sync.
-    Restart,
-    // set the datatype state to 'Disabled' so that the datatype should stop sync.
+/// How the SDK recovers from a routed datatype error.
+///
+/// Each variant is a self-consistent recovery policy: it bundles the event-loop scheduling
+/// effect and the datatype-lifecycle side effect that must occur together. Contradictory
+/// pairings of the two effects (e.g., disabling the datatype while keeping sync scheduled)
+/// are unrepresentable by construction.
+///
+/// Consumers dispatch exhaustively:
+/// - event-loop scheduling: `LoopMode` derivation in `event_loop.rs`
+/// - datatype side effect: `MutableDatatype::apply_action()`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecoveryAction {
+    /// Notify the `on_error` handler only; no state change and no scheduling change.
+    ///
+    /// Reserved: no producer yet.
+    NotifyOnly,
+    /// Transient failure: retry sync with exponential backoff; the datatype is untouched.
+    RetryWithBackOff,
+    /// Commit-time failure: roll back the pending transaction; sync is unaffected.
+    ///
+    /// Consumed on the user thread by `TransactionalDatatype::end_transaction()`;
+    /// never routed through the event loop.
+    RollbackTransaction,
+    /// Rebuild the replica: reset local state and re-subscribe from a server snapshot
+    /// on the next sync.
+    ///
+    /// Reserved: no producer yet. WARNING: the reset discards unpushed transactions in the
+    /// push buffer — a local data-loss policy must be decided before wiring a producer.
+    Resubscribe,
+    /// Same as [`RecoveryAction::Resubscribe`], but waits with exponential backoff first
+    /// (e.g., the server is temporarily unavailable).
+    ///
+    /// Reserved: no producer yet. Carries the same data-loss warning as `Resubscribe`.
+    ResubscribeWithBackOff,
+    /// Permanent failure: stop syncing and disable the datatype; user intervention required.
     Disable,
-    // rolls back the in-progress transaction, leaving the datatype state unchanged.
-    Rollback,
 }
 
-pub struct DatatypeErrorWithActions {
+#[derive(Debug)]
+pub struct DatatypeErrorWithAction {
     pub error: DatatypeError,
-    pub event_loop_action: EventLoopAction,
-    pub datatype_action: DatatypeAction,
+    pub recovery: RecoveryAction,
 }
 
-impl DatatypeErrorWithActions {
-    pub(crate) fn new(
-        error: DatatypeError,
-        event_loop_action: EventLoopAction,
-        datatype_action: DatatypeAction,
-    ) -> Self {
-        DatatypeErrorWithActions {
-            error,
-            event_loop_action,
-            datatype_action,
-        }
+impl DatatypeErrorWithAction {
+    pub(crate) fn new(error: DatatypeError, recovery: RecoveryAction) -> Self {
+        DatatypeErrorWithAction { error, recovery }
     }
 }
-

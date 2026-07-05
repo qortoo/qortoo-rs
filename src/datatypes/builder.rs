@@ -219,7 +219,7 @@ mod tests_datatype_builder {
         // Write operations should fail
         assert!(matches!(
             counter.increase().unwrap_err(),
-            DatatypeError::NotWritable(_) 
+            DatatypeError::NotWritable(_)
         ));
 
         // Transaction should fail — either NotWritable (state not yet synced) or

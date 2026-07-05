@@ -18,7 +18,7 @@ pub enum ConnectivityError {
 }
 
 impl ConnectivityError {
-    pub(crate) fn to_datatype_error(self) -> DatatypeError {
+    pub(crate) fn to_datatype_error(&self) -> DatatypeError {
         match self {
             ConnectivityError::TimedOut(_) => DatatypeError::SyncFailed(self.to_string()),
         }

@@ -12,7 +12,7 @@ use crate::{
     datatypes::wired::WiredDatatype,
     defaults::DEFAULT_EVENT_LOOP_TIMEOUT_MS,
     errors::{
-        datatypes::{DatatypeAction, EventLoopAction, InternalReason},
+        datatypes::{InternalReason, RecoveryAction},
         with_err_out,
     },
     observability::{metrics, trace::add_span_event},
@@ -21,6 +21,38 @@ use crate::{
 
 const BACKOFF_MIN_DELAY: Duration = Duration::from_millis(500);
 const BACKOFF_MAX_DELAY: Duration = Duration::from_secs(30);
+
+/// Event-loop scheduling mode, derived from the routed [`RecoveryAction`].
+///
+/// This is loop-internal state: the routing decision lives in `RecoveryAction`, while
+/// `LoopMode` only tracks how the loop schedules the next sync attempt.
+#[derive(Debug)]
+enum LoopMode {
+    /// Process both channels and push when needed.
+    Normal,
+    /// Only the unbounded channel (manual sync/stop) is processed; a timed retry fires
+    /// when no event arrives within the backoff delay.
+    BackOff,
+    /// PushTransaction events are rejected without calling push_pull.
+    Stopped,
+}
+
+impl From<RecoveryAction> for LoopMode {
+    fn from(recovery: RecoveryAction) -> Self {
+        match recovery {
+            RecoveryAction::NotifyOnly | RecoveryAction::Resubscribe => LoopMode::Normal,
+            RecoveryAction::RetryWithBackOff | RecoveryAction::ResubscribeWithBackOff => {
+                LoopMode::BackOff
+            }
+            RecoveryAction::Disable => LoopMode::Stopped,
+            // Commit-path errors are consumed on the user thread and never reach the loop.
+            RecoveryAction::RollbackTransaction => {
+                debug_assert!(false, "RollbackTransaction must not reach the event loop");
+                LoopMode::Normal
+            }
+        }
+    }
+}
 
 #[derive(Display)]
 pub enum Event {
@@ -85,14 +117,14 @@ impl EventLoop {
         rt_handle.spawn_blocking(move || {
             span.in_scope(|| {
                 add_span_event!("start event_loop");
-                let mut event_loop_action = EventLoopAction::Normal;
+                let mut loop_mode = LoopMode::Normal;
                 let mut backoff = None;
                 loop {
                     match Self::receive_event(
                         &wired,
                         &bounded_rx,
                         &unbounded_rx,
-                        &mut event_loop_action,
+                        &mut loop_mode,
                         &mut backoff,
                     ) {
                         Ok(event) => match event {
@@ -104,29 +136,31 @@ impl EventLoop {
                                 break;
                             }
                             Event::PushTransaction(resp_tx) => {
-                                if matches!(event_loop_action, EventLoopAction::StopSync) {
+                                if matches!(loop_mode, LoopMode::Stopped) {
                                     Self::process_blocking_resp(
                                         resp_tx,
-                                        Some(InternalReason::EventLoop("event loop stopped".into()).into_error()),
+                                        Some(
+                                            InternalReason::EventLoop("event loop stopped".into())
+                                                .into_error(),
+                                        ),
                                     );
                                     continue;
                                 }
                                 let opt_datatype_error = match wired.push_pull() {
                                     Ok(_) => {
-                                        event_loop_action = EventLoopAction::Normal;
+                                        loop_mode = LoopMode::Normal;
                                         None
                                     }
                                     Err(dewa) => {
-                                        event_loop_action = dewa.event_loop_action;
-                                        if matches!(event_loop_action, EventLoopAction::BackOff) {
+                                        loop_mode = LoopMode::from(dewa.recovery);
+                                        if matches!(loop_mode, LoopMode::BackOff) {
                                             metrics::emit_backoff(&wired.attr);
                                         }
-                                        wired
-                                            .handle_error(dewa.error.clone(), dewa.datatype_action);
+                                        wired.handle_error(dewa.error.clone(), dewa.recovery);
                                         Some(dewa.error)
                                     }
                                 };
-                                if !matches!(event_loop_action, EventLoopAction::BackOff) {
+                                if !matches!(loop_mode, LoopMode::BackOff) {
                                     backoff = None;
                                 }
                                 Self::process_blocking_resp(resp_tx, opt_datatype_error);
@@ -140,7 +174,7 @@ impl EventLoop {
                             }
                         },
                         Err(err) => {
-                            wired.handle_error(err, DatatypeAction::Disable);
+                            wired.handle_error(err, RecoveryAction::Disable);
                         }
                     }
                 }
@@ -165,13 +199,13 @@ impl EventLoop {
         wired: &WiredDatatype,
         bounded_rx: &Receiver<Event>,
         unbounded_rx: &Receiver<Event>,
-        event_loop_action: &mut EventLoopAction,
+        loop_mode: &mut LoopMode,
         backoff: &mut Option<ExponentialBackoff>,
     ) -> Result<Event, DatatypeError> {
-        let (push_if_needed, backoff_duration) = match event_loop_action {
-            EventLoopAction::Normal => (true, None),
-            EventLoopAction::StopSync => (false, None),
-            EventLoopAction::BackOff => {
+        let (push_if_needed, backoff_duration) = match loop_mode {
+            LoopMode::Normal => (true, None),
+            LoopMode::Stopped => (false, None),
+            LoopMode::BackOff => {
                 let backoff_iter = backoff.get_or_insert_with(Self::build_backoff);
                 let d = backoff_iter.next().unwrap_or(BACKOFF_MAX_DELAY);
                 (false, Some(d))
@@ -193,7 +227,7 @@ impl EventLoop {
                 // only unbounded_rx is allowed to receive events during backoff for STOP or explicit sync event
                 recv(unbounded_rx) -> event => event.map_err(|e| map_err(e, "unbounded")),
                 default(duration) => {
-                    *event_loop_action = EventLoopAction::Normal;
+                    *loop_mode = LoopMode::Normal;
                     Ok(Event::BackOff)
                 }
             }
@@ -254,7 +288,8 @@ impl EventLoop {
                 Ok(None) => Ok(()),
                 Err(e) => Err(InternalReason::EventLoop(format!(
                     "failed to receive response of sync(): {e}"
-                )).into_error()),
+                ))
+                .into_error()),
             }
         })
     }
@@ -276,15 +311,15 @@ mod tests_event_loop {
         Client, DatatypeError, DatatypeState, ServerRejectReason,
         connectivity::local_connectivity::LocalConnectivity,
         datatypes::datatype::Datatype,
-        errors::datatypes::DatatypeErrorWithActions,
+        errors::datatypes::DatatypeErrorWithAction,
         utils::test_utils::{get_test_collection_name, get_test_func_name, get_test_ids},
     };
 
-    fn make_backoff_error() -> DatatypeErrorWithActions {
+    fn make_backoff_error() -> DatatypeErrorWithAction {
         DatatypeError::SyncFailed("injected".to_string()).mapping()
     }
 
-    fn make_pause_sync_error() -> DatatypeErrorWithActions {
+    fn make_pause_sync_error() -> DatatypeErrorWithAction {
         DatatypeError::ServerRejected(ServerRejectReason::ProtocolViolation(
             "injected".to_string(),
         ))
@@ -310,12 +345,12 @@ mod tests_event_loop {
             .get_wired_interceptor(&resource_id, &client.get_cuid())
             .unwrap();
 
-        // inject SyncFailed → maps to EventLoopAction::BackOff, DatatypeAction::Normal
+        // inject SyncFailed → maps to RecoveryAction::RetryWithBackOff
         interceptor.set_after_pull(|_| Err(make_backoff_error()));
 
         let err = counter.sync().unwrap_err();
         assert!(matches!(err, DatatypeError::SyncFailed(_)));
-        // DatatypeAction::Normal → no state change
+        // RetryWithBackOff leaves the datatype untouched → no state change
         assert_eq!(counter.get_state(), DatatypeState::Creating);
 
         // explicit sync() sends to unbounded channel → bypasses 500ms BackOff wait

@@ -11,10 +11,10 @@ use crossbeam_channel::Sender;
 use parking_lot::RwLock;
 
 use crate::{
-    ConnectivityError, DatatypeState,
+    DatatypeState,
     connectivity::{Connectivity, local_datatype_server::LocalDatatypeServer},
     datatypes::{event_loop::Event, wired::WiredDatatype},
-    errors::push_pull::ServerPushPullError,
+    errors::{connectivity::ConnectivityError, push_pull::PushPullError},
     types::{common::ResourceID, push_pull_pack::PushPullPack},
 };
 
@@ -183,7 +183,7 @@ impl Connectivity for LocalConnectivity {
 
         let Some(server_with_lock) = self.get_local_datatype_server(&resource_id) else {
             let mut pulled = pushed.get_pulled_stub();
-            pulled.error = Some(ServerPushPullError::FailedByResourceNotFound(resource_id.clone()));
+            pulled.error = Some(PushPullError::ResourceNotFound(resource_id.clone()));
             pulled.state = DatatypeState::Disabled;
             return Ok(pulled);
         };

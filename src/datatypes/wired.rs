@@ -12,7 +12,7 @@ use crate::{
         push_buffer::PushBuffer,
     },
     defaults,
-    errors::datatypes::{DatatypeAction, DatatypeErrorWithActions},
+    errors::datatypes::{DatatypeErrorWithAction, RecoveryAction},
     observability::{metrics, trace::add_span_event},
     operations::transaction::Transaction,
     types::{notification::Notification, push_pull_pack::PushPullPack, uid::Cuid},
@@ -64,19 +64,8 @@ impl WiredDatatype {
         true
     }
 
-    pub fn handle_error(&self, err: DatatypeError, action: DatatypeAction) {
-        match action {
-            DatatypeAction::Normal => {}
-            DatatypeAction::Restart => {
-                let mut mutable = self.mutable.write();
-                mutable.reset();
-                mutable.set_state(DatatypeState::SubscribingOrCreating);
-            }
-            DatatypeAction::Disable => self.mutable.write().disable(),
-            DatatypeAction::Rollback => {
-                self.mutable.write().do_rollback();
-            }
-        }
+    pub fn handle_error(&self, err: DatatypeError, recovery: RecoveryAction) {
+        self.mutable.write().apply_action(recovery);
         self.mutable.read().call_error_handler(err);
     }
 
@@ -109,14 +98,14 @@ impl WiredDatatype {
     }
 
     #[instrument(skip_all)]
-    pub fn push_pull(&self) -> Result<(), DatatypeErrorWithActions> {
+    pub fn push_pull(&self) -> Result<(), DatatypeErrorWithAction> {
         let start = std::time::Instant::now();
         let result = self.do_push_pull();
         metrics::emit_sync(&self.attr, result.is_ok(), start.elapsed());
         result
     }
 
-    fn do_push_pull(&self) -> Result<(), DatatypeErrorWithActions> {
+    fn do_push_pull(&self) -> Result<(), DatatypeErrorWithAction> {
         let connectivity = &self.attr.client_common.connectivity;
 
         #[cfg_attr(not(test), allow(unused_mut))]

@@ -5,7 +5,7 @@ use crate::operations::body::OperationBody;
 use crate::{
     DataType, DatatypeError,
     datatypes::{common::ReturnType, crdts::counter_crdt::CounterCrdt},
-    errors::{datatypes::InternalReason, with_err_out},
+    errors::datatypes::InternalReason,
     operations::Operation,
 };
 
@@ -72,19 +72,20 @@ impl Crdt {
         }
     }
 
-    pub fn deserialize(&mut self, serialized: &[u8]) {
+    pub fn deserialize(&mut self, serialized: &[u8]) -> Result<(), DatatypeError> {
         match self {
             Self::Counter(c) => {
                 if serialized.len() != 8 {
-                    with_err_out!(InternalReason::Deserialize(format!(
-                        "counter crdt: {serialized:?}, and will recover to counter value 0"
-                    )).into_error());
-                    *c = CounterCrdt::default();
-                    return;
+                    return Err(InternalReason::Deserialize(format!(
+                        "counter crdt: expected 8 bytes, got {}",
+                        serialized.len()
+                    ))
+                    .into_error());
                 }
                 let mut array = [0u8; 8];
                 array.copy_from_slice(serialized);
-                *c = CounterCrdt::from_bytes(&array)
+                *c = CounterCrdt::from_bytes(&array);
+                Ok(())
             }
         }
     }
@@ -93,7 +94,7 @@ impl Crdt {
 #[cfg(test)]
 mod tests_crdts {
     use crate::{
-        DataType,
+        DataType, DatatypeError,
         datatypes::crdts::{Crdt, counter_crdt::CounterCrdt},
     };
 
@@ -105,13 +106,17 @@ mod tests_crdts {
 
         let mut crdt2 = Crdt::new(DataType::Counter);
         let serialized = crdt1.serialize();
-        crdt2.deserialize(&serialized);
+        crdt2.deserialize(&serialized).unwrap();
 
         let Crdt::Counter(c) = &crdt2;
         assert_eq!(c.value(), 100);
-        crdt2.deserialize("{}".as_bytes());
 
+        // Invalid input returns Err; counter value must not change.
+        assert!(matches!(
+            crdt2.deserialize("{}".as_bytes()),
+            Err(DatatypeError::Internal(_))
+        ));
         let Crdt::Counter(c) = &crdt2;
-        assert_eq!(c.value(), 0);
+        assert_eq!(c.value(), 100);
     }
 }

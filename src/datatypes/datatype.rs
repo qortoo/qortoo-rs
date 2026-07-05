@@ -199,9 +199,8 @@ mod tests_datatype_trait {
             .unwrap();
 
         // produce push_pull error
-        interceptor1.set_after_pull(|_pull| {
-            Err(DatatypeError::SyncFailed("injected".into()).mapping())
-        });
+        interceptor1
+            .set_after_pull(|_pull| Err(DatatypeError::SyncFailed("injected".into()).mapping()));
 
         assert!(matches!(
             counter1.sync().unwrap_err(),

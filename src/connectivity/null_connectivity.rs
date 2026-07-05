@@ -6,7 +6,7 @@ use crate::{
     DatatypeState,
     connectivity::Connectivity,
     datatypes::{event_loop::Event, wired::WiredDatatype},
-    errors::{connectivity::ConnectivityError, push_pull::ServerPushPullError},
+    errors::{connectivity::ConnectivityError, push_pull::PushPullError},
     types::push_pull_pack::PushPullPack,
 };
 
@@ -24,7 +24,7 @@ impl NullConnectivity {
     }
 
     fn set_illegal_push_request(&self, pulled: &mut PushPullPack, reason: &str) {
-        pulled.error = Some(ServerPushPullError::FailedByIllegalRequest(reason.to_owned()));
+        pulled.error = Some(PushPullError::ProtocolViolation(reason.to_owned()));
         pulled.state = DatatypeState::Disabled;
     }
 }
@@ -40,7 +40,7 @@ impl Connectivity for NullConnectivity {
         match pushed.state {
             DatatypeState::Creating | DatatypeState::SubscribingOrCreating => {
                 if pushed.is_readonly {
-                    pulled.error = Some(ServerPushPullError::FailedByReadonlyRestriction);
+                    pulled.error = Some(PushPullError::ReadonlyViolation);
                     pulled.state = DatatypeState::Disabled;
                     return Ok(pulled);
                 }
@@ -88,7 +88,7 @@ mod tests_null_connectivity {
         DataType, DatatypeState,
         connectivity::{Connectivity, null_connectivity::NullConnectivity},
         datatypes::common::new_attribute,
-        errors::push_pull::ServerPushPullError,
+        errors::push_pull::PushPullError,
         operations::transaction::Transaction,
         types::{operation_id::OperationId, push_pull_pack::PushPullPack},
     };
@@ -103,7 +103,7 @@ mod tests_null_connectivity {
         let res1 = null_connectivity.push_pull(&pushed1);
         assert!(res1.is_ok());
         let pulled1 = res1.unwrap();
-        assert_eq!(pulled1.error.unwrap(), ServerPushPullError::FailedByReadonlyRestriction);
+        assert_eq!(pulled1.error.unwrap(), PushPullError::ReadonlyViolation);
 
         let mut pushed2 = PushPullPack::new(&attr, DatatypeState::Subscribing);
         let mut op_id = OperationId::new();
@@ -116,7 +116,7 @@ mod tests_null_connectivity {
         let pulled2 = res2.unwrap();
         assert_eq!(
             pulled2.error.unwrap(),
-            ServerPushPullError::FailedByIllegalRequest(String::new())
+            PushPullError::ProtocolViolation(String::new())
         );
 
         let mut pushed3 = PushPullPack::new(&attr, DatatypeState::Unsubscribing);

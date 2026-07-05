@@ -154,9 +154,7 @@ mod tests_metrics {
         let interceptor = connectivity
             .get_wired_interceptor(&resource_id, &client.get_cuid())
             .unwrap();
-        interceptor.set_after_pull(|_| {
-            Err(DatatypeError::SyncFailed("injected".into()).mapping())
-        });
+        interceptor.set_after_pull(|_| Err(DatatypeError::SyncFailed("injected".into()).mapping()));
 
         let _ = counter.sync();
 

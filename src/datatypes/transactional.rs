@@ -12,7 +12,10 @@ use crate::{
         mutable::MutableDatatype,
         wired::WiredDatatype,
     },
-    errors::{datatypes::DatatypeError, with_err_out},
+    errors::{
+        datatypes::{DatatypeError, RecoveryAction},
+        with_err_out,
+    },
     observability::trace::add_span_event,
     operations::Operation,
     utils::{defer_guard::DeferGuard, no_guard_mutex::NoGuardMutex},
@@ -250,9 +253,27 @@ impl TransactionalDatatype {
 
     #[instrument(skip_all)]
     fn end_transaction(&self, tag: Option<String>, committed: bool) {
-        let mut mutable = self.mutable.write();
-        if mutable.end_transaction(tag, committed) {
-            self.event_loop.send_push_transaction_with_best_effort();
+        let error = {
+            let mut mutable = self.mutable.write();
+            match mutable.end_transaction(tag, committed) {
+                Ok(true) => {
+                    self.event_loop.send_push_transaction_with_best_effort();
+                    None
+                }
+                Ok(false) => None,
+                Err(dewa) => {
+                    // This path runs in a defer guard, after the API call has returned, and
+                    // does not go through the event loop: only RollbackTransaction is expected
+                    // here, and the on_error handler is the only way to notify the user.
+                    debug_assert!(matches!(dewa.recovery, RecoveryAction::RollbackTransaction));
+                    mutable.apply_action(dewa.recovery);
+                    Some(dewa.error)
+                }
+            }
+        };
+        if let Some(err) = error {
+            // Notify after releasing the write lock; handlers may re-enter the datatype.
+            self.mutable.read().call_error_handler(err);
         }
         self.tx_ctx.write().take();
         self.tx_mutex.unlock();
@@ -362,14 +383,44 @@ mod tests_transactional {
     use tracing_opentelemetry::OpenTelemetrySpanExt;
 
     use crate::{
-        Client, DataType,
+        Client, DataType, DatatypeState,
         datatypes::{
             common::new_attribute,
+            crdts::Crdt,
             transactional::{TransactionContext, TransactionalDatatype},
         },
         operations::Operation,
         utils::test_utils::{get_test_collection_name, get_test_func_name},
     };
+
+    #[test]
+    #[instrument]
+    fn can_rollback_on_enqueue_failure() {
+        let attr = new_attribute!(DataType::Counter);
+        let tx_dt = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
+        let tx_ctx = Arc::new(TransactionContext::new("non_sequential_cseq"));
+
+        let tx_dt_in_tx = tx_dt.clone();
+        let tx_ctx_in_tx = tx_ctx.clone();
+        let result = tx_dt.do_transaction(tx_ctx, move || {
+            tx_dt_in_tx.execute_local_operation_as_tx(
+                tx_ctx_in_tx.clone(),
+                Operation::new_counter_increase(5),
+            )?;
+            // Corrupt the buffer sequence so the commit-time enqueue fails with
+            // InternalReason::NonSequentialCseq.
+            tx_dt_in_tx.mutable.write().push_buffer.last_cseq = 42;
+            Ok(())
+        });
+        // tx_func itself succeeded; the enqueue failure is routed to Normal + Rollback.
+        assert!(result.is_ok());
+
+        let mutable = tx_dt.mutable.read();
+        let Crdt::Counter(c) = &mutable.crdt;
+        assert_eq!(c.value(), 0);
+        assert_eq!(mutable.op_id.cseq, 0);
+        assert_ne!(mutable.get_state(), DatatypeState::Disabled);
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 10)]
     #[instrument]

@@ -122,8 +122,9 @@ impl HandlersManager {
             rt_handle.spawn(async move {
                 for (priority, handler) in handlers {
                     span.in_scope(|| {
-                        add_span_event!(format!("{event_name} priority={priority}"));
+                        add_span_event!(format!("begin {event_name} priority={priority}"));
                         notify(&handler, ds.clone());
+                        add_span_event!(format!("end {event_name} priority={priority}"));
                     });
                 }
             });
