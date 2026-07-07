@@ -89,10 +89,10 @@ mod tests_datatype_errors {
     fn can_compare_errors() {
         let source_err1 = Error::new(ErrorKind::InvalidData, "source err1");
         let source_err2 = Error::new(ErrorKind::InvalidInput, "source err2");
-        let e1 = DatatypeError::FailedTransaction(source_err1.to_string());
-        let e2 = DatatypeError::FailedTransaction(source_err2.to_string());
-        assert_ne!(e1, e2);
-        let e3 = DatatypeError::FailedToDeserialize("e2".to_string());
+        let e1 = DatatypeError::TransactionFailed(source_err1.to_string());
+        let e2 = DatatypeError::TransactionFailed(source_err2.to_string());
+        assert_eq!(e1, e2); // same variant — payload is ignored by PartialEq
+        let e3 = DatatypeError::Internal("e2".to_string());
         assert_ne!(e2, e3);
         assert!(equal_errors!(&e1, &e2));
         assert!(!equal_errors!(&e1, &e3));
@@ -102,11 +102,9 @@ mod tests_datatype_errors {
 
     #[test]
     fn can_use_err_macro() {
-        let d1 = with_err_out!(DatatypeError::FailedToDeserialize(
-            "datatype error".to_owned()
-        ));
+        let d1 = with_err_out!(DatatypeError::Internal("datatype error".to_owned()));
         let source_err1 = Error::new(ErrorKind::InvalidInput, "source err1");
-        let d2 = with_err_out!(DatatypeError::FailedTransaction(source_err1.to_string()));
+        let d2 = with_err_out!(DatatypeError::TransactionFailed(source_err1.to_string()));
         assert_ne!(d1, d2);
         let c1 = with_err_out!(ClientError::FailedToSubscribeOrCreateDatatype(
             "clients error".into()
@@ -118,6 +116,6 @@ mod tests_datatype_errors {
 
     fn into_next_stack() {
         let err = TrySendError::Full(Event::PushTransaction(None));
-        let _d3 = with_err_out!(DatatypeError::FailedInEventLoop(err.to_string()));
+        let _d3 = with_err_out!(DatatypeError::Internal(err.to_string()));
     }
 }

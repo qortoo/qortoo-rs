@@ -10,7 +10,7 @@ use crate::{
         datatype::DatatypeBlanket,
         transactional::{TransactionContext, TransactionalDatatype},
     },
-    errors::BoxedError,
+    errors::{BoxedError, datatypes::InternalReason},
     operations::Operation,
 };
 
@@ -70,7 +70,7 @@ impl Counter {
         trace!("increased by {delta} -> {ret:?}");
         match ret {
             ReturnType::Counter(cv) => Ok(cv),
-            _ => Err(DatatypeError::FailedToExecuteOperation("unexpected return type".into()))
+            _ => Err(InternalReason::ExecuteOperation("unexpected return type".into()).into_error())
         }
     }}
 
@@ -172,7 +172,7 @@ impl Counter {
             counter_clone.tx_ctx = this_tx_ctx_clone.clone();
             match tx_func(counter_clone) {
                 Ok(_) => Ok(()),
-                Err(e) => Err(DatatypeError::FailedTransaction(e.to_string())),
+                Err(e) => Err(DatatypeError::TransactionFailed(e.to_string())),
             }
         };
         self.datatype.do_transaction(this_tx_ctx, do_tx_func)
@@ -187,14 +187,64 @@ impl DatatypeBlanket for Counter {
 
 #[cfg(test)]
 mod tests_counter {
+    use std::{sync::Arc, time::Duration};
+
+    use parking_lot::Mutex;
     use tracing::{Span, info_span, instrument};
     use tracing_opentelemetry::OpenTelemetrySpanExt;
 
     use crate::{
-        DataType, DatatypeState,
-        datatypes::{counter::Counter, datatype::Datatype},
-        utils::test_utils::get_test_func_name,
+        Client, DataType, DatatypeError, DatatypeHandler, DatatypeState,
+        datatypes::{counter::Counter, datatype::Datatype, option::DatatypeOption},
+        utils::test_utils::{get_test_collection_name, get_test_func_name},
     };
+
+    #[test]
+    #[instrument]
+    fn can_notify_on_error_when_enqueue_fails() {
+        let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .build()
+            .unwrap();
+        let counter = client
+            .create_datatype(get_test_func_name!())
+            .build_counter()
+            .unwrap();
+        counter.increase_by(3).unwrap();
+
+        let received = Arc::new(Mutex::new(None));
+        let received_in_handler = received.clone();
+        counter.set_handler(
+            1,
+            DatatypeHandler::new().set_on_error(move |_ds, err| {
+                *received_in_handler.lock() = Some(err);
+            }),
+        );
+
+        let result = counter.transaction("oversize", |c| {
+            c.increase_by(100).unwrap();
+            // Shrink the buffer limit so the commit-time enqueue fails with
+            // PushBufferExceededMaxMemSize (bypassing the clamp in DatatypeOption::new).
+            c.datatype.mutable.write().push_buffer.option = Arc::new(DatatypeOption {
+                max_mem_size_of_push_buffer: 0,
+            });
+            Ok(())
+        });
+        // tx_func itself succeeded; the enqueue failure is routed to Normal + Rollback.
+        assert!(result.is_ok());
+
+        // The failed transaction was rolled back and the datatype stays alive.
+        assert_eq!(counter.get_value(), 3);
+        assert_ne!(counter.get_state(), DatatypeState::Disabled);
+
+        awaitility::at_most(Duration::from_secs(1))
+            .poll_interval(Duration::from_millis(1))
+            .until(|| {
+                matches!(
+                    *received.lock(),
+                    Some(DatatypeError::PushBufferExceededMaxMemSize)
+                )
+            });
+    }
 
     #[test]
     fn can_assert_send_and_sync_traits() {

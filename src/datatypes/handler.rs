@@ -122,8 +122,9 @@ impl HandlersManager {
             rt_handle.spawn(async move {
                 for (priority, handler) in handlers {
                     span.in_scope(|| {
-                        add_span_event!(format!("{event_name} priority={priority}"));
+                        add_span_event!(format!("begin {event_name} priority={priority}"));
                         notify(&handler, ds.clone());
+                        add_span_event!(format!("end {event_name} priority={priority}"));
                     });
                 }
             });
@@ -221,7 +222,7 @@ mod tests_handers_manager {
 
         let handler1 = DatatypeHandler::new().set_on_error(move |ds, err| {
             info!("error1: {:?}", err);
-            assert!(matches!(err, DatatypeError::FailedToSubscribe(_)));
+            assert!(matches!(err, DatatypeError::ServerRejected(_)));
             let a = count_for_h1.fetch_add(1, Ordering::Relaxed);
             assert_eq!(a, 1);
             assert_eq!(ds.get_state(), DatatypeState::Disabled);
@@ -229,7 +230,7 @@ mod tests_handers_manager {
 
         let handler2 = DatatypeHandler::new().set_on_error(move |ds, err| {
             info!("error2: {:?}", err);
-            assert!(matches!(err, DatatypeError::FailedToSubscribe(_)));
+            assert!(matches!(err, DatatypeError::ServerRejected(_)));
             let a = count_for_h2.fetch_add(1, Ordering::Relaxed);
             assert_eq!(a, 0);
             assert_eq!(ds.get_state(), DatatypeState::Disabled);
@@ -244,7 +245,7 @@ mod tests_handers_manager {
         assert_eq!(counter1.get_state(), DatatypeState::Subscribing);
         assert!(matches!(
             counter1.sync().unwrap_err(),
-            DatatypeError::FailedToSubscribe(_)
+            DatatypeError::ServerRejected(_)
         ));
         assert_eq!(counter1.get_state(), DatatypeState::Disabled);
         awaitility::at_most(Duration::from_secs(2))

@@ -21,7 +21,7 @@ flowchart TD
 
 > For datatype lifecycle states and write-access rules see [`docs/datatype-state.md`](datatype-state.md).
 > For event loop internals (channel architecture, BackOff, Notify flow) see [`docs/event-loop.md`](event-loop.md).
-> For error taxonomy, `DatatypeErrorWithActions`, and recovery action enums see [`docs/error-handling.md`](error-handling.md).
+> For error taxonomy and `RecoveryAction` routing see [`docs/error-handling.md`](error-handling.md).
 
 ### Layer Responsibilities
 

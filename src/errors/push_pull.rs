@@ -1,108 +1,59 @@
 use thiserror::Error;
 
-use crate::{
-    ConnectivityError, DatatypeError, DatatypeState,
-    errors::datatypes::{DatatypeAction, DatatypeErrorWithActions, EventLoopAction},
-};
+use crate::{DatatypeError, ServerRejectReason};
 
-pub(crate) const CLIENT_PUSHPULL_ERR_MSG_NO_SNAPSHOT: &str = "no snapshot operation";
-
+/// Wire-level error set by the responder in `PushPullPack.error`.
+///
+/// In the push-pull protocol the responder (the server side) fills this field when it
+/// rejects or fails to process a request. The client converts it into a [`DatatypeError`]
+/// via [`PushPullError::to_datatype_error`]; variant names mirror [`ServerRejectReason`]
+/// where a counterpart exists.
 #[non_exhaustive]
 #[repr(i32)]
-#[derive(Debug, Error /*PartialEq*/, Eq, Clone)]
-pub enum ServerPushPullError {
-    #[error("[ServerPushPullError] illegal push request - {0}")]
-    IllegalPushRequest(String) = 301,
-    #[error("[ServerPushPull] fail to create - {0}")]
-    FailedToCreate(String) = 302,
-    #[error("[ServerPushPull] fail to subscribe - {0}")]
-    FailedToSubscribe(String) = 303,
+#[derive(Debug, Error, Eq, Clone)]
+pub enum PushPullError {
+    #[error("[PushPullError] protocol violation - {0}")]
+    ProtocolViolation(String) = 301,
+    #[error("[PushPullError] readonly client attempted write operation")]
+    ReadonlyViolation = 302,
+    #[error("[PushPullError] fail to create - {0}")]
+    CreateFailed(String) = 303,
+    /// The requested resource does not exist or has an incompatible type.
+    #[error("[PushPullError] resource not found - {0}")]
+    ResourceNotFound(String) = 304,
+    #[error("[PushPullError] client's datatype is not subscribed on this server - {0}")]
+    MissingSubscription(String) = 305,
+    /// The server encountered a temporary internal error and could not process the request.
+    ///
+    /// The client should retry with exponential backoff. This maps to
+    /// [`DatatypeError::SyncFailed`] → `RecoveryAction::RetryWithBackOff`.
+    #[error("[PushPullError] server internal error - {0}")]
+    ServerInternalError(String) = 306,
 }
 
-impl ServerPushPullError {
-    pub fn mapping(
-        &self,
-        old_state: DatatypeState,
-        new_state: DatatypeState,
-    ) -> DatatypeErrorWithActions {
+impl PushPullError {
+    pub fn to_datatype_error(&self) -> DatatypeError {
         match self {
-            ServerPushPullError::IllegalPushRequest(msg) => {
-                let data_err = match old_state {
-                    DatatypeState::Creating => DatatypeError::FailedToCreate(msg.to_owned()),
-                    DatatypeState::Subscribing => DatatypeError::FailedToSubscribe(msg.to_owned()),
-                    _ => DatatypeError::FailedByServerPushPullError(self.clone()),
-                };
-                DatatypeErrorWithActions::new(
-                    data_err,
-                    EventLoopAction::PauseSync,
-                    new_state.into(),
-                )
+            PushPullError::ProtocolViolation(msg) => {
+                DatatypeError::ServerRejected(ServerRejectReason::ProtocolViolation(msg.to_owned()))
             }
-            ServerPushPullError::FailedToCreate(msg) => DatatypeErrorWithActions::new(
-                DatatypeError::FailedToCreate(msg.to_owned()),
-                EventLoopAction::PauseSync,
-                new_state.into(),
+            PushPullError::ReadonlyViolation => DatatypeError::ReadonlyViolation,
+            PushPullError::CreateFailed(msg) => {
+                DatatypeError::ServerRejected(ServerRejectReason::CreateFailed(msg.to_owned()))
+            }
+            PushPullError::ResourceNotFound(msg) => {
+                DatatypeError::ServerRejected(ServerRejectReason::ResourceNotFound(msg.to_owned()))
+            }
+            PushPullError::MissingSubscription(msg) => DatatypeError::ServerRejected(
+                ServerRejectReason::MissingSubscription(msg.to_owned()),
             ),
-            ServerPushPullError::FailedToSubscribe(msg) => DatatypeErrorWithActions::new(
-                DatatypeError::FailedToSubscribe(msg.to_owned()),
-                EventLoopAction::PauseSync,
-                new_state.into(),
-            ),
+            PushPullError::ServerInternalError(msg) => DatatypeError::SyncFailed(msg.to_owned()),
         }
     }
 }
 
-impl PartialEq for ServerPushPullError {
+impl PartialEq for PushPullError {
     fn eq(&self, other: &Self) -> bool {
         std::mem::discriminant(self) == std::mem::discriminant(other)
-    }
-}
-
-#[non_exhaustive]
-#[derive(Debug, Error, PartialEq, Eq, Clone)]
-pub enum ClientPushPullError {
-    #[error("[ClientPushPullError] pushBuffer exceeded max size of memory")]
-    ExceedMaxMemSize,
-    #[error("[ClientPushPullError] an operation of nonsequential cseq is enqueued into PushBuffer")]
-    NonSequentialCseq,
-    #[error("[ClientPushPullError] failed to get after")]
-    FailToGetPushingTransactions,
-    #[error("[ClientPushPullError] failed in Connectivity: {0}")]
-    FailedInConnectivity(ConnectivityError),
-    #[error("[ClientPushPullError] failed with protocol violation: {0}")]
-    FailedWithProtocolViolation(String),
-}
-
-impl ClientPushPullError {
-    pub fn mapping(self) -> DatatypeErrorWithActions {
-        match self {
-            ClientPushPullError::ExceedMaxMemSize => todo!(),
-            ClientPushPullError::NonSequentialCseq => DatatypeErrorWithActions::new(
-                DatatypeError::FailedByClientPushPullError(self),
-                EventLoopAction::Normal,
-                DatatypeAction::Reset,
-            ),
-            ClientPushPullError::FailToGetPushingTransactions => DatatypeErrorWithActions::new(
-                DatatypeError::FailedByClientPushPullError(self),
-                EventLoopAction::PauseSync,
-                DatatypeAction::Disable,
-            ),
-            ClientPushPullError::FailedInConnectivity(_) => DatatypeErrorWithActions::new(
-                DatatypeError::FailedByClientPushPullError(self),
-                EventLoopAction::BackOff,
-                DatatypeAction::Normal,
-            ),
-            ClientPushPullError::FailedWithProtocolViolation(_) => DatatypeErrorWithActions::new(
-                DatatypeError::FailedByClientPushPullError(self),
-                EventLoopAction::PauseSync,
-                DatatypeAction::Disable,
-            ),
-        }
-    }
-}
-
-impl From<ConnectivityError> for ClientPushPullError {
-    fn from(ce: ConnectivityError) -> Self {
-        ClientPushPullError::FailedInConnectivity(ce)
     }
 }

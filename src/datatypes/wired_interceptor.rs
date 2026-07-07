@@ -2,11 +2,11 @@ use std::sync::Arc;
 
 use parking_lot::RwLock;
 
-use crate::{errors::datatypes::DatatypeErrorWithActions, types::push_pull_pack::PushPullPack};
+use crate::{errors::datatypes::DatatypeErrorWithAction, types::push_pull_pack::PushPullPack};
 
 pub type BeforePushFn = dyn Fn(&mut PushPullPack) + Send + Sync + 'static;
 pub type AfterPullFn =
-    dyn Fn(&mut PushPullPack) -> Result<(), DatatypeErrorWithActions> + Send + Sync + 'static;
+    dyn Fn(&mut PushPullPack) -> Result<(), DatatypeErrorWithAction> + Send + Sync + 'static;
 
 pub struct WiredInterceptor {
     before_push: RwLock<Box<BeforePushFn>>,
@@ -28,7 +28,7 @@ impl WiredInterceptor {
 
     pub fn set_after_pull(
         &self,
-        f: impl Fn(&mut PushPullPack) -> Result<(), DatatypeErrorWithActions> + Send + Sync + 'static,
+        f: impl Fn(&mut PushPullPack) -> Result<(), DatatypeErrorWithAction> + Send + Sync + 'static,
     ) -> &Self {
         *self.after_pull.write() = Box::new(f);
         self
@@ -41,7 +41,7 @@ impl WiredInterceptor {
     pub(crate) fn after_pull(
         &self,
         pull: &mut PushPullPack,
-    ) -> Result<(), DatatypeErrorWithActions> {
+    ) -> Result<(), DatatypeErrorWithAction> {
         (self.after_pull.read())(pull)
     }
 }

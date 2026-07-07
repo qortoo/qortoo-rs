@@ -1,14 +1,14 @@
 use tracing::{debug, instrument};
 
 use crate::{
-    DatatypeError, DatatypeState,
+    DatatypeError, DatatypeState, ServerRejectReason,
     datatypes::mutable::MutableDatatype,
-    errors::datatypes::{DatatypeAction, DatatypeErrorWithActions, EventLoopAction},
+    errors::datatypes::DatatypeErrorWithAction,
     observability::trace::add_span_event,
     types::{checkpoint::CheckPoint, push_pull_pack::PushPullPack},
 };
 
-type PendingStep<'b> = fn(&mut PullHandler<'b>) -> Result<(), DatatypeErrorWithActions>;
+type PendingStep<'b> = fn(&mut PullHandler<'b>) -> Result<(), DatatypeErrorWithAction>;
 
 pub struct PullHandler<'a> {
     pulled_ppp: &'a mut PushPullPack,
@@ -35,8 +35,8 @@ impl<'a> PullHandler<'a> {
     }
 
     #[instrument(skip_all, name = "applyPull")]
-    pub fn apply(&mut self) -> Result<(), DatatypeErrorWithActions> {
-        let result = (|| -> Result<(), DatatypeErrorWithActions> {
+    pub fn apply(&mut self) -> Result<(), DatatypeErrorWithAction> {
+        let result = (|| -> Result<(), DatatypeErrorWithAction> {
             self.handle_error_and_datatype_state()?;
             self.enqueue_step(Self::skip_duplicated_transactions);
             self.enqueue_step(Self::execute_transactions);
@@ -51,20 +51,19 @@ impl<'a> PullHandler<'a> {
         &self,
         old: DatatypeState,
         new: DatatypeState,
-    ) -> Result<(), DatatypeErrorWithActions> {
-        Err(DatatypeErrorWithActions::new(
-            DatatypeError::FailedByProtocolViolation(format!(
+    ) -> Result<(), DatatypeErrorWithAction> {
+        Err(
+            DatatypeError::ServerRejected(ServerRejectReason::ProtocolViolation(format!(
                 "illegal state from push-pull: received {new} for {old}"
-            )),
-            EventLoopAction::PauseSync,
-            DatatypeAction::Disable,
-        ))
+            )))
+            .mapping(),
+        )
     }
 
-    fn handle_error_and_datatype_state(&mut self) -> Result<(), DatatypeErrorWithActions> {
+    fn handle_error_and_datatype_state(&mut self) -> Result<(), DatatypeErrorWithAction> {
         self.new_state = self.pulled_ppp.state;
         if let Some(sppe) = self.pulled_ppp.error.as_ref() {
-            return Err(sppe.mapping(self.old_state, self.pulled_ppp.state));
+            return Err(sppe.to_datatype_error().mapping());
         }
 
         match self.old_state {
@@ -123,7 +122,7 @@ impl<'a> PullHandler<'a> {
         self.pending_steps.push(step);
     }
 
-    fn apply_subscribe_response(&mut self) -> Result<(), DatatypeErrorWithActions> {
+    fn apply_subscribe_response(&mut self) -> Result<(), DatatypeErrorWithAction> {
         if let Some(snapshot_tx) = self.pulled_ppp.snapshot_transaction.take() {
             self.mutable
                 .apply_snapshot_transaction(snapshot_tx)
@@ -133,7 +132,7 @@ impl<'a> PullHandler<'a> {
         Ok(())
     }
 
-    fn skip_duplicated_transactions(&mut self) -> Result<(), DatatypeErrorWithActions> {
+    fn skip_duplicated_transactions(&mut self) -> Result<(), DatatypeErrorWithAction> {
         let need_to_pull = self.calculate_pulling_transactions(&self.pulled_ppp.checkpoint);
         let len_pulled_txs = self.pulled_ppp.transactions.len();
         if len_pulled_txs > need_to_pull {
@@ -148,24 +147,24 @@ impl<'a> PullHandler<'a> {
         (new_cp.sseq - old_cp.sseq) as usize - (new_cp.cseq - old_cp.cseq) as usize
     }
 
-    fn execute_transactions(&mut self) -> Result<(), DatatypeErrorWithActions> {
+    fn execute_transactions(&mut self) -> Result<(), DatatypeErrorWithAction> {
         let transactions = self.pulled_ppp.transactions[self.skip..].to_vec();
         for tx in transactions {
-            self.mutable.execute_remote_transaction(tx).map_err(|e| {
-                DatatypeErrorWithActions::new(e, EventLoopAction::Normal, DatatypeAction::Restart)
-            })?;
+            self.mutable
+                .execute_remote_transaction(tx)
+                .map_err(|e| e.mapping())?;
         }
         Ok(())
     }
 
-    fn sync_checkpoint(&mut self) -> Result<(), DatatypeErrorWithActions> {
+    fn sync_checkpoint(&mut self) -> Result<(), DatatypeErrorWithAction> {
         self.mutable
             .checkpoint
             .check_with(&self.pulled_ppp.checkpoint);
         Ok(())
     }
 
-    fn commit(&mut self) -> Result<(), DatatypeErrorWithActions> {
+    fn commit(&mut self) -> Result<(), DatatypeErrorWithAction> {
         let steps = std::mem::take(&mut self.pending_steps);
         for step in steps {
             step(self)?;

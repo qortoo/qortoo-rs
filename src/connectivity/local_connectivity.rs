@@ -11,9 +11,10 @@ use crossbeam_channel::Sender;
 use parking_lot::RwLock;
 
 use crate::{
-    ConnectivityError, DatatypeState,
+    DatatypeState,
     connectivity::{Connectivity, local_datatype_server::LocalDatatypeServer},
     datatypes::{event_loop::Event, wired::WiredDatatype},
+    errors::{connectivity::ConnectivityError, push_pull::PushPullError},
     types::{common::ResourceID, push_pull_pack::PushPullPack},
 };
 
@@ -134,6 +135,17 @@ impl LocalConnectivity {
         let wired_datatype = server.read().get_wired_datatype(cuid)?;
         Some(wired_datatype.get_wired_interceptor())
     }
+
+    #[cfg(test)]
+    pub fn remove_client_subscription(
+        &self,
+        resource_id: &ResourceID,
+        cuid: &crate::types::uid::Cuid,
+    ) {
+        if let Some(server) = self.get_local_datatype_server(resource_id) {
+            server.write().remove_client_subscription(cuid);
+        }
+    }
 }
 
 impl Debug for LocalConnectivity {
@@ -169,9 +181,12 @@ impl Connectivity for LocalConnectivity {
     fn push_pull(&self, pushed: &PushPullPack) -> Result<PushPullPack, ConnectivityError> {
         let resource_id = pushed.resource_id();
 
-        let server_with_lock = self
-            .get_local_datatype_server(&resource_id)
-            .ok_or_else(|| ConnectivityError::ResourceNotFound(resource_id.clone()))?;
+        let Some(server_with_lock) = self.get_local_datatype_server(&resource_id) else {
+            let mut pulled = pushed.get_pulled_stub();
+            pulled.error = Some(PushPullError::ResourceNotFound(resource_id.clone()));
+            pulled.state = DatatypeState::Disabled;
+            return Ok(pulled);
+        };
         let (pulled, should_remove_server) = {
             let mut server = server_with_lock.write();
             let pulled = match pushed.state {

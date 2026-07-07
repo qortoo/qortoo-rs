@@ -3,8 +3,8 @@ use std::{fmt::Debug, sync::Arc};
 use crossbeam_channel::Sender;
 
 use crate::{
-    ConnectivityError,
     datatypes::{event_loop::Event, wired::WiredDatatype},
+    errors::connectivity::ConnectivityError,
     types::push_pull_pack::PushPullPack,
 };
 

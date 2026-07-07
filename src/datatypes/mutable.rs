@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use tracing::instrument;
 
 use crate::{
-    DatatypeError, DatatypeHandler, DatatypeState,
+    DatatypeError, DatatypeHandler, DatatypeState, ServerRejectReason,
     datatypes::{
         common::{Attribute, ReturnType},
         crdts::Crdt,
@@ -12,12 +12,14 @@ use crate::{
         tx_record::TxRecord,
     },
     errors::{
-        push_pull::{CLIENT_PUSHPULL_ERR_MSG_NO_SNAPSHOT, ClientPushPullError},
+        datatypes::{DatatypeErrorWithAction, RecoveryAction},
         with_err_out,
     },
     operations::{Operation, body::OperationBody, transaction::Transaction},
     types::{checkpoint::CheckPoint, operation_id::OperationId},
 };
+
+pub(crate) const DATATYPE_ERR_MSG_NO_SNAPSHOT: &str = "no snapshot operation";
 
 #[derive(Debug)]
 pub struct MutableDatatype {
@@ -64,21 +66,21 @@ impl MutableDatatype {
     pub fn apply_snapshot_transaction(
         &mut self,
         tx: Arc<Transaction>,
-    ) -> Result<(), ClientPushPullError> {
+    ) -> Result<(), DatatypeError> {
         if tx.operations.is_empty() {
-            return Err(ClientPushPullError::FailedWithProtocolViolation(
-                CLIENT_PUSHPULL_ERR_MSG_NO_SNAPSHOT.to_owned(),
+            return Err(DatatypeError::ServerRejected(
+                ServerRejectReason::ProtocolViolation(DATATYPE_ERR_MSG_NO_SNAPSHOT.to_owned()),
             ));
         }
         let snap_op = &tx.operations[0];
         if let OperationBody::Snapshot(body) = &snap_op.body {
-            self.crdt.deserialize(&body.data);
+            self.crdt.deserialize(&body.data)?;
             self.op_id.cseq = 0;
             self.op_id.lamport = snap_op.lamport;
             self.reset();
         } else {
-            return Err(ClientPushPullError::FailedWithProtocolViolation(
-                CLIENT_PUSHPULL_ERR_MSG_NO_SNAPSHOT.to_owned(),
+            return Err(DatatypeError::ServerRejected(
+                ServerRejectReason::ProtocolViolation(DATATYPE_ERR_MSG_NO_SNAPSHOT.to_owned()),
             ));
         }
         Ok(())
@@ -97,10 +99,20 @@ impl MutableDatatype {
         }
     }
 
-    pub fn end_transaction(&mut self, tag: Option<String>, committed: bool) -> bool {
+    /// Ends the in-progress transaction.
+    ///
+    /// Returns `Ok(true)` when a committed transaction was enqueued into the push buffer,
+    /// `Ok(false)` when the transaction was rolled back (`committed == false`).
+    /// On an enqueue failure, `pending` is restored so that the routed
+    /// `RecoveryAction::RollbackTransaction` can undo the transaction, and the error is returned.
+    pub fn end_transaction(
+        &mut self,
+        tag: Option<String>,
+        committed: bool,
+    ) -> Result<bool, DatatypeErrorWithAction> {
         if !committed {
             self.do_rollback();
-            return false;
+            return Ok(false);
         }
 
         if let Some(mut tx) = self.tx_record.pending.take() {
@@ -108,16 +120,31 @@ impl MutableDatatype {
             let tx = Arc::new(tx);
             if tx.cuid == self.op_id.cuid {
                 if let Err(err) = self.push_buffer.enqueue(tx.clone()) {
-                    if err == ClientPushPullError::ExceedMaxMemSize {
-                        todo!("should reduce the push buffer size");
-                    }
-                    if err == ClientPushPullError::NonSequentialCseq {
-                        unreachable!("this should not happen");
-                    }
+                    // The clone passed to enqueue is dropped on failure, so this Arc is unique
+                    // again; restore pending so RecoveryAction::RollbackTransaction can undo it.
+                    self.tx_record.pending = Arc::try_unwrap(tx).ok();
+                    return Err(err);
                 }
             }
         }
-        true
+        Ok(true)
+    }
+
+    /// Applies the datatype-lifecycle side effect of a routed error.
+    ///
+    /// Single dispatch point for `RecoveryAction`, shared by the event-loop path
+    /// (`WiredDatatype::handle_error`) and the transaction-commit path
+    /// (`TransactionalDatatype::end_transaction`).
+    pub fn apply_action(&mut self, recovery: RecoveryAction) {
+        match recovery {
+            RecoveryAction::NotifyOnly | RecoveryAction::RetryWithBackOff => {}
+            RecoveryAction::RollbackTransaction => self.do_rollback(),
+            RecoveryAction::Resubscribe | RecoveryAction::ResubscribeWithBackOff => {
+                self.reset();
+                self.set_state(DatatypeState::SubscribingOrCreating);
+            }
+            RecoveryAction::Disable => self.disable(),
+        }
     }
 
     pub fn execute_remote_transaction(

@@ -6,7 +6,7 @@ use std::{
 use crate::{
     DataType, DatatypeState,
     datatypes::common::Attribute,
-    errors::push_pull::ServerPushPullError,
+    errors::push_pull::PushPullError,
     operations::transaction::Transaction,
     types::{
         checkpoint::CheckPoint,
@@ -28,7 +28,7 @@ pub struct PushPullPack {
     pub transactions: Vec<Arc<Transaction>>,
     pub snapshot_transaction: Option<Arc<Transaction>>,
     pub is_readonly: bool,
-    pub error: Option<ServerPushPullError>,
+    pub error: Option<PushPullError>,
 }
 
 impl PushPullPack {
@@ -129,7 +129,7 @@ mod tests_push_pull_pack {
 
     use crate::{
         DataType, DatatypeState, datatypes::common::new_attribute,
-        errors::push_pull::ServerPushPullError, types::push_pull_pack::PushPullPack,
+        errors::push_pull::PushPullError, types::push_pull_pack::PushPullPack,
     };
 
     #[test]
@@ -143,9 +143,7 @@ mod tests_push_pull_pack {
         );
         assert_eq!(format!("{ppp}"), format!("{ppp:?}"));
         info!("{ppp}");
-        ppp.error = Some(ServerPushPullError::IllegalPushRequest(
-            "some error".to_owned(),
-        ));
+        ppp.error = Some(PushPullError::ProtocolViolation("some error".to_owned()));
         assert_eq!(format!("{ppp}"), format!("{ppp:?}"));
         info!("{ppp}");
         ppp.snapshot_transaction =

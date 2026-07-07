@@ -219,17 +219,18 @@ mod tests_datatype_builder {
         // Write operations should fail
         assert!(matches!(
             counter.increase().unwrap_err(),
-            DatatypeError::Disallowed(_)
+            DatatypeError::NotWritable(_)
         ));
 
-        // Transaction should fail
+        // Transaction should fail — either NotWritable (state not yet synced) or
+        // ReadonlyViolation (state already synced to Subscribed by the time this runs)
         let tx_result = counter.transaction("test-tx", |c| {
             c.increase().unwrap();
             Ok(())
         });
         assert!(matches!(
             tx_result.unwrap_err(),
-            DatatypeError::Disallowed(_)
+            DatatypeError::NotWritable(_) | DatatypeError::ReadonlyViolation
         ));
         assert_eq!(counter.get_value(), 0);
     }
@@ -252,7 +253,7 @@ mod tests_datatype_builder {
         assert_eq!(counter.get_state(), DatatypeState::Subscribing);
         assert!(matches!(
             counter.increase().unwrap_err(),
-            DatatypeError::Disallowed(_)
+            DatatypeError::NotWritable(_)
         ));
 
         let counter = client

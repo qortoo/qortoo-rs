@@ -22,27 +22,27 @@ tracing-subscriber = { version = "^0.3.23", features = [
 
 tracing = "^0.1.44"
 nanoid = "^0.5.0"
-tokio = { version = "^1.52.2", features = ["full"] }
-parking_lot = "^0.12.5"
-time = { version = "^0.3.47", features = [
+tokio = { version = "^1.52", features = ["full"] }
+parking_lot = "^0.12"
+time = { version = "^0.3", features = [
     "formatting",
     "local-offset",
     "macros",
 ] }
-itoa = "^1.0.18"
-derive_more = { version = "^2.1.1", features = ["display", "debug"] }
-chrono = "^0.4.44"
-thiserror = "^2.0.18"
-opentelemetry = { version = "^0.31.0" }
-tracing-opentelemetry = { version = "^0.32.1" }
-ubyte = "^0.10.4"
-crossbeam-channel = "^0.5.15"
-futures = "^0.3.32"
-btparse = "^0.2.0"
-strum_macros = "^0.28.0"
-regex = "^1.12.3"
-dyn-fmt = "^0.4.3"
-backon = { version = "^1.6.0", default-features = false, features = ["tokio-sleep"] }
+itoa = "^1.0"
+derive_more = { version = "^2.1", features = ["display", "debug"] }
+chrono = "^0.4"
+thiserror = "^2.0"
+opentelemetry = { version = "^0.32" }
+tracing-opentelemetry = { version = "^0.33" }
+ubyte = "^0.10"
+crossbeam-channel = "^0.5"
+futures = "^0.3"
+btparse = "^0.2"
+strum_macros = "^0.28"
+regex = "^1.12"
+dyn-fmt = "^0.4"
+backon = { version = "^1.6", default-features = false, features = ["tokio-sleep"] }
 metrics = "^0.24"
 
 [[example]]
@@ -62,24 +62,24 @@ name = "trace"
 path = "examples/observability/trace.rs"
 
 [dev-dependencies]
-rstest = "^0.26.1"
-awaitility = "^0.4.1"
-tokio = { version = "^1.52.2", features = ["full", "test-util"] }
-metrics-util = { version = "^0.20.3", features = ["debugging"] }
-serial_test = "^3.4"
-tracing-subscriber = { version = "^0.3.23", features = [
+rstest = "^0.26"
+awaitility = "^0.4"
+tokio = { version = "^1.52", features = ["full", "test-util"] }
+metrics-util = { version = "^0.20", features = ["debugging"] }
+serial_test = "^3.5"
+tracing-subscriber = { version = "^0.3", features = [
     "json",
     "fmt",
     "env-filter",
 ] }
-ctor = "^1.0.1"
+ctor = "^1.0"
 tracing-loki = "^0.2"
 url = "^2.5"
-metrics-exporter-prometheus = "^0.18.3"
+metrics-exporter-prometheus = "^0.18"
 libc = { version = "^1.0.0-alpha.3"}
-once_cell = { version = "^1.21.4"}
-opentelemetry_sdk = { version = "^0.31"}
-opentelemetry-otlp = { version = "^0.31", features = [
+once_cell = { version = "^1.21"}
+opentelemetry_sdk = { version = "0.32" }
+opentelemetry-otlp = { version = "0.32", features = [
     "grpc-tonic",
 ]}
-pyroscope = { version = "^2.0.3", features = ["backend-pprof-rs"] }
+pyroscope = { version = "^2.0", features = ["backend-pprof-rs"] }
