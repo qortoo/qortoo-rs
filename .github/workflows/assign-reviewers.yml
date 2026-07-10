@@ -1,5 +1,7 @@
-name: Assign Reviewers
+name: Assign Author
 
+# Reviewer requests are handled natively by .github/CODEOWNERS; this workflow
+# only assigns the PR author as assignee.
 on:
   pull_request_target:
     types: [opened, reopened, ready_for_review]
@@ -10,65 +12,29 @@ permissions:
 
 jobs:
   assign:
-    name: Assign assignee and reviewers
+    name: Assign author as assignee
     runs-on: ubuntu-latest
     steps:
-      - name: Assign assignee and request reviewers
+      - name: Assign author as assignee
         uses: actions/github-script@v8
-        env:
-          PR_REVIEWERS: ${{ vars.PR_REVIEWERS }}
-          PR_TEAM_REVIEWERS: ${{ vars.PR_TEAM_REVIEWERS }}
         with:
           script: |
             const { owner, repo } = context.repo;
             const pullRequest = context.payload.pull_request;
-            const prNumber = pullRequest.number;
             const author = pullRequest.user.login;
 
-            const splitCsv = (value) =>
-              (value || '')
-                .split(',')
-                .map((item) => item.trim())
-                .filter(Boolean);
-
-            const isBot = (login) => /\[bot\]$/i.test(login);
-
-            if (!isBot(author)) {
-              try {
-                await github.rest.issues.addAssignees({
-                  owner,
-                  repo,
-                  issue_number: prNumber,
-                  assignees: [author],
-                });
-              } catch (error) {
-                core.warning(`Could not assign ${author}: ${error.message}`);
-              }
-            }
-
-            if (pullRequest.draft) {
-              core.notice('Skipping reviewer request for draft pull request.');
-              return;
-            }
-
-            const reviewers = splitCsv(process.env.PR_REVIEWERS)
-              .filter((reviewer) => reviewer !== author)
-              .filter((reviewer) => !isBot(reviewer));
-            const teamReviewers = splitCsv(process.env.PR_TEAM_REVIEWERS);
-
-            if (reviewers.length === 0 && teamReviewers.length === 0) {
-              core.notice('No reviewers configured. Set PR_REVIEWERS or PR_TEAM_REVIEWERS repository variables.');
+            if (/\[bot\]$/i.test(author)) {
+              core.notice(`Skipping bot author ${author}.`);
               return;
             }
 
             try {
-              await github.rest.pulls.requestReviewers({
+              await github.rest.issues.addAssignees({
                 owner,
                 repo,
-                pull_number: prNumber,
-                reviewers,
-                team_reviewers: teamReviewers,
+                issue_number: pullRequest.number,
+                assignees: [author],
               });
             } catch (error) {
-              core.warning(`Could not request reviewers: ${error.message}`);
+              core.setFailed(`Could not assign ${author}: ${error.message}`);
             }
