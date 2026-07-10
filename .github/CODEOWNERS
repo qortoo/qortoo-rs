@@ -1,0 +1,4 @@
+# GitHub automatically requests a review from the owning team on every
+# pull request targeting main. This replaces the team_reviewers logic that
+# the default GITHUB_TOKEN cannot perform (no org-level team access).
+* @qortoo/sdk_developers
