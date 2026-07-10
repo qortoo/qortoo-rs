@@ -3,8 +3,12 @@ use std::sync::OnceLock;
 use libc::atexit;
 use opentelemetry::trace::TracerProvider;
 use opentelemetry_otlp::{Protocol, SpanExporter, WithExportConfig};
-use opentelemetry_sdk::{Resource, trace::SdkTracerProvider};
+use opentelemetry_sdk::{
+    Resource,
+    trace::{SdkTracer, SdkTracerProvider},
+};
 use parking_lot::Mutex;
+use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt};
 
 #[cfg(feature = "log_layer")]
@@ -37,40 +41,60 @@ fn init_once() {
     let handle = get_or_init_runtime_handle("observability");
     // The tonic OTLP exporter requires an active Tokio runtime context.
     let _enter = handle.enter();
-
+    let env_filter = build_env_filter();
     let loki_url = std::env::var("QORTOO_RS_LOKI_URL").ok();
     if let Some(url) = loki_url {
-        init_subscriber_with_loki(url, &handle);
+        init_subscriber_with_loki(env_filter, url, &handle);
     } else {
-        init_otel_subscriber();
+        init_subscriber(env_filter);
     }
 }
 
-fn init_otel_subscriber() {
-    let level = build_env_filter();
-    println!(
-        "Initialize open-telemetry tracing with service '{}' for '{}' level",
-        constants::get_agent(),
-        level
-    );
-
-    let provider = init_provider();
-    let tracer = provider.tracer(constants::get_agent());
-    let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
-
-    #[cfg(feature = "log_layer")]
-    let fmt = QortooLogLayer { level_filter: None };
-    #[cfg(not(feature = "log_layer"))]
-    let fmt = tracing_subscriber::fmt::layer();
-
-    let subscriber = Registry::default().with(telemetry).with(level).with(fmt);
-    let _ = tracing::subscriber::set_global_default(subscriber);
+fn init_subscriber(env_filter: EnvFilter) {
+    let env_filter_display = env_filter.to_string();
+    let subscriber = Registry::default()
+        .with(build_telemetry_layer())
+        .with(env_filter)
+        .with(build_fmt_layer());
+    if tracing::subscriber::set_global_default(subscriber).is_ok() {
+        println!(
+            "Initialized OpenTelemetry tracing with service '{}' and filter '{}'",
+            constants::get_agent(),
+            env_filter_display
+        );
+    }
 }
 
-fn init_subscriber_with_loki(loki_url: String, handle: &tokio::runtime::Handle) {
+fn build_telemetry_layer<S>() -> OpenTelemetryLayer<S, SdkTracer>
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    let provider = init_provider();
+    let tracer = provider.tracer(constants::get_agent());
+    tracing_opentelemetry::layer().with_tracer(tracer)
+}
+
+#[cfg(feature = "log_layer")]
+fn build_fmt_layer() -> QortooLogLayer {
+    QortooLogLayer { level_filter: None }
+}
+
+#[cfg(not(feature = "log_layer"))]
+fn build_fmt_layer<S>() -> impl tracing_subscriber::Layer<S>
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    tracing_subscriber::fmt::layer()
+}
+
+fn init_subscriber_with_loki(
+    env_filter: EnvFilter,
+    loki_url: String,
+    handle: &tokio::runtime::Handle,
+) {
     let Ok(parsed_url) = url::Url::parse(&loki_url) else {
         eprintln!("QORTOO_RS_LOKI_URL is not a valid URL: {loki_url}");
-        init_otel_subscriber();
+        init_subscriber(env_filter);
         return;
     };
 
@@ -83,20 +107,24 @@ fn init_subscriber_with_loki(loki_url: String, handle: &tokio::runtime::Handle) 
         Ok((loki_layer, loki_task)) => {
             handle.spawn(loki_task);
 
-            #[cfg(feature = "log_layer")]
-            let fmt = QortooLogLayer { level_filter: None };
-            #[cfg(not(feature = "log_layer"))]
-            let fmt = tracing_subscriber::fmt::layer();
-
+            let env_filter_display = env_filter.to_string();
             let subscriber = Registry::default()
-                .with(build_env_filter())
-                .with(fmt)
+                .with(build_telemetry_layer())
+                .with(env_filter)
+                .with(build_fmt_layer())
                 .with(loki_layer);
-            let _ = tracing::subscriber::set_global_default(subscriber);
+            if tracing::subscriber::set_global_default(subscriber).is_ok() {
+                println!(
+                    "Initialized OpenTelemetry tracing with service '{}', filter '{}', and Loki: {}",
+                    constants::get_agent(),
+                    env_filter_display,
+                    loki_url
+                );
+            }
         }
         Err(e) => {
             eprintln!("failed to build Loki layer: {e}");
-            init_otel_subscriber();
+            init_subscriber(env_filter);
         }
     }
 }
@@ -111,7 +139,7 @@ fn init_provider() -> SdkTracerProvider {
         .with_tonic()
         .with_protocol(Protocol::Grpc)
         .build()
-        .expect("failed to create otlp exporter");
+        .expect("failed to create OTLP exporter");
 
     let provider = SdkTracerProvider::builder()
         .with_batch_exporter(exporter)
