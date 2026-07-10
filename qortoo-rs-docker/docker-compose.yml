@@ -20,6 +20,7 @@ services:
       - --web.enable-remote-write-receiver
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/conf.d:/etc/prometheus/conf.d:ro
       - prometheus_data:/prometheus
     ports:
       - "9090:9090"

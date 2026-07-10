@@ -2,6 +2,12 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# Optional developer-local scrape configs (gitignored). A glob that matches
+# nothing is fine, so this activates only when a developer adds files there.
+# See conf.d/node_exporter.yml.example for how to enable one.
+scrape_config_files:
+  - conf.d/*.yml
+
 scrape_configs:
   - job_name: prometheus
     static_configs:

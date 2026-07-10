@@ -210,6 +210,14 @@ cargo run --example metrics
 
 Prometheus is provisioned by `qortoo-rs-docker/prometheus/prometheus.yml` to scrape `host.docker.internal:9000`. On Linux, replace that target with the Docker bridge gateway IP, usually `172.17.0.1:9000`.
 
+Developer-local scrape configs go in `qortoo-rs-docker/prometheus/conf.d/` — `*.yml` files there are gitignored and loaded through the `scrape_config_files` glob in `prometheus.yml`, so the base config stays untouched. For host-level metrics, run `node_exporter` on the host and enable the bundled example:
+
+```shell
+cd qortoo-rs-docker/prometheus/conf.d
+cp node_exporter.yml.example node_exporter.yml
+make obs-up   # or restart the prometheus container to pick it up
+```
+
 ### Testing Metrics
 
 Tests use `metrics-util`'s `DebuggingRecorder`.
