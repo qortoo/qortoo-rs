@@ -2,7 +2,7 @@
 
 ## Overview
 
-Qortoo-rs exposes instrumentation, but applications own exporter setup. The crate does not install a global `tracing` subscriber and no longer has a `tracing` feature.
+Qortoo-rs emits `tracing` spans and events and records metrics through the `metrics` facade. Applications configure the global tracing subscriber, metrics recorder, and exporters. The `log_layer` feature provides Qortoo's optional stdout formatting layer.
 
 | Surface | Mechanism | Code |
 |---------|-----------|------|
@@ -66,8 +66,8 @@ OTEL_EXPORTER_OTLP_ENDPOINT=http://my-collector:4317 cargo run --example trace
 | Span | Trigger |
 |------|---------|
 | `datatype_event_loop` | Event loop lifetime per datatype |
-| `push_pull` | Each push/pull sync cycle |
-| `execute_local_operation` | Each local write |
+| `push_pull` | Each datatype push/pull sync cycle |
+| `LocalConnectivity::push_pull` | Processing a push/pull pack through local connectivity |
 | `create_push_pull_pack` | Assembly of outgoing `PushPullPack` |
 
 Span events added with `add_span_event!` annotate moments such as event loop start, push pack send, pull pack receive, and event loop shutdown.
@@ -129,7 +129,7 @@ duid
 
 ### Shipping Test Logs to Loki
 
-The test subscriber (`src/observability/test_subscriber.rs`) is installed once per process via `#[ctor]`. By default it uses the OpenTelemetry subscriber. Setting `QORTOO_RS_LOKI_URL` switches it to ship logs to Loki instead:
+The test subscriber (`src/observability/test_subscriber.rs`) is installed once per test process via `#[ctor]`. It exports spans over OTLP using the agent string (for example, `qortoo-0.1.0-<git hash>`) as the Tempo service name. Setting `QORTOO_RS_LOKI_URL` adds Loki log shipping to the subscriber:
 
 ```shell
 make obs-up
@@ -144,7 +144,7 @@ Labels attached to every test log line:
 | `app` | `qortoo` |
 | `source` | `test` |
 
-If the URL is missing or invalid, the subscriber silently falls back to the OTel backend.
+Without `QORTOO_RS_LOKI_URL`, the test subscriber uses the OpenTelemetry and stdout formatting layers. If the URL is invalid or the Loki layer cannot be created, it reports the error to stderr and initializes those layers without Loki.
 
 ---
 
@@ -209,6 +209,14 @@ cargo run --example metrics
 ```
 
 Prometheus is provisioned by `qortoo-rs-docker/prometheus/prometheus.yml` to scrape `host.docker.internal:9000`. On Linux, replace that target with the Docker bridge gateway IP, usually `172.17.0.1:9000`.
+
+Developer-local scrape configs go in `qortoo-rs-docker/prometheus/conf.d/` — `*.yml` files there are gitignored and loaded through the `scrape_config_files` glob in `prometheus.yml`, so the base config stays untouched. For host-level metrics, run `node_exporter` on the host and enable the bundled example:
+
+```shell
+cd qortoo-rs-docker/prometheus/conf.d
+cp node_exporter.yml.example node_exporter.yml
+make obs-up   # or restart the prometheus container to pick it up
+```
 
 ### Testing Metrics
 

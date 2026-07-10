@@ -1,0 +1,9 @@
+# Developer-local scrape config for host-level metrics.
+# Requires node_exporter running on the host (default port 9100).
+# Enable it with: cp node_exporter.yml.example node_exporter.yml
+# (*.yml files in this directory are gitignored and loaded by Prometheus
+# via the scrape_config_files glob in ../prometheus.yml)
+scrape_configs:
+  - job_name: node_exporter
+    static_configs:
+      - targets: [host.docker.internal:9100]
