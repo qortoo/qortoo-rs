@@ -1,3 +1,6 @@
+[workspace]
+members = ["qortoo-ffi"]
+
 [package]
 name = "qortoo"
 version = "0.1.0"

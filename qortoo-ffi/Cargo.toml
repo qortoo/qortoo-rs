@@ -1,0 +1,16 @@
+[package]
+name = "qortoo-ffi"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87.0"
+publish = false
+
+[lib]
+name = "qortoo_ffi"
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+qortoo = { path = ".." }
+
+[build-dependencies]
+cbindgen = "^0.29"

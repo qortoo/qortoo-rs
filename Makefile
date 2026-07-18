@@ -17,6 +17,15 @@ tarpaulin:
 doc:
 	cargo doc --no-deps --open
 
+# ── Go binding (go/qortoo, linked against qortoo-ffi) ────────────────────────────
+.PHONY: ffi
+ffi:
+	cargo build -p qortoo-ffi
+
+.PHONY: go-test
+go-test: ffi
+	cd go/qortoo && go vet ./... && go test -race ./...
+
 # ── Observability stack (Prometheus / Grafana / Tempo / Loki / Pyroscope) ───────
 .PHONY: obs-up
 obs-up:
