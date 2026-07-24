@@ -47,7 +47,11 @@ graph TD
 
 1. Every Go object wraps an opaque pointer created by an FFI constructor
    (`qortoo_client_new`, `qortoo_counter_create`, ...). Handles are freed explicitly via
-   `Close()`; nothing relies on the Go garbage collector.
+   `Close()`. As a leak backstop, each constructor also registers a `runtime.AddCleanup`
+   that frees the native handle once the wrapper becomes unreachable; cleanups are not
+   guaranteed to run, so `Close()` remains the contract. A `Counter` keeps its `Client`
+   reachable, so a client is never cleaned up while one of its counters is alive, and
+   every method applies `runtime.KeepAlive` so a cleanup cannot fire mid-call.
 2. Fallible calls pass a `QortooError` out-parameter. The Go side converts it with
    `takeError` (`go/qortoo/errors.go`) into `*qortoo.Error{Code, Msg}`, where `Code` is
    the `#[repr(i32)]` discriminant of the Rust error variant (e.g., `ReadonlyViolation = 207`).
@@ -65,7 +69,9 @@ graph TD
 2. The per-registration state travels as a `usize` userdata holding a `cgo.Handle`
    (never a raw Go pointer — this is the pattern required by the Go runtime and its
    `checkptr` mode). Rust calls `goQortooUserdataDrop` exactly once when it drops the
-   owning object, which deletes the handle.
+   owning object, which deletes the handle. The contract also covers failure: when a
+   handler cannot be registered (null client/counter, failed build), the FFI still fires
+   `userdata_drop` exactly once, so the Go handle never leaks.
 3. Handler callbacks arrive on Qortoo-owned tokio worker threads (dispatched via
    `rt_handle.spawn` in `src/datatypes/handler.rs`), so Go handlers must be
    thread-safe and must not block for long. Transaction callbacks run inline on the
@@ -100,7 +106,10 @@ graph TD
   wholly by each closure, and the userdata-drop callback fires from the ctx's `Drop`
   exactly once (`qortoo-ffi/src/handler.rs`).
 - **Explicit `Close()` over finalizers**: dropping a `Client` shuts down its tokio
-  runtime, so release must be deterministic.
+  runtime, so release must be deterministic. The `runtime.AddCleanup` backstop only
+  covers forgotten `Close()` calls; it never runs at process exit and its timing is
+  unspecified. `Close()` must not be called concurrently with other methods on the same
+  object — everything else is safe for concurrent use.
 
 ## Related Concepts
 

@@ -6,7 +6,14 @@
 //	go test ./go/...
 //
 // Every object returned by this package owns a native handle and must be
-// released with its Close method; handles are not garbage collected.
+// released with its Close method. As a backstop, an unreachable wrapper frees
+// its native handle via a runtime.AddCleanup cleanup, but cleanups are not
+// guaranteed to run — treat Close as the contract, not the cleanup. A Counter
+// keeps its Client reachable, so an otherwise unreferenced Client is not
+// cleaned up while any of its counters is still alive.
+//
+// Close must not be called concurrently with other methods on the same object;
+// all other methods are safe for concurrent use.
 //
 // Handler callbacks (Handler.OnStateChange / Handler.OnError) are invoked on
 // Qortoo-owned tokio worker threads, asynchronously to the triggering

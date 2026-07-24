@@ -5,7 +5,10 @@ package qortoo
 */
 import "C"
 
-import "errors"
+import (
+	"errors"
+	"runtime"
+)
 
 // DataType identifies the kind of CRDT datatype (mirrors qortoo::DataType).
 type DataType int32
@@ -54,23 +57,29 @@ func (s DatatypeState) String() string {
 // development, mirroring the Rust core type of the same name. Share one
 // instance between clients to synchronize them.
 type LocalConnectivity struct {
-	ptr *C.QortooLocalConnectivity
+	ptr     *C.QortooLocalConnectivity
+	cleanup runtime.Cleanup
 }
 
 // NewLocalConnectivity creates an in-memory backend in realtime mode.
 func NewLocalConnectivity() *LocalConnectivity {
-	return &LocalConnectivity{ptr: C.qortoo_local_connectivity_new()}
+	l := &LocalConnectivity{ptr: C.qortoo_local_connectivity_new()}
+	l.cleanup = runtime.AddCleanup(l, freeLocalConnectivityPtr, l.ptr)
+	return l
 }
 
 // SetRealtime toggles between realtime (auto-sync) and manual (explicit Sync) mode.
 func (l *LocalConnectivity) SetRealtime(realtime bool) {
+	defer runtime.KeepAlive(l)
 	C.qortoo_local_connectivity_set_realtime(l.ptr, C.bool(realtime))
 }
 
 // Close releases the native handle. Clients built with this connectivity keep
-// their own reference and stay functional.
+// their own reference and stay functional. Close must not be called
+// concurrently with other methods on the same object.
 func (l *LocalConnectivity) Close() {
 	if l.ptr != nil {
+		l.cleanup.Stop()
 		C.qortoo_local_connectivity_free(l.ptr)
 		l.ptr = nil
 	}
@@ -78,7 +87,8 @@ func (l *LocalConnectivity) Close() {
 
 // Client is the entry point of the SDK, scoped by a collection name and alias.
 type Client struct {
-	ptr *C.QortooClient
+	ptr     *C.QortooClient
+	cleanup runtime.Cleanup
 }
 
 type clientConfig struct {
@@ -100,6 +110,9 @@ func NewClient(collection, alias string, opts ...ClientOption) (*Client, error) 
 	for _, opt := range opts {
 		opt(&cfg)
 	}
+	// The connectivity wrapper provides a native pointer to the cgo call below;
+	// keep it alive so its GC cleanup cannot free that pointer mid-call.
+	defer runtime.KeepAlive(cfg.local)
 
 	cCollection := cString(collection)
 	defer freeCString(cCollection)
@@ -119,22 +132,27 @@ func NewClient(collection, alias string, opts ...ClientOption) (*Client, error) 
 	if err := takeError(&cerr); err != nil {
 		return nil, err
 	}
-	return &Client{ptr: ptr}, nil
+	cl := &Client{ptr: ptr}
+	cl.cleanup = runtime.AddCleanup(cl, freeClientPtr, ptr)
+	return cl, nil
 }
 
 // Collection returns the collection name of this client.
 func (c *Client) Collection() string {
+	defer runtime.KeepAlive(c)
 	return goString(C.qortoo_client_get_collection(c.ptr))
 }
 
 // Alias returns the alias of this client.
 func (c *Client) Alias() string {
+	defer runtime.KeepAlive(c)
 	return goString(C.qortoo_client_get_alias(c.ptr))
 }
 
 // UnsubscribeDatatype marks the datatype identified by key as unsubscribing.
 // With manual connectivity, a following Counter.Sync drives it to StateDisabled.
 func (c *Client) UnsubscribeDatatype(key string) error {
+	defer runtime.KeepAlive(c)
 	cKey := cString(key)
 	defer freeCString(cKey)
 	var cerr C.QortooError
@@ -144,9 +162,11 @@ func (c *Client) UnsubscribeDatatype(key string) error {
 
 // Close releases the client and shuts down its internal runtime. Counters
 // created from it remain safe to use until their own Close, but can no longer
-// synchronize.
+// synchronize. Close must not be called concurrently with other methods on the
+// same object.
 func (c *Client) Close() {
 	if c.ptr != nil {
+		c.cleanup.Stop()
 		C.qortoo_client_free(c.ptr)
 		c.ptr = nil
 	}

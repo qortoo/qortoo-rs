@@ -12,6 +12,7 @@ extern QortooTxCallback qortooGoTxCB(void);
 import "C"
 
 import (
+	"runtime"
 	"runtime/cgo"
 )
 
@@ -40,8 +41,13 @@ type DatatypeOptions struct {
 // Counter is a conflict-free counter datatype.
 type Counter struct {
 	ptr *C.QortooCounter
+	// client keeps the owning Client reachable so its GC cleanup cannot shut
+	// the native client down while this counter is still in use. Severed by
+	// Close; nil for transaction-scoped handles.
+	client *Client
 	// borrowed marks transaction-scoped handles owned by Rust (must not be freed).
 	borrowed bool
+	cleanup  runtime.Cleanup
 }
 
 func (opts *DatatypeOptions) toC() *C.QortooDatatypeOptions {
@@ -69,6 +75,7 @@ func (c *Client) buildCounter(
 	opts *DatatypeOptions,
 	build func(*C.QortooClient, *C.char, *C.QortooDatatypeOptions, *C.QortooError) *C.QortooCounter,
 ) (*Counter, error) {
+	defer runtime.KeepAlive(c)
 	cKey := cString(key)
 	defer freeCString(cKey)
 	var cerr C.QortooError
@@ -76,7 +83,9 @@ func (c *Client) buildCounter(
 	if err := takeError(&cerr); err != nil {
 		return nil, err
 	}
-	return &Counter{ptr: ptr}, nil
+	ctr := &Counter{ptr: ptr, client: c}
+	ctr.cleanup = runtime.AddCleanup(ctr, freeCounterPtr, ptr)
+	return ctr, nil
 }
 
 // CreateCounter builds a counter in StateCreating (writable).
@@ -102,6 +111,7 @@ func (c *Client) SubscribeOrCreateCounter(key string, opts *DatatypeOptions) (*C
 
 // IncreaseBy adds delta (which may be negative) and returns the new value.
 func (c *Counter) IncreaseBy(delta int64) (int64, error) {
+	defer runtime.KeepAlive(c)
 	var cerr C.QortooError
 	v := C.qortoo_counter_increase_by(c.ptr, C.int64_t(delta), &cerr)
 	if err := takeError(&cerr); err != nil {
@@ -117,11 +127,13 @@ func (c *Counter) Increase() (int64, error) {
 
 // Value returns the current counter value.
 func (c *Counter) Value() int64 {
+	defer runtime.KeepAlive(c)
 	return int64(C.qortoo_counter_get_value(c.ptr))
 }
 
 // Sync performs a blocking push/pull with the connectivity backend.
 func (c *Counter) Sync() error {
+	defer runtime.KeepAlive(c)
 	var cerr C.QortooError
 	C.qortoo_counter_sync(c.ptr, &cerr)
 	return takeError(&cerr)
@@ -129,6 +141,7 @@ func (c *Counter) Sync() error {
 
 // Unsubscribe marks this datatype as unsubscribing (see Client.UnsubscribeDatatype).
 func (c *Counter) Unsubscribe() error {
+	defer runtime.KeepAlive(c)
 	var cerr C.QortooError
 	C.qortoo_counter_unsubscribe(c.ptr, &cerr)
 	return takeError(&cerr)
@@ -136,37 +149,46 @@ func (c *Counter) Unsubscribe() error {
 
 // Key returns the datatype key.
 func (c *Counter) Key() string {
+	defer runtime.KeepAlive(c)
 	return goString(C.qortoo_counter_get_key(c.ptr))
 }
 
 // Type returns the datatype kind (always TypeCounter for a Counter).
 func (c *Counter) Type() DataType {
+	defer runtime.KeepAlive(c)
 	return DataType(C.qortoo_counter_get_type(c.ptr))
 }
 
 // State returns the current lifecycle state.
 func (c *Counter) State() DatatypeState {
+	defer runtime.KeepAlive(c)
 	return DatatypeState(C.qortoo_counter_get_state(c.ptr))
 }
 
 // ServerVersion returns the server-side version (0 before the first sync).
 func (c *Counter) ServerVersion() uint64 {
+	defer runtime.KeepAlive(c)
 	return uint64(C.qortoo_counter_get_server_version(c.ptr))
 }
 
 // ClientVersion returns the number of local operations.
 func (c *Counter) ClientVersion() uint64 {
+	defer runtime.KeepAlive(c)
 	return uint64(C.qortoo_counter_get_client_version(c.ptr))
 }
 
 // SyncedClientVersion returns the last client version acknowledged by the server.
 func (c *Counter) SyncedClientVersion() uint64 {
+	defer runtime.KeepAlive(c)
 	return uint64(C.qortoo_counter_get_synced_client_version(c.ptr))
 }
 
 // SetHandler registers (or replaces) a handler at the given priority
 // (lower priority runs first).
 func (c *Counter) SetHandler(priority uint, h *Handler) {
+	defer runtime.KeepAlive(c)
+	// If registration fails (e.g., the counter is closed), Rust still fires
+	// userdata_drop exactly once, releasing this handle.
 	hh := cgo.NewHandle(h)
 	C.qortoo_counter_set_handler(
 		c.ptr,
@@ -181,6 +203,7 @@ func (c *Counter) SetHandler(priority uint, h *Handler) {
 // UnsetHandler removes the handler at the given priority. Returns true if one
 // was removed.
 func (c *Counter) UnsetHandler(priority uint) bool {
+	defer runtime.KeepAlive(c)
 	return bool(C.qortoo_counter_unset_handler(c.ptr, C.uintptr_t(priority)))
 }
 
@@ -194,6 +217,7 @@ type txContext struct {
 // operation performed through tx is rolled back. fn runs inline on the calling
 // goroutine; tx is only valid during the call.
 func (c *Counter) Transaction(tag string, fn func(tx *Counter) error) error {
+	defer runtime.KeepAlive(c)
 	cTag := cString(tag)
 	defer freeCString(cTag)
 
@@ -213,10 +237,13 @@ func (c *Counter) Transaction(tag string, fn func(tx *Counter) error) error {
 }
 
 // Close releases this handle. The underlying datatype stays registered in its
-// client. No-op for transaction-scoped handles.
+// client. No-op for transaction-scoped handles. Close must not be called
+// concurrently with other methods on the same object.
 func (c *Counter) Close() {
 	if c.ptr != nil && !c.borrowed {
+		c.cleanup.Stop()
 		C.qortoo_counter_free(c.ptr)
 	}
 	c.ptr = nil
+	c.client = nil
 }

@@ -147,6 +147,7 @@ void qortoo_client_unsubscribe_datatype(const struct QortooClient *client,
 
 /**
  * Builds a counter in `Creating` state (writable). `options` may be null.
+ * The handler `userdata_drop` (if provided) fires exactly once even on failure.
  */
 struct QortooCounter *qortoo_counter_create(const struct QortooClient *client,
                                             const char *key,
@@ -155,6 +156,7 @@ struct QortooCounter *qortoo_counter_create(const struct QortooClient *client,
 
 /**
  * Builds a counter in `Subscribing` state (read-only until synced). `options` may be null.
+ * The handler `userdata_drop` (if provided) fires exactly once even on failure.
  */
 struct QortooCounter *qortoo_counter_subscribe(const struct QortooClient *client,
                                                const char *key,
@@ -163,6 +165,7 @@ struct QortooCounter *qortoo_counter_subscribe(const struct QortooClient *client
 
 /**
  * Builds a counter in `SubscribingOrCreating` state (writable). `options` may be null.
+ * The handler `userdata_drop` (if provided) fires exactly once even on failure.
  */
 struct QortooCounter *qortoo_counter_subscribe_or_create(const struct QortooClient *client,
                                                          const char *key,
@@ -244,7 +247,8 @@ void qortoo_counter_transaction(const struct QortooCounter *counter,
 
 /**
  * Registers (or replaces) a handler at `priority`. Callbacks arrive on Qortoo tokio
- * worker threads; `userdata_drop` fires when the handler is replaced or unset.
+ * worker threads; `userdata_drop` fires exactly once when the handler is replaced or
+ * unset — or immediately if `counter` is null and the handler cannot be registered.
  */
 void qortoo_counter_set_handler(const struct QortooCounter *counter,
                                 uintptr_t priority,

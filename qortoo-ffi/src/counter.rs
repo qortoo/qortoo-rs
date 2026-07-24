@@ -69,6 +69,17 @@ unsafe fn build_counter(
     unsafe {
         clear_err(err_out);
         ffi_guard(err_out, ptr::null_mut(), || {
+            // Take ownership of the foreign handler userdata immediately: every
+            // path out of this function — early failures and panics included —
+            // must fire `userdata_drop` exactly once, either here via
+            // `ForeignHandlerCtx::drop` or later when the registered handler is
+            // dropped by the datatype.
+            let mut handler_ctx = options.as_ref().map(|opts| ForeignHandlerCtx {
+                on_state_change: opts.on_state_change,
+                on_error: opts.on_error,
+                userdata: opts.handler_userdata,
+                userdata_drop: opts.handler_userdata_drop,
+            });
             let Some(client) = client.as_ref() else {
                 set_err(err_out, QORTOO_ERR_INVALID_ARGUMENT, "client is null");
                 return ptr::null_mut();
@@ -89,14 +100,13 @@ unsafe fn build_counter(
                     builder =
                         builder.with_max_memory_size_of_push_buffer(opts.max_push_buffer_size);
                 }
-                if opts.on_state_change.is_some() || opts.on_error.is_some() {
-                    let handler = make_foreign_handler(ForeignHandlerCtx {
-                        on_state_change: opts.on_state_change,
-                        on_error: opts.on_error,
-                        userdata: opts.handler_userdata,
-                        userdata_drop: opts.handler_userdata_drop,
-                    });
-                    builder = builder.with_handler(opts.handler_priority, handler);
+                if let Some(ctx) = handler_ctx.take() {
+                    if ctx.on_state_change.is_some() || ctx.on_error.is_some() {
+                        builder =
+                            builder.with_handler(opts.handler_priority, make_foreign_handler(ctx));
+                    }
+                    // No callbacks: ctx drops here and releases the userdata,
+                    // since Rust retains nothing that could fire it later.
                 }
             }
             match builder.build_counter() {
@@ -111,6 +121,7 @@ unsafe fn build_counter(
 }
 
 /// Builds a counter in `Creating` state (writable). `options` may be null.
+/// The handler `userdata_drop` (if provided) fires exactly once even on failure.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn qortoo_counter_create(
     client: *const QortooClient,
@@ -122,6 +133,7 @@ pub unsafe extern "C" fn qortoo_counter_create(
 }
 
 /// Builds a counter in `Subscribing` state (read-only until synced). `options` may be null.
+/// The handler `userdata_drop` (if provided) fires exactly once even on failure.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn qortoo_counter_subscribe(
     client: *const QortooClient,
@@ -133,6 +145,7 @@ pub unsafe extern "C" fn qortoo_counter_subscribe(
 }
 
 /// Builds a counter in `SubscribingOrCreating` state (writable). `options` may be null.
+/// The handler `userdata_drop` (if provided) fires exactly once even on failure.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn qortoo_counter_subscribe_or_create(
     client: *const QortooClient,
@@ -336,7 +349,8 @@ pub unsafe extern "C" fn qortoo_counter_transaction(
 }
 
 /// Registers (or replaces) a handler at `priority`. Callbacks arrive on Qortoo tokio
-/// worker threads; `userdata_drop` fires when the handler is replaced or unset.
+/// worker threads; `userdata_drop` fires exactly once when the handler is replaced or
+/// unset — or immediately if `counter` is null and the handler cannot be registered.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn qortoo_counter_set_handler(
     counter: *const QortooCounter,
@@ -346,14 +360,17 @@ pub unsafe extern "C" fn qortoo_counter_set_handler(
     userdata: usize,
     userdata_drop: QortooUserdataDropCallback,
 ) {
-    if let Some(c) = unsafe { counter.as_ref() } {
-        let handler = make_foreign_handler(ForeignHandlerCtx {
-            on_state_change,
-            on_error,
-            userdata,
-            userdata_drop,
-        });
-        c.inner.set_handler(priority, handler);
+    // Constructed before the null check so the foreign userdata is released
+    // exactly once even when the handler cannot be registered.
+    let ctx = ForeignHandlerCtx {
+        on_state_change,
+        on_error,
+        userdata,
+        userdata_drop,
+    };
+    match unsafe { counter.as_ref() } {
+        Some(c) => c.inner.set_handler(priority, make_foreign_handler(ctx)),
+        None => drop(ctx),
     }
 }
 

@@ -49,6 +49,7 @@ func goQortooOnError(userdata C.uintptr_t, code C.int32_t, msg *C.char) {
 func goQortooUserdataDrop(userdata C.uintptr_t) {
 	if userdata != 0 {
 		cgo.Handle(userdata).Delete()
+		notifyLifecycle("handler_userdata")
 	}
 }
 
