@@ -23,3 +23,7 @@ GEMINI.md
 CLAUDE.md
 # Developer-local Prometheus scrape configs (keep .example files)
 qortoo-rs-docker/prometheus/conf.d/*.yml
+
+# Benchmark runs: large, regenerated constantly, and only meaningful next to the
+# machine that produced them (Bencher holds the shared history)
+benches/results/

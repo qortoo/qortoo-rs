@@ -84,11 +84,10 @@ graph TD
 
 - **Connectivity backends are Rust-only**: synchronization transports are implemented
   in the Rust core and exposed to Go as opaque handles; Go selects and configures a
-  backend but never implements the transport. A Go-implemented transport path
-  (`ForeignConnectivity` + a Go `Connectivity` interface) existed and was removed as
-  speculative: it carried the binding's riskiest FFI surface (per-sync cgo callbacks,
-  cross-allocator byte ownership, panic containment on worker threads) with no real
-  consumer. The implementation and its lessons remain in git history.
+  backend but never implements the transport. A Go-implemented transport is the
+  binding's riskiest possible surface — per-sync cgo callbacks, cross-allocator byte
+  ownership, and panic containment on worker threads — and that risk is only worth
+  taking for a transport the core cannot provide.
 - **Go names mirror Rust names 1:1**: the Go wrapper of a core type keeps that type's
   name (e.g., Go `LocalConnectivity` wraps Rust `LocalConnectivity`), so navigating
   between the binding and the core requires no mental mapping.
@@ -111,9 +110,35 @@ graph TD
   unspecified. `Close()` must not be called concurrently with other methods on the same
   object — everything else is safe for concurrent use.
 
+## Performance
+
+The cost of the binding is measured directly: the same five scenarios are implemented
+against the Rust core (`benches/qortoo_bench.rs`) and through the binding
+(`go/qortoo/benchmark_test.go`), so the difference between the two is the price of
+crossing the FFI boundary.
+
+| Scenario | Rust core | Go binding | Binding overhead |
+| --- | --- | --- | --- |
+| `GetValue` | 3.655 ns | 30.330 ns | **+26.7 ns** |
+| `IncreaseBy` | 227.1 ns | 276.8 ns | **+49.7 ns** |
+| `Transaction` (10 ops) | 1.968 µs | 2.701 µs | **+0.73 µs** |
+| `SyncLocal` | 7.299 µs | 8.029 µs | not resolvable above the noise |
+| `BuildCounter` | 18.83 µs | 37.01 µs | order of magnitude only |
+
+A boundary crossing costs roughly **27 ns**, and its weight falls as the operation gets
+more expensive — 88% of a read, 18% of a write, and a rounding error in the sync path.
+The transaction row is larger because the callback trampoline crosses back (Go → Rust →
+Go) and each inner operation crosses again. The handle-lifetime safety net
+(`runtime.AddCleanup`, `runtime.KeepAlive`) is inside these numbers and is not separable
+from the noise.
+
+See [`docs/performance.md`](performance.md) for the measurement protocol, the reasons the
+harness is shaped the way it is, and how runs are compared over time.
+
 ## Related Concepts
 
 - [`docs/architecture.md`](architecture.md) — layer stack the FFI wraps
 - [`docs/datatype-state.md`](datatype-state.md) — states mirrored by Go's `DatatypeState`
 - [`docs/error-handling.md`](error-handling.md) — error codes surfaced through `QortooError`
 - [`docs/event-loop.md`](event-loop.md) — where `Notify` events land
+- [`docs/performance.md`](performance.md) — how the binding overhead above is measured
