@@ -38,6 +38,8 @@ Each datatype is composed of five layers stacked vertically. A user operation pa
 | [Event Loop](event-loop.md) | Priority-based event processing, channel types, and exponential backoff behavior |
 | [Error Handling](error-handling.md) | Error taxonomy, `RecoveryAction` routing, and sync-path vs commit-path recovery |
 | [Observability](observability.md) | Tracing, log layer, Prometheus metrics, and Pyroscope profiling integration |
+| [Go Binding](go-binding.md) | C ABI (`qortoo-ffi`), cgo package (`go/qortoo`), and Go-implemented connectivity |
+| [Performance](performance.md) | Rust/Go benchmark pair, fixed-budget harness, benchstat and Bencher tracking |
 
 ## Usage Guides
 

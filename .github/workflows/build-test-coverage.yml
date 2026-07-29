@@ -88,3 +88,45 @@ jobs:
               repo: context.repo.repo,
               body: comment
             });
+
+  go-binding:
+    name: Go binding tests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          # go/qortoo has no module dependencies, so there is no go.sum to key a cache on.
+          cache: false
+
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-ffi-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ffi-
+
+      - name: Build FFI library
+        run: cargo build -p qortoo-ffi
+
+      - name: Run Go tests
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
+          DYLD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
+        run: cd go/qortoo && go vet ./... && go test -race ./...

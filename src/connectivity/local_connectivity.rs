@@ -189,21 +189,7 @@ impl Connectivity for LocalConnectivity {
         };
         let (pulled, should_remove_server) = {
             let mut server = server_with_lock.write();
-            let pulled = match pushed.state {
-                DatatypeState::Creating => server.process_creating(pushed)?,
-                DatatypeState::Subscribing => server.process_subscribing(pushed)?,
-                DatatypeState::SubscribingOrCreating => {
-                    server.process_subscribing_or_creating(pushed)?
-                }
-                DatatypeState::Subscribed => {
-                    server.process_subscribed(pushed, self.is_realtime())?
-                }
-                DatatypeState::Unsubscribing => {
-                    server.process_unsubscribing(pushed, self.is_realtime())?
-                }
-                DatatypeState::Deleting => server.process_deleting(pushed)?,
-                DatatypeState::Disabled => server.process_disabled(pushed)?,
-            };
+            let pulled = server.process(pushed, self.is_realtime())?;
             (
                 pulled,
                 pushed.state == DatatypeState::Unsubscribing && server.is_empty(),

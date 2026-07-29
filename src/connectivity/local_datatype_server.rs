@@ -1,4 +1,8 @@
-use std::{collections::HashMap, fmt::Display, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Display,
+    sync::Arc,
+};
 
 use crossbeam_channel::Sender;
 use tracing::{instrument, trace};
@@ -45,6 +49,9 @@ pub struct LocalDatatypeServer {
     sseq: u64,
     cseq_map: HashMap<Cuid, CheckPoint>,
     history: Vec<Arc<Transaction>>,
+    /// Cuids the server considers subscribed. Unlike `wired_map`, this also covers
+    /// clients that have no in-process `WiredDatatype` (e.g., after the creator leaves).
+    subscribers: HashSet<Cuid>,
 }
 
 impl Display for LocalDatatypeServer {
@@ -72,6 +79,7 @@ impl LocalDatatypeServer {
             sseq: 0,
             cseq_map: HashMap::new(),
             history: Vec::new(),
+            subscribers: HashSet::new(),
             key: attr.key.clone(),
             r#type: attr.r#type,
             duid: attr.get_duid(),
@@ -79,18 +87,39 @@ impl LocalDatatypeServer {
     }
 
     pub fn insert_client_item(&mut self, wired: Arc<WiredDatatype>, sender: Sender<Event>) {
+        self.subscribers.insert(wired.cuid());
         self.wired_map.insert(wired.cuid(), wired.clone());
         self.sender_map.insert(wired.cuid(), sender);
     }
 
     pub fn is_empty(&self) -> bool {
-        self.wired_map.is_empty()
+        // Both must be empty: `wired_map` can hold in-process clients registered before
+        // their first sync, which are not yet in `subscribers`.
+        self.wired_map.is_empty() && self.subscribers.is_empty()
     }
 
     #[cfg(test)]
     pub fn remove_client_subscription(&mut self, cuid: &Cuid) {
         self.wired_map.remove(cuid);
         self.sender_map.remove(cuid);
+        self.subscribers.remove(cuid);
+    }
+
+    /// Dispatches one pushed pack to the state-specific processor.
+    pub fn process(
+        &mut self,
+        pushed: &PushPullPack,
+        is_realtime: bool,
+    ) -> Result<PushPullPack, ConnectivityError> {
+        match pushed.state {
+            DatatypeState::Creating => self.process_creating(pushed),
+            DatatypeState::Subscribing => self.process_subscribing(pushed),
+            DatatypeState::SubscribingOrCreating => self.process_subscribing_or_creating(pushed),
+            DatatypeState::Subscribed => self.process_subscribed(pushed, is_realtime),
+            DatatypeState::Unsubscribing => self.process_unsubscribing(pushed, is_realtime),
+            DatatypeState::Deleting => self.process_deleting(pushed),
+            DatatypeState::Disabled => self.process_disabled(pushed),
+        }
     }
 
     fn push_transactions(&mut self, pushed: &PushPullPack) -> (u64, bool) {
@@ -138,6 +167,7 @@ impl LocalDatatypeServer {
         self.created = true;
         self.creator = pushed.cuid.clone();
         self.duid = pushed.duid.clone();
+        self.subscribers.insert(pushed.cuid.clone());
         let (cseq, _) = self.push_transactions(pushed);
         pulled.checkpoint.sseq = self.sseq;
         pulled.checkpoint.cseq = cseq;
@@ -164,7 +194,7 @@ impl LocalDatatypeServer {
         is_realtime: bool,
     ) -> Result<PushPullPack, ConnectivityError> {
         let mut pulled = pushed.get_pulled_stub();
-        if !self.wired_map.contains_key(&pushed.cuid) {
+        if !self.subscribers.contains(&pushed.cuid) {
             pulled.error = Some(PushPullError::MissingSubscription(
                 format!(
                     "cuid '{}' has no active datatype subscription on this server",
@@ -238,7 +268,7 @@ impl LocalDatatypeServer {
     ) -> Result<PushPullPack, ConnectivityError> {
         // If the client's datatype is not subscribed on this server, skip push processing to avoid
         // polluting cseq_map, and return Disabled directly since that is the desired state.
-        if !self.wired_map.contains_key(&pushed.cuid) {
+        if !self.subscribers.contains(&pushed.cuid) {
             let mut pulled = pushed.get_pulled_stub();
             pulled.state = DatatypeState::Disabled;
             return Ok(pulled);
@@ -250,9 +280,18 @@ impl LocalDatatypeServer {
         // either way, and leaving stale entries would cause infinite unsubscribe retry loops.
         self.wired_map.remove(&pushed.cuid);
         self.sender_map.remove(&pushed.cuid);
+        self.subscribers.remove(&pushed.cuid);
 
         if self.creator == pushed.cuid {
-            if let Some(next_creator) = self.wired_map.keys().next() {
+            // Prefer a client with an in-process wired (snapshot-capable); otherwise any
+            // remaining pack-only subscriber, whose future subscribers are served by the
+            // history-replay fallback in process_subscribing.
+            if let Some(next_creator) = self
+                .wired_map
+                .keys()
+                .next()
+                .or_else(|| self.subscribers.iter().next())
+            {
                 self.creator = next_creator.clone();
             }
         }
@@ -315,20 +354,22 @@ impl LocalDatatypeServer {
         }
 
         pulled.duid = self.duid.clone();
-        let wired_of_creator = match self.get_creator_wired_datatype() {
-            Some(w) => w,
-            None => {
-                pulled.error = Some(PushPullError::ServerInternalError(format!(
-                    "creator unavailable for '{}'",
-                    pushed.resource_id()
-                )));
-                return Ok(pulled);
+        self.subscribers.insert(pushed.cuid.clone());
+        match self.get_creator_wired_datatype() {
+            Some(wired_of_creator) => {
+                let tx = wired_of_creator.get_subscribe_snapshot();
+                pulled.checkpoint.sseq = tx.sseq;
+                pulled.snapshot_transaction = Some(Arc::new(tx));
+                self.pull_transactions(&mut pulled);
             }
-        };
-        let tx = wired_of_creator.get_subscribe_snapshot();
-        pulled.checkpoint.sseq = tx.sseq;
-        pulled.snapshot_transaction = Some(Arc::new(tx));
-        self.pull_transactions(&mut pulled);
+            None => {
+                // No in-process creator (pack-only server, or the creator's wired is
+                // gone): serve the subscriber by replaying the full transaction history
+                // instead of a creator-provided snapshot.
+                pulled.checkpoint.sseq = 0;
+                self.pull_transactions(&mut pulled);
+            }
+        }
         pulled.state = DatatypeState::Subscribed;
         Ok(pulled)
     }}
@@ -1023,12 +1064,12 @@ mod tests_local_datatype_server {
 
     #[test]
     #[instrument]
-    fn can_fail_subscribe_when_creator_is_unavailable() {
+    fn can_subscribe_via_history_replay_when_creator_is_unavailable() {
         let connectivity = LocalConnectivity::new_arc();
         connectivity.set_realtime(false);
         let (collection, key, resource_id) = get_test_ids!();
 
-        // client1 creates the datatype and becomes the creator.
+        // client1 creates the datatype, pushes data, and becomes the creator.
         let client1 = Client::builder(collection.clone(), "creator")
             .with_connectivity(connectivity.clone())
             .build()
@@ -1037,6 +1078,7 @@ mod tests_local_datatype_server {
             .create_datatype(key.clone())
             .build_counter()
             .unwrap();
+        counter1.increase_by(7).unwrap();
         counter1.sync().unwrap();
         assert_eq!(counter1.get_state(), DatatypeState::Subscribed);
 
@@ -1062,9 +1104,8 @@ mod tests_local_datatype_server {
             .clone();
         connectivity.remove_client_subscription(&resource_id, &creator_cuid);
 
-        // A new subscriber receives ServerInternalError → SyncFailed (RetryWithBackOff).
-        // The server does not override the state, so the client remains in Subscribing and
-        // retries with exponential backoff.
+        // Without an in-process creator wired, the server falls back to replaying the
+        // full transaction history, so a new subscriber still succeeds and sees the data.
         let client3 = Client::builder(collection.clone(), "new-subscriber")
             .with_connectivity(connectivity.clone())
             .build()
@@ -1073,8 +1114,8 @@ mod tests_local_datatype_server {
             .subscribe_datatype(key.clone())
             .build_counter()
             .unwrap();
-        let result = counter3.sync();
-        assert!(matches!(result.unwrap_err(), DatatypeError::SyncFailed(_)));
-        assert_eq!(counter3.get_state(), DatatypeState::Subscribing);
+        counter3.sync().unwrap();
+        assert_eq!(counter3.get_state(), DatatypeState::Subscribed);
+        assert_eq!(counter3.get_value(), 7);
     }
 }

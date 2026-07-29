@@ -1,3 +1,6 @@
+[workspace]
+members = ["qortoo-ffi"]
+
 [package]
 name = "qortoo"
 version = "0.1.0"
@@ -22,7 +25,7 @@ tracing-subscriber = { version = "^0.3.23", features = [
 
 tracing = "^0.1.44"
 nanoid = "^0.5.0"
-tokio = { version = "^1.52", features = ["full"] }
+tokio = { version = "^1.53", features = ["full"] }
 parking_lot = "^0.12"
 time = { version = "^0.3", features = [
     "formatting",
@@ -40,7 +43,7 @@ crossbeam-channel = "^0.5"
 futures = "^0.3"
 btparse = "^0.2"
 strum_macros = "^0.28"
-regex = "^1.12"
+regex = "^1.13"
 dyn-fmt = "^0.4"
 backon = { version = "^1.6", default-features = false, features = ["tokio-sleep"] }
 metrics = "^0.24"
@@ -60,6 +63,12 @@ path = "examples/observability/profile.rs"
 [[example]]
 name = "trace"
 path = "examples/observability/trace.rs"
+
+# Rust half of the Rust/Go benchmark pair; the Go half lives in
+# `go/qortoo/benchmark_test.go` (see `docs/performance.md`).
+[[bench]]
+name = "qortoo_bench"
+harness = false
 
 [dev-dependencies]
 rstest = "^0.26"
@@ -82,4 +91,4 @@ opentelemetry_sdk = { version = "0.32" }
 opentelemetry-otlp = { version = "0.32", features = [
     "grpc-tonic",
 ]}
-pyroscope = { version = "^2.0", features = ["backend-pprof-rs"] }
+pyroscope = { version = "^2.1", features = ["backend-pprof-rs"] }
