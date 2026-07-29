@@ -126,4 +126,7 @@ jobs:
         run: cargo build -p qortoo-ffi
 
       - name: Run Go tests
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
+          DYLD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
         run: cd go/qortoo && go vet ./... && go test -race ./...
