@@ -84,7 +84,7 @@ func TestContextAwareOperationsWithoutObservability(t *testing.T) {
 	require.Equal(t, int64(3), counter.Value())
 
 	require.NoError(t, counter.SyncContext(ctx))
-	require.Equal(t, StateSubscribed, counter.State()) 
+	require.Equal(t, StateSubscribed, counter.State())
 
 	// A context without a span takes the same path with empty headers.
 	require.NoError(t, counter.SyncContext(context.Background()))

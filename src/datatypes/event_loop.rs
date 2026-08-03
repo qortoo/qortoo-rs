@@ -386,6 +386,7 @@ mod tests_event_loop {
     #[instrument]
     fn can_auto_retry_after_backoff_timeout() {
         let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
         let (collection, key, resource_id) = get_test_ids!();
 
         let client = Client::builder(collection, "client")
@@ -409,7 +410,13 @@ mod tests_event_loop {
             }
         });
 
+        // Enter BackOff deterministically. Leaving realtime enabled while installing the
+        // interceptor races the initial push against this assertion and can complete all
+        // retries before the test observes the Creating state.
+        let err = counter.sync().unwrap_err();
+        assert!(matches!(err, DatatypeError::SyncFailed(_)));
         assert_eq!(counter.get_state(), DatatypeState::Creating);
+        connectivity.set_realtime(true);
 
         awaitility::at_most(Duration::from_secs(10))
             .poll_interval(Duration::from_millis(100))
