@@ -59,11 +59,27 @@ pub enum Event {
     #[display("Stop")]
     Stop(Sender<()>),
     #[display("PushTransaction")]
-    PushTransaction(Option<oneshot::Sender<Option<DatatypeError>>>),
+    PushTransaction {
+        resp_tx: Option<oneshot::Sender<Option<DatatypeError>>>,
+        /// Span of whoever requested the sync, captured at send time. The loop enters
+        /// it around `push_pull()` so the sync (and the handler notifications it
+        /// dispatches) continue the requester's trace instead of the loop's own one.
+        caller: Span,
+    },
     #[display("BackOff")]
     BackOff,
     #[display("Notify")]
     Notify(Notification),
+}
+
+impl Event {
+    /// Builds a `PushTransaction` event that carries the current span as its origin.
+    fn push_transaction(resp_tx: Option<oneshot::Sender<Option<DatatypeError>>>) -> Self {
+        Event::PushTransaction {
+            resp_tx,
+            caller: Span::current(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -135,7 +151,7 @@ impl EventLoop {
                                 }
                                 break;
                             }
-                            Event::PushTransaction(resp_tx) => {
+                            Event::PushTransaction { resp_tx, caller } => {
                                 if matches!(loop_mode, LoopMode::Stopped) {
                                     Self::process_blocking_resp(
                                         resp_tx,
@@ -146,20 +162,24 @@ impl EventLoop {
                                     );
                                     continue;
                                 }
-                                let opt_datatype_error = match wired.push_pull() {
-                                    Ok(_) => {
-                                        loop_mode = LoopMode::Normal;
-                                        None
-                                    }
-                                    Err(dewa) => {
-                                        loop_mode = LoopMode::from(dewa.recovery);
-                                        if matches!(loop_mode, LoopMode::BackOff) {
-                                            metrics::emit_backoff(&wired.attr);
+                                // Entering the requester's span makes the sync — and the
+                                // handler notifications dispatched from it — part of the
+                                // trace that asked for it.
+                                let opt_datatype_error =
+                                    caller.in_scope(|| match wired.push_pull() {
+                                        Ok(_) => {
+                                            loop_mode = LoopMode::Normal;
+                                            None
                                         }
-                                        wired.handle_error(dewa.error.clone(), dewa.recovery);
-                                        Some(dewa.error)
-                                    }
-                                };
+                                        Err(dewa) => {
+                                            loop_mode = LoopMode::from(dewa.recovery);
+                                            if matches!(loop_mode, LoopMode::BackOff) {
+                                                metrics::emit_backoff(&wired.attr);
+                                            }
+                                            wired.handle_error(dewa.error.clone(), dewa.recovery);
+                                            Some(dewa.error)
+                                        }
+                                    });
                                 if !matches!(loop_mode, LoopMode::BackOff) {
                                     backoff = None;
                                 }
@@ -169,7 +189,7 @@ impl EventLoop {
                             Event::Notify(notify) => {
                                 if wired.handle_notification(notify) {
                                     // best-effort: drop if a PushTransaction is already queued
-                                    let _ = bounded_tx.try_send(Event::PushTransaction(None));
+                                    let _ = bounded_tx.try_send(Event::push_transaction(None));
                                 }
                             }
                         },
@@ -213,7 +233,7 @@ impl EventLoop {
         };
 
         if push_if_needed && wired.push_if_needed() {
-            return Ok(Event::PushTransaction(None));
+            return Ok(Event::push_transaction(None));
         }
 
         let map_err = |e, ch: &str| {
@@ -275,13 +295,13 @@ impl EventLoop {
         if !self.connectivity.is_realtime() {
             return;
         }
-        self.send_to_bounded(Event::PushTransaction(None))
+        self.send_to_bounded(Event::push_transaction(None))
             .unwrap_or_default();
     }
 
     pub fn send_push_transaction_with_guarantee(&self) -> Result<(), DatatypeError> {
         let (tx, rx) = oneshot::channel();
-        self.send_to_unbounded(Event::PushTransaction(Some(tx)))?;
+        self.send_to_unbounded(Event::push_transaction(Some(tx)))?;
         futures::executor::block_on(async {
             match rx.await {
                 Ok(Some(err)) => Err(err),
@@ -366,6 +386,7 @@ mod tests_event_loop {
     #[instrument]
     fn can_auto_retry_after_backoff_timeout() {
         let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
         let (collection, key, resource_id) = get_test_ids!();
 
         let client = Client::builder(collection, "client")
@@ -389,7 +410,13 @@ mod tests_event_loop {
             }
         });
 
+        // Enter BackOff deterministically. Leaving realtime enabled while installing the
+        // interceptor races the initial push against this assertion and can complete all
+        // retries before the test observes the Creating state.
+        let err = counter.sync().unwrap_err();
+        assert!(matches!(err, DatatypeError::SyncFailed(_)));
         assert_eq!(counter.get_state(), DatatypeState::Creating);
+        connectivity.set_realtime(true);
 
         awaitility::at_most(Duration::from_secs(10))
             .poll_interval(Duration::from_millis(100))

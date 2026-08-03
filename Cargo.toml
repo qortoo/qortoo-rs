@@ -10,18 +10,48 @@ rust-version = "1.87.0"
 
 [features]
 default = []
-test = ["log_layer"]
-log_layer = [
+observability-log = [
     "dep:tracing-subscriber",
+    "tracing-subscriber/registry",
+]
+# Opt-in, process-global telemetry installation (`qortoo::init_observability`). Off by
+# default: building a `Client` never installs a subscriber, a recorder, or an exporter —
+# the application owns that decision. Bindings that cannot install Rust globals from
+# their own side (see `qortoo-ffi`) enable the umbrella feature.
+observability = [
+    "observability-trace",
+    "observability-metrics",
+]
+observability-trace = [
+    "observability-log",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:tracing-opentelemetry",
+    "tracing-subscriber/env-filter",
+    "tracing-subscriber/fmt",
+    "tracing-subscriber/json",
+]
+observability-metrics = [
+    "dep:metrics-exporter-prometheus",
 ]
 
 [dependencies]
-# Feature-gated by `log_layer`.
-tracing-subscriber = { version = "^0.3.23", features = [
-    "json",
-    "fmt",
-    "env-filter",
+# `observability-log` only needs registry support. Managed tracing adds filtering and
+# JSON/fmt support when it installs a complete subscriber.
+tracing-subscriber = { version = "^0.3.23", default-features = false, optional = true }
+# Exporter dependencies are opt-in and restricted to the transports/signals Qortoo uses.
+# Enabling `observability-trace` for unit tests also installs the test trace pipeline.
+opentelemetry_sdk = { version = "^0.32", default-features = false, features = [
+    "trace",
 ], optional = true }
+opentelemetry-otlp = { version = "^0.32", features = [
+    "trace",
+    "grpc-tonic",
+], default-features = false, optional = true }
+metrics-exporter-prometheus = { version = "^0.18", default-features = false, features = [
+    "http-listener",
+], optional = true }
+tracing-opentelemetry = { version = "^0.33", default-features = false, optional = true }
 
 tracing = "^0.1.44"
 nanoid = "^0.5.0"
@@ -37,7 +67,6 @@ derive_more = { version = "^2.1", features = ["display", "debug"] }
 chrono = "^0.4"
 thiserror = "^2.0"
 opentelemetry = { version = "^0.32" }
-tracing-opentelemetry = { version = "^0.33" }
 ubyte = "^0.10"
 crossbeam-channel = "^0.5"
 futures = "^0.3"
@@ -52,9 +81,12 @@ metrics = "^0.24"
 name = "log"
 path = "examples/observability/log.rs"
 
+# Each managed-exporter example names the narrow feature it needs. The `observability`
+# umbrella remains valid because it enables both.
 [[example]]
 name = "metrics"
 path = "examples/observability/metrics.rs"
+required-features = ["observability-metrics"]
 
 [[example]]
 name = "profile"
@@ -63,6 +95,7 @@ path = "examples/observability/profile.rs"
 [[example]]
 name = "trace"
 path = "examples/observability/trace.rs"
+required-features = ["observability-trace"]
 
 # Rust half of the Rust/Go benchmark pair; the Go half lives in
 # `go/qortoo/benchmark_test.go` (see `docs/performance.md`).
@@ -75,7 +108,7 @@ rstest = "^0.26"
 awaitility = "^0.4"
 tokio = { version = "^1.52", features = ["full", "test-util"] }
 metrics-util = { version = "^0.20", features = ["debugging"] }
-serial_test = "^3.5"
+serial_test = "^4.0.1"
 tracing-subscriber = { version = "^0.3", features = [
     "json",
     "fmt",
@@ -84,11 +117,17 @@ tracing-subscriber = { version = "^0.3", features = [
 ctor = "^1.0"
 tracing-loki = "^0.2"
 url = "^2.5"
-metrics-exporter-prometheus = "^0.18"
+metrics-exporter-prometheus = { version = "^0.18", default-features = false, features = [
+    "http-listener",
+] }
 libc = { version = "^1.0.0-alpha.3"}
 once_cell = { version = "^1.21"}
-opentelemetry_sdk = { version = "0.32" }
-opentelemetry-otlp = { version = "0.32", features = [
+opentelemetry_sdk = { version = "0.32", default-features = false, features = [
+    "trace",
+] }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = [
+    "trace",
     "grpc-tonic",
 ]}
+tracing-opentelemetry = { version = "^0.33", default-features = false }
 pyroscope = { version = "^2.1", features = ["backend-pprof-rs"] }

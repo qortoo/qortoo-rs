@@ -4,7 +4,7 @@
 //!   make obs-up
 //!
 //! Run:
-//!   cargo run --example metrics
+//!   cargo run --features observability-metrics --example metrics
 //!
 //! The example exposes a Prometheus scrape endpoint at http://localhost:9000/metrics.
 //! The local Prometheus config scrapes host.docker.internal:9000 every 15s.
@@ -13,14 +13,15 @@
 
 use std::time::Duration;
 
-use metrics_exporter_prometheus::PrometheusBuilder;
-use qortoo::{Client, Datatype};
+use qortoo::{Client, Datatype, MetricsSettings, ObservabilitySettings};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    PrometheusBuilder::new()
-        .with_http_listener(([0, 0, 0, 0], 9000))
-        .install()?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    qortoo::init_observability(ObservabilitySettings {
+        metrics: Some(MetricsSettings {
+            listen_addr: qortoo::resolve_metrics_listen_addr(None)?,
+        }),
+        ..Default::default()
+    })?;
 
     println!("Scrape endpoint : http://localhost:9000/metrics");
     println!("Prometheus target: host.docker.internal:9000 (macOS/Windows)");
@@ -40,6 +41,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "iteration {iteration:>4}: counter = {}",
             counter.get_value()
         );
-        tokio::time::sleep(Duration::from_secs(5)).await;
+        std::thread::sleep(Duration::from_secs(5));
     }
 }

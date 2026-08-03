@@ -22,6 +22,12 @@ datasources:
         datasourceUid: loki
       serviceMap:
         datasourceUid: prometheus
+      nodeGraph:
+        enabled: true
+      tracesToMetrics:
+        datasourceUid: prometheus
+        spanStartTimeShift: -2m
+        spanEndTimeShift: 2m
 
   - name: Loki
     type: loki

@@ -1,6 +1,8 @@
 pub mod clients;
 pub mod connectivity;
 pub mod datatypes;
+#[cfg(any(feature = "observability-trace", feature = "observability-metrics"))]
+pub mod observability;
 pub mod push_pull;
 
 /// A type alias for a boxed error that is thread-safe.
@@ -115,7 +117,10 @@ mod tests_datatype_errors {
     }
 
     fn into_next_stack() {
-        let err = TrySendError::Full(Event::PushTransaction(None));
+        let err = TrySendError::Full(Event::PushTransaction {
+            resp_tx: None,
+            caller: tracing::Span::none(),
+        });
         let _d3 = with_err_out!(DatatypeError::Internal(err.to_string()));
     }
 }

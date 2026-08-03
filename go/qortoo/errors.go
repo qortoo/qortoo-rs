@@ -23,6 +23,15 @@ const (
 	ErrCodePushBufferExceededMaxMemSize int32 = 211
 	ErrCodeServerRejected               int32 = 213
 
+	// Observability (900–), only from InitObservability/ShutdownObservability
+	ErrCodeObservabilityAlreadyInitialized   int32 = 900
+	ErrCodeObservabilityShutDown             int32 = 901
+	ErrCodeObservabilitySubscriber           int32 = 902
+	ErrCodeObservabilityExporter             int32 = 903
+	ErrCodeObservabilityRecorder             int32 = 904
+	ErrCodeObservabilityInvalidConfig        int32 = 905
+	ErrCodeObservabilityPartiallyInitialized int32 = 906
+
 	// FFI boundary (see qortoo-ffi)
 	ErrCodeInvalidArgument int32 = 998
 	ErrCodeInternalFFI     int32 = 999

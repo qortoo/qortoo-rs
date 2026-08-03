@@ -1,6 +1,7 @@
 package qortoo
 
 import (
+	"context"
 	"fmt"
 	"testing"
 	"time"
@@ -121,6 +122,26 @@ func TestTransactionCommitAndRollback(t *testing.T) {
 	})
 	require.Error(t, err)
 	require.Equal(t, int64(15), counter.Value())
+}
+
+func TestTransactionContextRollsBack(t *testing.T) {
+	client, err := NewClient("go-binding-test", "context-rollback")
+	require.NoError(t, err)
+	defer client.Close()
+
+	counter, err := client.CreateCounter("context-rollback-counter", nil)
+	require.NoError(t, err)
+	defer counter.Close()
+
+	wantErr := context.DeadlineExceeded
+	err = counter.TransactionContext(contextWithSpan(t, ""), "tx", func(tx *Counter) error {
+		if _, err := tx.IncreaseBy(10); err != nil {
+			return err
+		}
+		return wantErr
+	})
+	require.ErrorIs(t, err, wantErr, "the body's error must survive the FFI round trip")
+	require.Equal(t, int64(0), counter.Value())
 }
 
 func TestHandlerOnStateChange(t *testing.T) {

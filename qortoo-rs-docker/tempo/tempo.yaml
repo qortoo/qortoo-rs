@@ -17,6 +17,9 @@ ingester:
 metrics_generator:
   storage:
     path: /var/tempo/generator/wal
+    remote_write:
+      - url: http://host.docker.internal:9090/api/v1/write
+        send_exemplars: true
   ring:
     kvstore:
       store: memberlist

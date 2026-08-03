@@ -19,6 +19,41 @@
 #define QORTOO_ERR_INVALID_ARGUMENT 998
 
 /**
+ * `qortoo_observability_init` was already called in this process.
+ */
+#define QORTOO_ERR_OBSERVABILITY_ALREADY_INITIALIZED 900
+
+/**
+ * `qortoo_observability_init` was called after `qortoo_observability_shutdown`.
+ */
+#define QORTOO_ERR_OBSERVABILITY_SHUT_DOWN 901
+
+/**
+ * The global `tracing` subscriber is owned by someone else in this process.
+ */
+#define QORTOO_ERR_OBSERVABILITY_SUBSCRIBER 902
+
+/**
+ * A telemetry exporter failed to start, flush, or stop.
+ */
+#define QORTOO_ERR_OBSERVABILITY_EXPORTER 903
+
+/**
+ * The global `metrics` recorder is owned by someone else in this process.
+ */
+#define QORTOO_ERR_OBSERVABILITY_RECORDER 904
+
+/**
+ * The observability options do not describe a valid configuration.
+ */
+#define QORTOO_ERR_OBSERVABILITY_INVALID_CONFIG 905
+
+/**
+ * A previous initialization installed an irreversible global before a later step failed.
+ */
+#define QORTOO_ERR_OBSERVABILITY_PARTIALLY_INITIALIZED 906
+
+/**
  * Opaque handle to a `qortoo::Client`.
  */
 typedef struct QortooClient QortooClient;
@@ -108,6 +143,50 @@ typedef struct QortooDatatypeOptions {
  * to roll back.
  */
 typedef int32_t (*QortooTxCallback)(struct QortooCounter *tx_counter, uintptr_t userdata);
+
+/**
+ * Observability configuration. Every string is nullable; a null selects the default
+ * described on the field. A zeroed struct installs nothing but is still valid.
+ */
+typedef struct QortooObservabilityOptions {
+  /**
+   * `service.name` reported to the trace backend. Null uses `"qortoo"`; set it to the
+   * same value the application uses for its own telemetry.
+   */
+  const char *service_name;
+  /**
+   * Language of the binding, exported as `qortoo.binding.language` (e.g. `"go"`).
+   * Null omits the attribute.
+   */
+  const char *binding_language;
+  /**
+   * `tracing` filter directives (e.g. `"qortoo=debug"`). Null falls back to `RUST_LOG`,
+   * then to `"qortoo=info"`.
+   */
+  const char *log_filter;
+  /**
+   * Stdout log format: 0 = off, 1 = JSON, 2 = Qortoo's compact text format.
+   * Text colors are enabled only when stdout is connected to a terminal.
+   */
+  int32_t log_format;
+  /**
+   * Exports spans over OTLP/gRPC.
+   */
+  bool trace_enabled;
+  /**
+   * OTLP endpoint. Null falls back to `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, then
+   * `OTEL_EXPORTER_OTLP_ENDPOINT`, then `http://localhost:4317`.
+   */
+  const char *otlp_endpoint;
+  /**
+   * Installs the `metrics` recorder and serves a Prometheus scrape endpoint.
+   */
+  bool metrics_enabled;
+  /**
+   * Address of that endpoint. Null uses `0.0.0.0:9000`.
+   */
+  const char *metrics_listen_addr;
+} QortooObservabilityOptions;
 
 #ifdef __cplusplus
 extern "C" {
@@ -200,6 +279,22 @@ int64_t qortoo_counter_get_value(const struct QortooCounter *counter);
 void qortoo_counter_sync(const struct QortooCounter *counter, struct QortooError *err_out);
 
 /**
+ * `qortoo_counter_sync` continuing the caller's trace.
+ *
+ * `traceparent`/`tracestate` are the W3C trace-context headers of the calling span
+ * (both nullable). The sync — including the push/pull that runs on the event-loop
+ * thread and the handler callbacks it dispatches — becomes a child of that span.
+ * Absent or malformed headers fall back to a trace without a parent.
+ *
+ * This is a separate entry point rather than an extension of `qortoo_counter_sync`
+ * so a caller that does not propagate context pays for none of it.
+ */
+void qortoo_counter_sync_with_context(const struct QortooCounter *counter,
+                                      const char *traceparent,
+                                      const char *tracestate,
+                                      struct QortooError *err_out);
+
+/**
  * Marks this datatype as unsubscribing (see `qortoo_client_unsubscribe_datatype`).
  */
 void qortoo_counter_unsubscribe(const struct QortooCounter *counter, struct QortooError *err_out);
@@ -246,6 +341,24 @@ void qortoo_counter_transaction(const struct QortooCounter *counter,
                                 struct QortooError *err_out);
 
 /**
+ * `qortoo_counter_transaction` continuing the caller's trace.
+ *
+ * `traceparent`/`tracestate` carry the W3C trace context of the calling span (both
+ * nullable); the commit and any sync it triggers become children of that span.
+ *
+ * This is a separate entry point rather than an extension of
+ * `qortoo_counter_transaction` so a caller that does not propagate context pays for
+ * none of it.
+ */
+void qortoo_counter_transaction_with_context(const struct QortooCounter *counter,
+                                             const char *tag,
+                                             const char *traceparent,
+                                             const char *tracestate,
+                                             QortooTxCallback callback,
+                                             uintptr_t userdata,
+                                             struct QortooError *err_out);
+
+/**
  * Registers (or replaces) a handler at `priority`. Callbacks arrive on Qortoo tokio
  * worker threads; `userdata_drop` fires exactly once when the handler is replaced or
  * unset — or immediately if `counter` is null and the handler cannot be registered.
@@ -276,6 +389,29 @@ void qortoo_local_connectivity_set_realtime(struct QortooLocalConnectivity *conn
  * Releases the connectivity handle. Clients created with it keep their own reference.
  */
 void qortoo_local_connectivity_free(struct QortooLocalConnectivity *conn);
+
+/**
+ * Installs the logging, tracing, and metrics pipelines described by `options`
+ * (null selects every default). Call it once per process, before creating clients.
+ *
+ * Fails with a distinct code when it is called twice, when it is called after
+ * `qortoo_observability_shutdown`, when another library already owns the global
+ * subscriber or recorder, when an exporter cannot start, or when the options are
+ * invalid — the application must not silently lose the telemetry it configured.
+ */
+void qortoo_observability_init(const struct QortooObservabilityOptions *options,
+                               struct QortooError *err_out);
+
+/**
+ * Flushes pending telemetry and stops the exporters, waiting at most `timeout_ms`
+ * (0 selects 5s). A no-op when nothing was initialized, so it is always safe to defer.
+ *
+ * This is terminal: `tracing` allows one global subscriber per process, so a later
+ * `qortoo_observability_init` fails instead of pretending to restore the pipelines.
+ * Call it after every `qortoo_client_free`, and before the application shuts its own
+ * telemetry down.
+ */
+void qortoo_observability_shutdown(uint64_t timeout_ms, struct QortooError *err_out);
 
 /**
  * Releases a string returned by this library (or set into a `QortooError`).

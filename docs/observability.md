@@ -2,14 +2,129 @@
 
 ## Overview
 
-Qortoo-rs emits `tracing` spans and events and records metrics through the `metrics` facade. Applications configure the global tracing subscriber, metrics recorder, and exporters. The `log_layer` feature provides Qortoo's optional stdout formatting layer.
+Qortoo-rs always emits `tracing` spans/events and records metrics through the `metrics`
+facade. Applications can install their own subscriber, recorder, and exporters, or enable
+one of the managed observability features and ask Qortoo to install the corresponding
+process-global pipeline. Creating a `Client` never installs one implicitly.
 
 | Surface | Mechanism | Code |
 |---------|-----------|------|
-| Trace | `tracing` spans/events plus application-owned OpenTelemetry export | `src/observability/trace.rs`, `examples/observability/trace.rs` |
-| Log | Optional Qortoo stdout `tracing_subscriber` layer | `src/observability/log_layer.rs`, `src/observability/trace_context.rs`, `examples/observability/log.rs` |
-| Metrics | `metrics` facade calls; application-owned recorder/exporter | `src/observability/metrics.rs`, `examples/observability/metrics.rs` |
+| Trace | `tracing` spans/events plus application-owned or Qortoo-managed OpenTelemetry export | `src/observability/trace.rs`, `examples/observability/trace.rs` |
+| Log | Optional Qortoo stdout `tracing_subscriber` layer | `src/observability/log_layer.rs`, `examples/observability/log.rs` |
+| Metrics | `metrics` facade calls plus application-owned or Qortoo-managed recorder/exporter | `src/observability/metrics.rs`, `examples/observability/metrics.rs` |
 | Profile | Application-owned Pyroscope CPU profiler | `examples/observability/profile.rs` |
+
+## Feature Selection
+
+| Feature | Managed capability |
+|---------|--------------------|
+| `observability-log` | Exposes `QortooLogLayer`; does not install a subscriber |
+| `observability-trace` | Installs stdout logging and an optional OTLP/gRPC trace exporter |
+| `observability-metrics` | Installs an optional metrics recorder and Prometheus HTTP exporter |
+| `observability` | Umbrella enabling both managed exporter features |
+
+`observability-trace` includes `observability-log` because its managed tracing subscriber
+also handles stdout logs. In Rust unit tests, enabling `observability-trace` installs that
+log and trace pipeline automatically. `observability-metrics` does not compile tracing
+subscriber or OpenTelemetry dependencies. Choose the narrow feature when only one exporter
+is needed; `qortoo-ffi` enables the umbrella because the Go API exposes both exporter options.
+
+## Managed Setup
+
+Applications use the crate-root API; `prometheus.rs` is not a separate public entry point.
+The following combined setup requires the `observability` umbrella:
+
+```rust
+use std::time::Duration;
+
+use qortoo::{
+    LogFormat, MetricsSettings, ObservabilitySettings, TraceSettings,
+    init_observability, shutdown_observability,
+};
+
+init_observability(ObservabilitySettings {
+    service_name: "my-service".to_string(),
+    log_format: LogFormat::Text,
+    trace: Some(TraceSettings::default()),
+    metrics: Some(MetricsSettings {
+        listen_addr: "0.0.0.0:9000".parse()?,
+    }),
+    ..Default::default()
+})?;
+
+// Create and use Clients here.
+
+shutdown_observability(Duration::from_secs(5))?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+With a narrow feature, the settings surface contains only the matching exporter field:
+
+```rust
+// features = ["observability-trace"]
+init_observability(ObservabilitySettings {
+    trace: Some(TraceSettings::default()),
+    ..Default::default()
+})?;
+```
+
+```rust
+// features = ["observability-metrics"]
+init_observability(ObservabilitySettings {
+    metrics: Some(MetricsSettings {
+        listen_addr: "0.0.0.0:9000".parse()?,
+    }),
+    ..Default::default()
+})?;
+```
+
+The internal responsibilities are deliberately separated:
+
+| Module | Responsibility |
+|--------|----------------|
+| `settings.rs` | Resolve and validate log, OTLP, and Prometheus settings |
+| `lifecycle.rs` | Enforce one process-global lifecycle and own the exporter runtime/provider |
+| `subscriber.rs` | Build the stdout and OTLP tracing layers and install the global subscriber |
+| `prometheus.rs` | Configure histogram buckets, install the global metrics recorder, and start the scrape endpoint |
+
+Initialization flows through one orchestrator:
+
+```text
+init_observability
+  -> lifecycle::init
+       -> create a dedicated Tokio runtime when trace or metrics export needs one
+       -> subscriber::install when stdout logging or trace export is enabled
+       -> prometheus::install when MetricsSettings is present
+       -> retain the runtime and tracer provider until shutdown
+```
+
+`prometheus::install` is internal. With `observability-metrics`, provide only `metrics`
+in `ObservabilitySettings`; trace and stdout-log fields are not part of that feature's
+settings surface.
+
+### Lifecycle and Shutdown
+
+| Operation | Result |
+|-----------|--------|
+| First initialization | Installs the requested pipelines |
+| Second initialization | `ObservabilityError::AlreadyInitialized` |
+| Shutdown before initialization | Successful no-op |
+| Repeated shutdown | Successful no-op |
+| Initialization after shutdown | `ObservabilityError::ShutDown` |
+| Initialization after an irreversible partial installation | `ObservabilityError::PartiallyInitialized` |
+
+Shutdown flushes and stops the tracer provider and terminates the dedicated runtime, which
+stops the Prometheus HTTP exporter. Rust does not provide a way to remove a process-global
+`tracing` subscriber or `metrics` recorder, so shutdown is not a complete uninstall:
+
+- a stdout subscriber remains registered;
+- the metrics recorder remains registered, although its HTTP exporter is no longer running;
+- initialization is terminal after shutdown.
+
+If subscriber installation succeeds and a later metrics installation fails, the subscriber
+cannot be rolled back. Qortoo releases the exporter resources it still owns, marks the
+lifecycle as failed, returns the original installation error, and rejects later initialization
+with `PartiallyInitialized`.
 
 The local stack in `qortoo-rs-docker/docker-compose.yml` starts Grafana, Prometheus, Tempo, Loki, and Pyroscope:
 
@@ -22,9 +137,9 @@ make obs-up
 The examples live under `examples/observability/`, but `Cargo.toml` registers explicit example targets, so the public commands stay short:
 
 ```shell
-cargo run --example trace
+cargo run --features observability-trace --example trace
 cargo run --example log
-cargo run --example metrics
+cargo run --features observability-metrics --example metrics
 cargo run --example profile
 ```
 
@@ -32,23 +147,23 @@ cargo run --example profile
 
 ## Trace
 
-Qortoo always emits `tracing` spans/events at instrumentation points. To export them, the application installs a subscriber and OpenTelemetry layer.
+Qortoo always emits `tracing` spans/events at instrumentation points. The trace example
+uses `init_observability` to install the subscriber and OpenTelemetry exporter selected by
+the application. Enable `observability-trace` for this managed exporter.
 
 `examples/observability/trace.rs` configures:
 
-- `tracing_subscriber::Registry` with `EnvFilter` (`qortoo=trace`, `trace=trace`)
-- `tracing_subscriber::fmt::layer()` for stdout log output
-- `tracing_opentelemetry` layer wired to the OTel tracer
-- `opentelemetry_otlp` gRPC exporter (`SpanExporter` via tonic)
-- `opentelemetry_sdk::trace::SdkTracerProvider` with batch export
-- service name `qortoo-example-trace` via `Resource::builder().with_attribute(KeyValue::new("service.name", ...))`
-- `OtelGuard` RAII struct — calls `provider.shutdown()` on drop to flush the batch exporter
+- `EnvFilter` directives `qortoo=trace,trace=trace`
+- `QortooLogLayer` for compact stdout text
+- `tracing_opentelemetry` wired to an OTLP/gRPC exporter
+- service name `qortoo-example-trace`
+- explicit `shutdown_observability` to flush the batch exporter
 
 Run locally:
 
 ```shell
 make obs-up
-cargo run --example trace
+cargo run --features observability-trace --example trace
 # Grafana -> Explore -> Tempo -> Search -> Service name: qortoo-example-trace
 ```
 
@@ -56,9 +171,11 @@ Override the OTLP endpoint with standard OpenTelemetry variables:
 
 ```shell
 # traces-specific variable (checked first)
-OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://my-collector:4317 cargo run --example trace
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://my-collector:4317 \
+  cargo run --features observability-trace --example trace
 # generic fallback
-OTEL_EXPORTER_OTLP_ENDPOINT=http://my-collector:4317 cargo run --example trace
+OTEL_EXPORTER_OTLP_ENDPOINT=http://my-collector:4317 \
+  cargo run --features observability-trace --example trace
 ```
 
 ### Instrumented Spans
@@ -88,10 +205,13 @@ Datatype spans use these fields:
 
 ## Log
 
-The `log_layer` feature exposes `QortooLogLayer`, Qortoo's compact stdout formatter for `tracing_subscriber`.
+The `observability-log` feature exposes `QortooLogLayer`, Qortoo's compact stdout formatter for
+`tracing_subscriber`. `observability-trace` includes `observability-log` and uses
+`QortooLogLayer` for `LogFormat::Text`; the metrics-only feature does not install a
+tracing subscriber.
 
 ```toml
-qortoo = { version = "...", features = ["log_layer"] }
+qortoo = { version = "...", features = ["observability-log"] }
 ```
 
 Create the layer directly — the only field is an optional level filter:
@@ -100,11 +220,14 @@ Create the layer directly — the only field is an optional level filter:
 let fmt = qortoo::QortooLogLayer { level_filter: None };
 ```
 
+The layer emits ANSI level colors only when stdout is connected to a terminal. Redirected
+output and logs collected through a pipe therefore contain plain `[T]`–`[E]` level markers.
+
 Run with the Qortoo formatter and Loki shipping:
 
 ```shell
 make obs-up
-RUST_LOG=info cargo run --example log --features log_layer
+RUST_LOG=info cargo run --example log --features observability-log
 # Grafana -> Explore -> Loki -> {app="qortoo", source="example"}
 ```
 
@@ -127,30 +250,37 @@ data_key
 duid
 ```
 
-### Shipping Test Logs to Loki
+### Test Logs and Traces
 
-The test subscriber (`src/observability/test_subscriber.rs`) is installed once per test process via `#[ctor]`. It exports spans over OTLP using the agent string (for example, `qortoo-0.1.0-<git hash>`) as the Tempo service name. Setting `QORTOO_RS_LOKI_URL` adds Loki log shipping to the subscriber:
+Plain `cargo test` installs no tracing subscriber, so test logs and traces remain off.
+Enable `observability-trace` to install the test subscriber once per test process via
+`#[ctor]`. The test setup reuses the same subscriber builder and installer as the production
+observability path: `QortooLogLayer` writes to stdout and spans are exported over OTLP using
+the agent string (for example, `qortoo-0.1.0-<git hash>`) as the Tempo service name.
+`RUST_LOG` controls filtering and defaults to `qortoo=debug` when unset:
+
+```shell
+cargo test --features observability-trace
+```
+
+Because `--all-features` includes `observability-trace`, it enables the same behavior:
 
 ```shell
 make obs-up
-QORTOO_RS_LOKI_URL=http://localhost:3100 RUST_LOG=debug cargo test
-# Grafana -> Explore -> Loki -> {app="qortoo", source="test"}
+RUST_LOG=debug cargo test --all-features
 ```
 
-Labels attached to every test log line:
-
-| Label | Value |
-|-------|-------|
-| `app` | `qortoo` |
-| `source` | `test` |
-
-Without `QORTOO_RS_LOKI_URL`, the test subscriber uses the OpenTelemetry and stdout formatting layers. If the URL is invalid or the Loki layer cannot be created, it reports the error to stderr and initializes those layers without Loki.
+The test helper does not install a test-only Loki layer. Remote log export remains owned
+by the application subscriber, as in the log example above; the SDK-provided test setup
+only covers stdout logs and OTLP traces.
 
 ---
 
 ## Metrics
 
-Qortoo emits metrics through the `metrics` crate. The application chooses and installs the global recorder.
+Qortoo emits metrics through the `metrics` crate. The application can install its own
+global recorder or provide `MetricsSettings` to `init_observability` for the bundled
+Prometheus endpoint by enabling `observability-metrics`.
 
 ```
 Qortoo-rs
@@ -168,7 +298,6 @@ Counter incremented for every push/pull sync cycle.
 | Label | Values |
 |-------|--------|
 | `collection` | Collection name |
-| `key` | Datatype key |
 | `type` | CRDT type, currently `Counter` |
 | `result` | `success` or `failure` |
 
@@ -179,8 +308,25 @@ Histogram for end-to-end `push_pull()` latency in seconds.
 | Label | Values |
 |-------|--------|
 | `collection` | Collection name |
-| `key` | Datatype key |
 | `type` | CRDT type |
+| `result` | `success` or `failure` |
+
+Prometheus exports this metric as a histogram with bucket upper bounds from 5 µs through
+10 s, so its `_bucket` series can be aggregated with `histogram_quantile()` and rendered
+as a Grafana heatmap.
+
+#### `qortoo_transactions_total`
+
+Counter incremented by the number of regular transactions sent to or received from the
+connectivity layer during push/pull sync. Push transactions are counted when the request
+is attempted, including attempts that later fail. Pull transactions are counted after a
+response is received, even if applying it later fails. Snapshot transactions are not included.
+
+| Label | Values |
+|-------|--------|
+| `collection` | Collection name |
+| `type` | CRDT type |
+| `push_pull` | `push` or `pull` |
 
 #### `qortoo_backoff_total`
 
@@ -189,12 +335,12 @@ Counter incremented when a recoverable connectivity failure puts the event loop 
 | Label | Values |
 |-------|--------|
 | `collection` | Collection name |
-| `key` | Datatype key |
 | `type` | CRDT type |
 
 ### Running Locally
 
-`examples/observability/metrics.rs` installs `metrics-exporter-prometheus` and exposes:
+`examples/observability/metrics.rs` enables `MetricsSettings`; the internal
+`prometheus.rs` installer exposes:
 
 ```text
 http://localhost:9000/metrics
@@ -204,7 +350,7 @@ Run:
 
 ```shell
 make obs-up
-cargo run --example metrics
+cargo run --features observability-metrics --example metrics
 # Grafana -> Explore -> Prometheus -> qortoo_sync_total
 ```
 
@@ -298,8 +444,10 @@ make obs-down-v
 |------|----------|---------|
 | `add_span_event!` | `src/observability/trace.rs` | Add an OpenTelemetry span event at the current tracing scope |
 | `QortooLogLayer` | `src/observability/log_layer.rs` | Format tracing events to stdout with Qortoo context |
-| `QortooTraceContextVisitor` | `src/observability/trace_context.rs` | Collect Qortoo context fields for local formatting |
+| `init_observability` / `shutdown_observability` | `src/observability/lifecycle.rs` | Install and own the process-global pipelines |
+| Prometheus installer | `src/observability/prometheus.rs` | Internal recorder and scrape-endpoint setup |
 | `metrics::emit_sync` | `src/observability/metrics.rs` | Emit `qortoo_sync_total` and `qortoo_sync_duration_seconds` |
+| `metrics::emit_pushed_transactions` / `metrics::emit_pulled_transactions` | `src/observability/metrics.rs` | Emit `qortoo_transactions_total` |
 | `metrics::emit_backoff` | `src/observability/metrics.rs` | Emit `qortoo_backoff_total` |
 | Trace example | `examples/observability/trace.rs` | Export traces to Tempo |
 | Log example | `examples/observability/log.rs` | Ship logs to Loki |
