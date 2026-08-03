@@ -50,16 +50,26 @@ The `unbounded_tx` registered via `connectivity.register(wired, unbounded_tx)` i
 
 ```rust
 pub enum Event {
-    Stop(Sender<()>),                              // Shut down the event loop (includes ack channel)
-    PushTransaction(Option<oneshot::Sender<...>>), // Request push/pull (response channel optional)
-    BackOff,                                       // BackOff timer expired (internal signal)
-    Notify(Notification),                          // Realtime notification from the server
+    Stop(Sender<()>),               // Shut down the event loop (includes ack channel)
+    PushTransaction {               // Request push/pull
+        resp_tx: Option<oneshot::Sender<Option<DatatypeError>>>,
+        caller: Span,               // Span of the requester, captured at send time
+    },
+    BackOff,                        // BackOff timer expired (internal signal)
+    Notify(Notification),           // Realtime notification from the server
 }
 ```
 
 `PushTransaction` response channel (`resp_tx`):
 - `Some(tx)` — sent by `sync()`; blocks caller until complete, returns error if any
 - `None` — sent by realtime auto-push or Notify-triggered push; result is discarded
+
+`PushTransaction` origin span (`caller`): every sender captures `Span::current()`
+(`Event::push_transaction`), and the loop enters that span around `push_pull()`. Without
+it a sync would be traced under the span the loop captured once at startup, detaching it
+from whoever asked for it. With it, the sync — and the handler notifications dispatched
+from inside it — stay in the requester's trace, which is what lets a Go caller's trace
+context reach the core spans (see [`docs/go-binding.md`](go-binding.md#observability)).
 
 ---
 
@@ -98,7 +108,7 @@ flowchart TD
     RE["receive_event()"]
     State{"LoopMode?"}
 
-    AutoPush["[Normal] push_if_needed &&\nwired.push_if_needed()\n→ return Ok(Event::PushTransaction(None))"]
+    AutoPush["[Normal] push_if_needed &&\nwired.push_if_needed()\n→ return Ok(Event::push_transaction(None))"]
 
     BOSelect["[BackOff]\ncompute next backoff duration\ncrossbeam select!"]
     BOUnbounded["recv(unbounded_rx)\n→ handle immediately\n(Stop, explicit sync, Notify)"]
@@ -128,10 +138,10 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    PT["PushTransaction(resp_tx)"]
+    PT["PushTransaction { resp_tx, caller }"]
     Pause{"[Stopped]?"}
     PauseErr["immediately return error\n→ process_blocking_resp()"]
-    PushPull["wired.push_pull()"]
+    PushPull["caller.in_scope(|| wired.push_pull())"]
     Ok["Ok\nloop_mode = Normal\nbackoff = None\nprocess_blocking_resp(None)"]
     Err["Err(DatatypeErrorWithAction)\nloop_mode = LoopMode::from(dewa.recovery)\nwired.handle_error(error, recovery)\nprocess_blocking_resp(Some(error))"]
 

@@ -54,10 +54,27 @@
 //!
 //! # Feature Flags
 //!
-//! - `log_layer` - Exports Qortoo's local stdout `tracing_subscriber` layer
+//! - `observability-log` - Exports Qortoo's local stdout `tracing_subscriber` layer
+//! - `observability-trace` - Adds managed stdout logging and OTLP trace export; Rust
+//!   unit tests automatically install the same pipeline
+//! - `observability-metrics` - Adds managed metrics export through Prometheus
+//! - `observability` - Umbrella enabling both managed exporters
+//!
+//! Managed observability is opt-in and exposes
+//! [`init_observability`]/[`shutdown_observability`]. Building a [`Client`] never
+//! installs a subscriber, recorder, or exporter.
 
-#[cfg(feature = "log_layer")]
+#[cfg(feature = "observability-log")]
 pub use crate::observability::log_layer::QortooLogLayer;
+#[cfg(feature = "observability-trace")]
+pub use crate::observability::settings::{
+    DEFAULT_LOG_FILTER, DEFAULT_OTLP_ENDPOINT, DEFAULT_SERVICE_NAME, LogFormat, TraceSettings,
+    resolve_log_filter, resolve_otlp_endpoint,
+};
+#[cfg(feature = "observability-metrics")]
+pub use crate::observability::settings::{
+    DEFAULT_METRICS_LISTEN_ADDR, MetricsSettings, resolve_metrics_listen_addr,
+};
 pub use crate::{
     clients::client::Client,
     connectivity::local_connectivity::LocalConnectivity,
@@ -73,6 +90,14 @@ pub use crate::{
     types::{
         common::IntoString,
         datatype::{DataType, DatatypeState},
+    },
+};
+#[cfg(any(feature = "observability-trace", feature = "observability-metrics"))]
+pub use crate::{
+    errors::observability::ObservabilityError,
+    observability::{
+        lifecycle::{init as init_observability, shutdown as shutdown_observability},
+        settings::ObservabilitySettings,
     },
 };
 

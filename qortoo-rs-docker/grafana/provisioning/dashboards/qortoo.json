@@ -19,17 +19,6 @@
         "allValue": ".*",
         "multi": true,
         "refresh": 2
-      },
-      {
-        "name": "key",
-        "label": "Key",
-        "type": "query",
-        "datasource": { "type": "prometheus", "uid": "prometheus" },
-        "query": { "query": "label_values(qortoo_sync_total{collection=~\"$collection\"}, key)", "refId": "A" },
-        "includeAll": true,
-        "allValue": ".*",
-        "multi": true,
-        "refresh": 2
       }
     ]
   },
@@ -55,7 +44,7 @@
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(qortoo_sync_total{collection=~\"$collection\", key=~\"$key\"})",
+          "expr": "sum(qortoo_sync_total{collection=~\"$collection\"})",
           "instant": true,
           "legendFormat": "total"
         }
@@ -88,7 +77,7 @@
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "100 * sum(rate(qortoo_sync_total{collection=~\"$collection\", key=~\"$key\", result=\"success\"}[5m])) / sum(rate(qortoo_sync_total{collection=~\"$collection\", key=~\"$key\"}[5m]))",
+          "expr": "100 * sum(rate(qortoo_sync_total{collection=~\"$collection\", result=\"success\"}[5m])) / sum(rate(qortoo_sync_total{collection=~\"$collection\"}[5m]))",
           "instant": true,
           "legendFormat": "success %"
         }
@@ -119,7 +108,7 @@
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum(qortoo_backoff_total{collection=~\"$collection\", key=~\"$key\"})",
+          "expr": "sum(qortoo_backoff_total{collection=~\"$collection\"})",
           "instant": true,
           "legendFormat": "backoffs"
         }
@@ -150,7 +139,7 @@
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(qortoo_sync_duration_seconds_bucket{collection=~\"$collection\", key=~\"$key\"}[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(qortoo_sync_duration_seconds_bucket{collection=~\"$collection\"}[5m])))",
           "instant": true,
           "legendFormat": "p99"
         }
@@ -183,7 +172,7 @@
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum by (result) (rate(qortoo_sync_total{collection=~\"$collection\", key=~\"$key\"}[1m]))",
+          "expr": "sum by (result) (rate(qortoo_sync_total{collection=~\"$collection\"}[1m]))",
           "legendFormat": "{{result}}"
         }
       ]
@@ -205,19 +194,19 @@
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.5,  sum by (le) (rate(qortoo_sync_duration_seconds_bucket{collection=~\"$collection\", key=~\"$key\"}[5m])))",
+          "expr": "histogram_quantile(0.5,  sum by (le) (rate(qortoo_sync_duration_seconds_bucket{collection=~\"$collection\"}[5m])))",
           "legendFormat": "p50"
         },
         {
           "refId": "B",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(qortoo_sync_duration_seconds_bucket{collection=~\"$collection\", key=~\"$key\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(qortoo_sync_duration_seconds_bucket{collection=~\"$collection\"}[5m])))",
           "legendFormat": "p95"
         },
         {
           "refId": "C",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(qortoo_sync_duration_seconds_bucket{collection=~\"$collection\", key=~\"$key\"}[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(qortoo_sync_duration_seconds_bucket{collection=~\"$collection\"}[5m])))",
           "legendFormat": "p99"
         }
       ]
@@ -238,7 +227,7 @@
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum by (le) (increase(qortoo_sync_duration_seconds_bucket{collection=~\"$collection\", key=~\"$key\"}[$__rate_interval]))",
+          "expr": "sum by (le) (increase(qortoo_sync_duration_seconds_bucket{collection=~\"$collection\"}[$__rate_interval]))",
           "format": "heatmap",
           "legendFormat": "{{le}}"
         }
@@ -262,14 +251,14 @@
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum by (key) (rate(qortoo_backoff_total{collection=~\"$collection\", key=~\"$key\"}[1m]))",
-          "legendFormat": "{{key}}"
+          "expr": "sum by (type) (rate(qortoo_backoff_total{collection=~\"$collection\"}[1m]))",
+          "legendFormat": "{{type}}"
         }
       ]
     },
     {
       "id": 31,
-      "title": "Sync Rate by Key",
+      "title": "Sync Rate by Type",
       "type": "timeseries",
       "gridPos": { "x": 12, "y": 20, "w": 12, "h": 7 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
@@ -284,8 +273,40 @@
         {
           "refId": "A",
           "datasource": { "type": "prometheus", "uid": "prometheus" },
-          "expr": "sum by (key, result) (rate(qortoo_sync_total{collection=~\"$collection\", key=~\"$key\"}[1m]))",
-          "legendFormat": "{{key}} / {{result}}"
+          "expr": "sum by (type, result) (rate(qortoo_sync_total{collection=~\"$collection\"}[1m]))",
+          "legendFormat": "{{type}} / {{result}}"
+        }
+      ]
+    },
+    {
+      "id": 40,
+      "title": "Transaction Rate (push / pull)",
+      "type": "timeseries",
+      "gridPos": { "x": 0, "y": 27, "w": 24, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": { "lineWidth": 2, "fillOpacity": 10 }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "push" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "blue", "mode": "fixed" } }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "pull" },
+            "properties": [{ "id": "color", "value": { "fixedColor": "purple", "mode": "fixed" } }]
+          }
+        ]
+      },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (push_pull) (rate(qortoo_transactions_total{collection=~\"$collection\"}[1m]))",
+          "legendFormat": "{{push_pull}}"
         }
       ]
     }

@@ -1,34 +1,37 @@
-//! Demonstrates application-owned OpenTelemetry trace export to Tempo.
+//! Demonstrates OpenTelemetry trace export to Tempo through `qortoo::init_observability`.
 //!
 //! Prerequisites: start the observability stack first.
 //!   make obs-up
 //!
 //! Run:
-//!   cargo run --example trace
+//!   cargo run --features observability-trace --example trace
 //!
-//! This example installs its own subscriber and exports traces via OTLP gRPC
-//! to Tempo (http://localhost:4317).
+//! The SDK installs nothing on its own; this example asks for the trace pipeline
+//! explicitly and exports via OTLP gRPC to Tempo (http://localhost:4317).
 //! View traces in Grafana:
 //!   http://localhost:3000 → Explore → Tempo → Search → Service name: qortoo-example-trace
 //!
 //! Override the OTLP endpoint via environment variables (standard OpenTelemetry):
-//!   OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://my-collector:4317 cargo run --example trace
+//!   OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://my-collector:4317 \
+//!     cargo run --features observability-trace --example trace
 
-use opentelemetry::{KeyValue, trace::TracerProvider};
-use opentelemetry_otlp::{Protocol, SpanExporter, WithExportConfig};
-use opentelemetry_sdk::{Resource, trace::SdkTracerProvider};
-use qortoo::{Client, Counter, Datatype, LocalConnectivity};
+use std::time::Duration;
+
+use qortoo::{
+    Client, Counter, Datatype, LocalConnectivity, LogFormat, ObservabilitySettings, TraceSettings,
+};
 use tracing::{info, instrument};
-use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt};
+
+const SERVICE_NAME: &str = "qortoo-example-trace";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let _guard = setup_tracing()?;
+    setup_tracing()?;
 
     run_counter_sync()?;
 
-    // Give the batch exporter time to flush before shutdown.
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // Flush and stop the exporter; the timeout bounds how long that may take.
+    qortoo::shutdown_observability(Duration::from_secs(5))?;
 
     Ok(())
 }
@@ -97,52 +100,20 @@ fn pull_and_read(counter: &Counter) -> Result<(), Box<dyn std::error::Error>> {
 
 // --- Application-owned OTel bootstrap ----------------------------------------
 
-struct OtelGuard(SdkTracerProvider);
-
-impl Drop for OtelGuard {
-    fn drop(&mut self) {
-        if let Err(e) = self.0.shutdown() {
-            eprintln!("OTel provider shutdown error: {e:?}");
-        }
-    }
-}
-
-fn setup_tracing() -> Result<OtelGuard, Box<dyn std::error::Error>> {
-    let endpoint = std::env::var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
-        .or_else(|_| std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT"))
-        .unwrap_or_else(|_| "http://localhost:4317".to_string());
-
-    println!("Exporting traces → {endpoint}");
+/// Asks the SDK to install the trace pipeline. The application still owns every
+/// decision — service identity, filter, endpoint — it just no longer assembles the
+/// exporter, the resource, and the subscriber by hand.
+fn setup_tracing() -> Result<(), Box<dyn std::error::Error>> {
+    let trace = TraceSettings::default();
+    println!("Exporting traces → {}", trace.endpoint);
     println!("View in Grafana  → http://localhost:3000 → Explore → Tempo");
 
-    let exporter = SpanExporter::builder()
-        .with_tonic()
-        .with_protocol(Protocol::Grpc)
-        .with_endpoint(&endpoint)
-        .build()?;
-
-    let provider = SdkTracerProvider::builder()
-        .with_batch_exporter(exporter)
-        .with_resource(
-            Resource::builder()
-                .with_attribute(KeyValue::new("service.name", "qortoo-example-trace"))
-                .build(),
-        )
-        .build();
-
-    let tracer = provider.tracer("qortoo-example");
-    let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
-
-    let filter = EnvFilter::from_default_env()
-        .add_directive("qortoo=trace".parse()?)
-        .add_directive("trace=trace".parse()?);
-
-    let subscriber = Registry::default()
-        .with(filter)
-        .with(tracing_subscriber::fmt::layer())
-        .with(otel_layer);
-
-    tracing::subscriber::set_global_default(subscriber)?;
-
-    Ok(OtelGuard(provider))
+    qortoo::init_observability(ObservabilitySettings {
+        service_name: SERVICE_NAME.to_string(),
+        log_filter: "qortoo=trace,trace=trace".to_string(),
+        log_format: LogFormat::Text,
+        trace: Some(trace),
+        ..Default::default()
+    })?;
+    Ok(())
 }

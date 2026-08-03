@@ -14,6 +14,7 @@ use crate::{
         ForeignHandlerCtx, QortooOnErrorCallback, QortooOnStateChangeCallback,
         QortooUserdataDropCallback, make_foreign_handler,
     },
+    observability::with_remote_parent,
     util::{cstr_arg, ffi_guard, to_owned_c_string},
 };
 
@@ -234,10 +235,42 @@ pub unsafe extern "C" fn qortoo_counter_sync(
             let Some(c) = counter_ref(counter, err_out) else {
                 return;
             };
-            if let Err(e) = c.sync() {
-                set_err(err_out, datatype_error_code(&e), &e.to_string());
-            }
+            sync(c, err_out);
         })
+    }
+}
+
+/// `qortoo_counter_sync` continuing the caller's trace.
+///
+/// `traceparent`/`tracestate` are the W3C trace-context headers of the calling span
+/// (both nullable). The sync — including the push/pull that runs on the event-loop
+/// thread and the handler callbacks it dispatches — becomes a child of that span.
+/// Absent or malformed headers fall back to a trace without a parent.
+///
+/// This is a separate entry point rather than an extension of `qortoo_counter_sync`
+/// so a caller that does not propagate context pays for none of it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn qortoo_counter_sync_with_context(
+    counter: *const QortooCounter,
+    traceparent: *const c_char,
+    tracestate: *const c_char,
+    err_out: *mut QortooError,
+) {
+    unsafe {
+        clear_err(err_out);
+        ffi_guard(err_out, (), || {
+            let Some(c) = counter_ref(counter, err_out) else {
+                return;
+            };
+            with_remote_parent!("qortoo.sync", traceparent, tracestate, || sync(c, err_out))
+        })
+    }
+}
+
+/// Shared body of the two sync entry points.
+unsafe fn sync(counter: &Counter, err_out: *mut QortooError) {
+    if let Err(e) = counter.sync() {
+        unsafe { set_err(err_out, datatype_error_code(&e), &e.to_string()) };
     }
 }
 
@@ -331,20 +364,65 @@ pub unsafe extern "C" fn qortoo_counter_transaction(
             let Some(tag) = cstr_arg(tag, "tag", err_out) else {
                 return;
             };
-            let result = c.transaction(tag, move |tx_counter| {
-                let tx_handle = Box::into_raw(Box::new(QortooCounter { inner: tx_counter }));
-                let code = callback(tx_handle, userdata);
-                drop(Box::from_raw(tx_handle));
-                if code == 0 {
-                    Ok(())
-                } else {
-                    Err(format!("aborted by foreign callback (code {code})").into())
-                }
-            });
-            if let Err(e) = result {
-                set_err(err_out, datatype_error_code(&e), &e.to_string());
-            }
+            transaction(c, tag, callback, userdata, err_out);
         })
+    }
+}
+
+/// `qortoo_counter_transaction` continuing the caller's trace.
+///
+/// `traceparent`/`tracestate` carry the W3C trace context of the calling span (both
+/// nullable); the commit and any sync it triggers become children of that span.
+///
+/// This is a separate entry point rather than an extension of
+/// `qortoo_counter_transaction` so a caller that does not propagate context pays for
+/// none of it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn qortoo_counter_transaction_with_context(
+    counter: *const QortooCounter,
+    tag: *const c_char,
+    traceparent: *const c_char,
+    tracestate: *const c_char,
+    callback: QortooTxCallback,
+    userdata: usize,
+    err_out: *mut QortooError,
+) {
+    unsafe {
+        clear_err(err_out);
+        ffi_guard(err_out, (), || {
+            let Some(c) = counter_ref(counter, err_out) else {
+                return;
+            };
+            let Some(tag) = cstr_arg(tag, "tag", err_out) else {
+                return;
+            };
+            with_remote_parent!("qortoo.transaction", traceparent, tracestate, || {
+                transaction(c, tag, callback, userdata, err_out)
+            })
+        })
+    }
+}
+
+/// Shared body of the two transaction entry points.
+unsafe fn transaction(
+    counter: &Counter,
+    tag: String,
+    callback: QortooTxCallback,
+    userdata: usize,
+    err_out: *mut QortooError,
+) {
+    let result = counter.transaction(tag, move |tx_counter| {
+        let tx_handle = Box::into_raw(Box::new(QortooCounter { inner: tx_counter }));
+        let code = callback(tx_handle, userdata);
+        drop(unsafe { Box::from_raw(tx_handle) });
+        if code == 0 {
+            Ok(())
+        } else {
+            Err(format!("aborted by foreign callback (code {code})").into())
+        }
+    });
+    if let Err(e) = result {
+        unsafe { set_err(err_out, datatype_error_code(&e), &e.to_string()) };
     }
 }
 

@@ -10,7 +10,7 @@ lint:
 
 .PHONY: tarpaulin
 tarpaulin:
-	cargo tarpaulin -o html -o xml -o Lcov --tests --all-features --engine Llvm --fail-under 90 --output-dir ./coverage
+	-cargo tarpaulin -o html -o xml -o Lcov --workspace --tests --all-features --engine Llvm --fail-under 90 --output-dir ./coverage --exclude-files 'benches/*'
 	open coverage/tarpaulin-report.html
 
 .PHONY: doc

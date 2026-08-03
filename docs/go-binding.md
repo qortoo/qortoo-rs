@@ -38,8 +38,10 @@ graph TD
 | `QortooClient`, `QortooCounter`, `QortooLocalConnectivity` | `qortoo-ffi/src/{client,counter,local_connectivity}.rs` | Opaque handles (`Box::into_raw`) over the core types; released by `*_free` |
 | `QortooError` | `qortoo-ffi/src/error.rs` | Out-parameter `{ code: i32, msg: *mut c_char }`; `code == 0` means success |
 | `QortooDatatypeOptions` | `qortoo-ffi/src/counter.rs` | Build-time options (readonly, push-buffer size, handler callbacks) applied in a single FFI call |
+| `QortooObservabilityOptions` | `qortoo-ffi/src/observability/mod.rs` | Process-global logging/tracing/metrics setup (see [Observability](#observability)) |
 | `Client`, `Counter`, `Handler` | `go/qortoo/*.go` | Go-side wrappers with explicit `Close()`; `Handler` mirrors `DatatypeHandler` |
 | `LocalConnectivity` (Go) | `go/qortoo/qortoo.go` | Wrapper over the Rust in-memory backend of the same name; shared between clients to synchronize them |
+| `ObservabilityOptions` | `go/qortoo/observability.go` | Go-side telemetry configuration plus the W3C trace-context bridge |
 
 ## How It Works
 
@@ -110,6 +112,110 @@ graph TD
   unspecified. `Close()` must not be called concurrently with other methods on the same
   object — everything else is safe for concurrent use.
 
+## Observability
+
+The Rust core is instrumented (`tracing` spans, `metrics` calls) but installs no
+subscriber, recorder, or exporter — that choice belongs to the application. A Go process
+cannot install Rust ones, so it asks the core to, through the FFI, and only when asked:
+creating a client never starts an exporter, and `RUST_LOG` alone produces no output.
+
+The pipelines themselves live in the core behind the `observability-trace` and
+`observability-metrics` features. The `observability` umbrella enables both
+(`src/observability/{settings,subscriber,lifecycle,prometheus}.rs`), which `qortoo-ffi`
+enables. The FFI is the C ABI adapter over them: it converts `QortooObservabilityOptions`
+into `qortoo::ObservabilitySettings` and maps failures onto the 900-block error codes.
+The same code therefore backs `qortoo::init_observability` for Rust applications, so both
+languages get identical resolution rules, resource attributes, and failure semantics.
+
+```mermaid
+graph LR
+  App["Go application"] -->|InitObservability| Init["qortoo_observability_init"]
+  Init -->|"ObservabilitySettings"| Core["qortoo::init_observability"]
+  Core --> Sub["tracing subscriber<br/>(filter + JSON/text stdout)"]
+  Core --> Otel["OTLP/gRPC span exporter"]
+  Core --> Met["metrics recorder<br/>+ Prometheus endpoint"]
+  Otel & Met --> RT["dedicated tokio runtime<br/>(independent of any Client)"]
+```
+
+### Setup and shutdown
+
+```go
+err := qortoo.InitObservability(qortoo.ObservabilityOptions{
+    ServiceName:    "my-service",   // same service.name as the app's own telemetry
+    LogFilter:      "qortoo=debug", // else RUST_LOG, else qortoo=info
+    LogFormat:      qortoo.LogFormatJSON,
+    TraceEnabled:   true,           // OTLP/gRPC; endpoint from OTEL_EXPORTER_OTLP_* or :4317
+    MetricsEnabled: true,           // Prometheus scrape endpoint on 0.0.0.0:9000
+})
+...
+defer qortoo.ShutdownObservability(ctx) // flushes pending telemetry
+```
+
+Everything fails loudly rather than silently: a second `InitObservability`, an init after
+shutdown, a global subscriber or recorder already owned by another library, an exporter
+that cannot start, and invalid options each map to their own error code
+(`ErrCodeObservability*`, 900–906). A partial installation that has already claimed an
+irreversible Rust global makes the lifecycle terminal and later initialization returns
+`ErrCodeObservabilityPartiallyInitialized`. `ShutdownObservability` is a no-op when nothing was
+initialized, is safe to repeat, and is **terminal** — `tracing` allows one global
+subscriber per process, so a later init fails instead of pretending to restore the
+pipelines.
+
+Recommended shutdown order: `Counter.Close` → `Client.Close` → `ShutdownObservability` →
+the application's own telemetry shutdown. The exporters live on a dedicated tokio runtime
+owned by the observability lifecycle, so the last `Client.Close` never takes them down with
+it — and conversely, a handler that blocks delays both.
+
+The Go lifecycle and managed-log integration tests run their initialization sequences in
+fresh subprocesses. Rust subscribers and metrics recorders are process-global and cannot be
+reset, so subprocess isolation keeps repeated and shuffled Go test runs independent.
+
+### Trace context across the boundary
+
+An OpenTelemetry context does not travel through cgo, so the context-aware methods pass
+the W3C headers explicitly and Rust restores them as a remote parent:
+
+```go
+ctx, span := tracer.Start(ctx, "checkout")
+defer span.End()
+
+err := counter.SyncContext(ctx)                       // or TransactionContext(ctx, ...)
+```
+
+```mermaid
+sequenceDiagram
+  participant Go as Go span
+  participant FFI as qortoo.sync (FFI span)
+  participant EL as event loop thread
+  Go->>FFI: traceparent / tracestate
+  FFI->>FFI: set_parent(remote context)
+  FFI->>EL: sync() — Event::PushTransaction { caller }
+  EL->>EL: caller.in_scope(push_pull)
+  Note over EL: push_pull and the handler<br/>callbacks it dispatches<br/>share the Go trace id
+```
+
+The parent survives the hop to the worker thread because `Event::PushTransaction` carries
+the requesting span (see [`docs/event-loop.md`](event-loop.md#event-types)). A context
+without a span, malformed headers, or an uninitialized pipeline all degrade to a local
+trace — the context-aware methods then behave exactly like `Sync`/`Transaction`.
+
+`Sync` and `Transaction` keep calling the plain entry points, so the propagation work is
+paid only where it is asked for.
+
+| Surface | FFI | Go |
+| --- | --- | --- |
+| Setup / teardown | `qortoo_observability_init`, `qortoo_observability_shutdown` | `InitObservability`, `ShutdownObservability` |
+| Trace context | `qortoo_counter_sync_with_context`, `qortoo_counter_transaction_with_context` | `Counter.SyncContext`, `Counter.TransactionContext` |
+| Configuration | `QortooObservabilityOptions` | `ObservabilityOptions` |
+
+See [`docs/observability.md`](observability.md) for the span catalogue, the metric
+catalogue, and the local Grafana/Tempo/Prometheus stack these exporters target.
+
+Runnable Go counterparts of the Rust observability examples live in
+[`go/qortoo/examples/observability`](../go/qortoo/examples/observability). From the
+`go/qortoo` module, run `go run ./examples/observability/{log,trace,metrics,profile}`;
+the examples README documents the local stack and environment variables.
+
 ## Performance
 
 The cost of the binding is measured directly: the same five scenarios are implemented
@@ -140,5 +246,6 @@ harness is shaped the way it is, and how runs are compared over time.
 - [`docs/architecture.md`](architecture.md) — layer stack the FFI wraps
 - [`docs/datatype-state.md`](datatype-state.md) — states mirrored by Go's `DatatypeState`
 - [`docs/error-handling.md`](error-handling.md) — error codes surfaced through `QortooError`
-- [`docs/event-loop.md`](event-loop.md) — where `Notify` events land
+- [`docs/event-loop.md`](event-loop.md) — where `Notify` events land, and the span a sync request carries
+- [`docs/observability.md`](observability.md) — spans, metrics, and the local stack the exporters target
 - [`docs/performance.md`](performance.md) — how the binding overhead above is measured

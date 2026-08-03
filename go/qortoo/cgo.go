@@ -18,6 +18,13 @@
 // Handler callbacks (Handler.OnStateChange / Handler.OnError) are invoked on
 // Qortoo-owned tokio worker threads, asynchronously to the triggering
 // operation. They must be safe for concurrent use and must not block for long.
+// A blocking handler also delays Client.Close, which shuts the worker threads
+// down, and ShutdownObservability, which flushes the exporters.
+//
+// The Rust core emits tracing spans and metrics but installs no subscriber,
+// recorder, or exporter on its own: call InitObservability once at startup to
+// choose where they go, and the *Context methods (Counter.SyncContext,
+// Counter.TransactionContext) to keep them in the trace of the calling span.
 package qortoo
 
 /*

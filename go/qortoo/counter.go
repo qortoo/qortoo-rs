@@ -12,6 +12,7 @@ extern QortooTxCallback qortooGoTxCB(void);
 import "C"
 
 import (
+	"context"
 	"runtime"
 	"runtime/cgo"
 )
@@ -131,11 +132,27 @@ func (c *Counter) Value() int64 {
 	return int64(C.qortoo_counter_get_value(c.ptr))
 }
 
-// Sync performs a blocking push/pull with the connectivity backend.
+// Sync performs a blocking push/pull with the connectivity backend. Use
+// SyncContext to keep the sync inside the trace of a calling span.
 func (c *Counter) Sync() error {
 	defer runtime.KeepAlive(c)
 	var cerr C.QortooError
 	C.qortoo_counter_sync(c.ptr, &cerr)
+	return takeError(&cerr)
+}
+
+// SyncContext is Sync continuing the trace of ctx.
+//
+// The Rust spans of this sync — including the push/pull that runs on a worker thread
+// and the handler callbacks it dispatches — become children of the span in ctx.
+// Without a span in ctx it behaves exactly like Sync. Cancellation of ctx is not
+// honoured: the underlying sync is a blocking call.
+func (c *Counter) SyncContext(ctx context.Context) error {
+	defer runtime.KeepAlive(c)
+	var cerr C.QortooError
+	withTraceContext(ctx, func(traceparent, tracestate *C.char) {
+		C.qortoo_counter_sync_with_context(c.ptr, traceparent, tracestate, &cerr)
+	})
 	return takeError(&cerr)
 }
 
@@ -215,7 +232,8 @@ type txContext struct {
 
 // Transaction executes fn atomically: if fn returns an error (or panics), every
 // operation performed through tx is rolled back. fn runs inline on the calling
-// goroutine; tx is only valid during the call.
+// goroutine; tx is only valid during the call. Use TransactionContext to keep
+// the commit inside the trace of a calling span.
 func (c *Counter) Transaction(tag string, fn func(tx *Counter) error) error {
 	defer runtime.KeepAlive(c)
 	cTag := cString(tag)
@@ -227,13 +245,38 @@ func (c *Counter) Transaction(tag string, fn func(tx *Counter) error) error {
 
 	var cerr C.QortooError
 	C.qortoo_counter_transaction(c.ptr, cTag, C.qortooGoTxCB(), C.uintptr_t(h), &cerr)
-	if err := takeError(&cerr); err != nil {
-		if txc.err != nil {
-			return txc.err
-		}
-		return err
+	return txc.result(&cerr)
+}
+
+// TransactionContext is Transaction continuing the trace of ctx: the commit and any
+// sync it triggers become children of the span in ctx. Without a span in ctx it
+// behaves exactly like Transaction. Cancellation of ctx is not honoured — fn runs
+// inline on the calling goroutine.
+func (c *Counter) TransactionContext(ctx context.Context, tag string, fn func(tx *Counter) error) error {
+	defer runtime.KeepAlive(c)
+	cTag := cString(tag)
+	defer freeCString(cTag)
+
+	txc := &txContext{fn: fn}
+	h := cgo.NewHandle(txc)
+	defer h.Delete()
+
+	var cerr C.QortooError
+	withTraceContext(ctx, func(traceparent, tracestate *C.char) {
+		C.qortoo_counter_transaction_with_context(
+			c.ptr, cTag, traceparent, tracestate, C.qortooGoTxCB(), C.uintptr_t(h), &cerr)
+	})
+	return txc.result(&cerr)
+}
+
+// result prefers the error returned by the transaction body: the FFI only reports
+// that the commit was aborted, while txc.err says why.
+func (txc *txContext) result(cerr *C.QortooError) error {
+	err := takeError(cerr)
+	if err != nil && txc.err != nil {
+		return txc.err
 	}
-	return nil
+	return err
 }
 
 // Close releases this handle. The underlying datatype stays registered in its

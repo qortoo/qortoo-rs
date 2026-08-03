@@ -4,7 +4,7 @@
 //!   make obs-up
 //!
 //! Run with Qortoo's log layer + Loki:
-//!   RUST_LOG=info cargo run --example log --features log_layer
+//!   RUST_LOG=info cargo run --example log --features observability-log
 //!
 //! Run with the standard fmt subscriber + Loki:
 //!   RUST_LOG=info cargo run --example log
@@ -53,9 +53,9 @@ fn setup_subscriber() -> Result<(), Box<dyn std::error::Error>> {
 
     tokio::spawn(loki_task);
 
-    #[cfg(feature = "log_layer")]
+    #[cfg(feature = "observability-log")]
     let fmt = qortoo::QortooLogLayer { level_filter: None };
-    #[cfg(not(feature = "log_layer"))]
+    #[cfg(not(feature = "observability-log"))]
     let fmt = tracing_subscriber::fmt::layer();
 
     let subscriber = Registry::default()

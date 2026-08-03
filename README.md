@@ -61,11 +61,14 @@ assert!(readonly_counter.increase().is_err());
 
 | Flag | Description |
 |------|-------------|
-| `log_layer` | Exports `QortooLogLayer` — Qortoo's compact stdout formatter for `tracing_subscriber` |
+| `observability-log` | Exports `QortooLogLayer` — Qortoo's compact stdout formatter with automatic ANSI terminal detection |
+| `observability-trace` | Enables managed stdout logging and OTLP/gRPC trace export, including the unit-test subscriber |
+| `observability-metrics` | Enables opt-in process-global metrics export through Prometheus |
+| `observability` | Umbrella enabling both managed exporter features |
 
 ## Observability
 
-Qortoo emits `tracing` spans, metrics, and logs. Applications own the exporter setup; the crate installs nothing globally.
+Qortoo emits `tracing` spans, metrics, and logs. The crate installs nothing globally by default; applications can own the exporter setup or opt into only the managed exporter they need. The `observability` umbrella remains available when both are required.
 
 Start the local observability stack (Grafana, Prometheus, Tempo, Loki, Pyroscope):
 
@@ -77,9 +80,9 @@ make obs-up
 Run the bundled examples:
 
 ```shell
-cargo run --example trace    # OpenTelemetry traces → Tempo
-cargo run --example log      # structured logs → Loki  (add --features log_layer for QortooLogLayer)
-cargo run --example metrics  # Prometheus metrics scrape endpoint
+cargo run --features observability-trace --example trace    # OpenTelemetry traces → Tempo
+cargo run --example log      # structured logs → Loki  (add --features observability-log for QortooLogLayer)
+cargo run --features observability-metrics --example metrics  # Prometheus metrics scrape endpoint
 cargo run --example profile  # pprof CPU profiles → Pyroscope
 ```
 
@@ -91,8 +94,11 @@ See [`docs/observability.md`](docs/observability.md) for the full reference.
 # Install dependencies (cargo-tarpaulin)
 make install
 
-# Run all tests
+# Run all tests without installing a log/trace subscriber
 cargo test
+
+# Run tests with Qortoo logs and OTLP trace export
+cargo test --features observability-trace
 
 # Run tests with all feature-gated code enabled
 cargo test --all-features

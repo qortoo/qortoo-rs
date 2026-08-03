@@ -20,6 +20,8 @@
 //! - `local_connectivity` — in-memory `LocalConnectivity` backend handle
 //! - `client` — `Client` handle and lifecycle entry points
 //! - `counter` — `Counter` handle, operations, transactions, and handlers
+//! - `observability` — process-global logging/tracing/metrics setup and the W3C
+//!   trace-context bridge used by the `*_with_context` entry points
 
 // The safety contract (pointer validity, ownership, threading) is uniform across all
 // exported functions and documented once in the module docs above.
@@ -30,6 +32,7 @@ mod counter;
 mod error;
 mod handler;
 mod local_connectivity;
+mod observability;
 mod util;
 
 pub use client::*;
@@ -37,4 +40,5 @@ pub use counter::*;
 pub use error::*;
 pub use handler::*;
 pub use local_connectivity::*;
+pub use observability::*;
 pub use util::*;

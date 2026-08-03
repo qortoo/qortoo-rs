@@ -33,6 +33,16 @@ jobs:
       - name: Build
         run: cargo build --verbose
 
+      - name: Check observability feature boundaries
+        run: |
+          cargo check --no-default-features
+          cargo check --no-default-features --features observability-log
+          cargo check --no-default-features --features observability-trace
+          cargo check --no-default-features --features observability-metrics
+          cargo check --no-default-features --features observability
+          cargo test --no-default-features --no-run
+          cargo test --no-default-features --features observability-trace --no-run
+
       - name: Cache cargo registry
         uses: actions/cache@v3
         with:
@@ -46,14 +56,17 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          QORTOO_RS_OTEL_ENABLED=false cargo tarpaulin \
+          cargo tarpaulin \
+            --workspace \
+            --tests \
             --all-features \
             --engine llvm \
             --fail-under 80 \
             --out Lcov \
             --out html \
             --out xml \
-            --output-dir ./coverage
+            --output-dir ./coverage \
+            --exclude-files 'benches/*'
 
       - name: Generate coverage badge
         run: |
@@ -108,8 +121,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.24'
-          # go/qortoo has no module dependencies, so there is no go.sum to key a cache on.
-          cache: false
+          cache-dependency-path: go/qortoo/go.sum
 
       - name: Cache cargo registry
         uses: actions/cache@v3
@@ -125,8 +137,20 @@ jobs:
       - name: Build FFI library
         run: cargo build -p qortoo-ffi
 
+      # The FFI's own tests cover process-global state (observability init/shutdown,
+      # trace-context propagation), which needs one process per case — hence separate
+      # test binaries rather than a subset of the core suite.
+      - name: Run FFI tests
+        run: cargo test -p qortoo-ffi
+
       - name: Run Go tests
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
           DYLD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
-        run: cd go/qortoo && go vet ./... && go test -race ./...
+        run: |
+          cd go/qortoo
+          go vet ./...
+          go test -race ./...
+          go test -race -shuffle=on -count=2 \
+            -run '^(TestTraceContext|TestContextAwareOperationsWithoutObservability|TestInitObservability|TestObservability|TestShutdownObservability|TestShutdownTimeout)' \
+            ./...

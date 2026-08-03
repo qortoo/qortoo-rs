@@ -118,10 +118,12 @@ impl WiredDatatype {
         self.interceptor.before_push(&mut pushing_ppp);
 
         add_span_event!("send PUSH PushPullPack", "ppp"=> pushing_ppp.to_string());
+        metrics::emit_pushed_transactions(&self.attr, pushing_ppp.transactions.len());
         #[cfg_attr(not(test), allow(unused_mut))]
         let mut pulled_ppp = connectivity
             .push_pull(&pushing_ppp)
             .map_err(|e| e.to_datatype_error().mapping())?;
+        metrics::emit_pulled_transactions(&self.attr, pulled_ppp.transactions.len());
 
         #[cfg(test)]
         self.interceptor.after_pull(&mut pulled_ppp)?;
