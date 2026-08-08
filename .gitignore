@@ -17,10 +17,9 @@ target
 .vscode
 .cursor
 .claude
+.local/
 coverage
-AGENTS.md
 GEMINI.md
-CLAUDE.md
 # Developer-local Prometheus scrape configs (keep .example files)
 qortoo-rs-docker/prometheus/conf.d/*.yml
 
