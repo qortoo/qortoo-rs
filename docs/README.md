@@ -33,8 +33,11 @@ Each datatype is composed of five layers stacked vertically. A user operation pa
 | Document | Description |
 |----------|-------------|
 | [Architecture](architecture.md) | Layer stack, shared state model, operation flow, and concurrency model |
+| [Client and DatatypeBuilder](client-and-datatype-builder.md) | `Client` builder pattern, collection/key naming validation, and the `DatatypeBuilder` chain |
 | [Datatype State](datatype-state.md) | `DatatypeState` lifecycle, write access, sync intent states, and unsubscribe cleanup |
 | [Transaction and Rollback](transaction-and-rollback.md) | `TxRecord` structure, transaction lifecycle, and inverse-operation rollback |
+| [Connectivity](connectivity.md) | `Connectivity` trait, `NullConnectivity`, `LocalConnectivity`/`LocalDatatypeServer`, and `WiredInterceptor` |
+| [Handler System](handler-system.md) | `DatatypeHandler`, `HandlersManager`, priority-based async dispatch |
 | [Event Loop](event-loop.md) | Priority-based event processing, channel types, and exponential backoff behavior |
 | [Error Handling](error-handling.md) | Error taxonomy, `RecoveryAction` routing, and sync-path vs commit-path recovery |
 | [Observability](observability.md) | Tracing, log layer, Prometheus metrics, Pyroscope profiling, and the Go binding's exporter setup |
@@ -46,10 +49,7 @@ Each datatype is composed of five layers stacked vertically. A user operation pa
 | Document | Description |
 |----------|-------------|
 | Getting Started | TBD — Installation, basic setup, and first datatype |
-| Client and DatatypeBuilder | TBD — `Client` builder pattern, collection scoping, and datatype registration |
 | Datatypes Reference | TBD — Counter API; planned `Variable` and `Map` types |
-| Connectivity Backends | TBD — `NullConnectivity`, `LocalConnectivity`, and implementing a custom backend |
-| Handler System | TBD — `DatatypeHandler`, `HandlersManager`, priority-based callback dispatch |
 | Testing Guide | TBD — Test macros, `LocalConnectivity` realtime pitfall, and async test patterns |
 
 ## Maintaining This Documentation
