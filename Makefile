@@ -17,13 +17,73 @@ tarpaulin:
 doc:
 	cargo doc --no-deps --open
 
+# ── FFI ABI contract (qortoo-ffi/src/version.rs) ────────────────────────────────
+# The generated header is checked in so a diff shows up in code review, not just in
+# CI: cbindgen regenerates it as a build.rs side effect of `cargo build`, so if the
+# committed file and the source disagree, this fails with a non-empty diff.
+.PHONY: ffi-header-check
+ffi-header-check:
+	cargo build -p qortoo-ffi
+	@git diff --exit-code -- qortoo-ffi/include/qortoo.h || { \
+		echo "error: qortoo-ffi/include/qortoo.h is stale; commit the regenerated header" >&2; \
+		exit 1; \
+	}
+
+# Every exported qortoo_* symbol is an ABI commitment. This diffs the actual
+# defined global symbols in the built static library against the checked-in
+# allowlist; an unexpected addition or removal means the ABI changed and
+# QORTOO_ABI_VERSION_MAJOR/MINOR (qortoo-ffi/src/version.rs) must move with it.
+# macOS (Mach-O) prefixes every global symbol with `_`; Linux (ELF) does not —
+# the sub() strips it so both platforms compare against the same list.
+.PHONY: abi-symbols-check
+abi-symbols-check:
+	cargo build -p qortoo-ffi
+	@actual=$$(mktemp); \
+	nm -g target/debug/libqortoo_ffi.a 2>/dev/null \
+		| awk '$$2 == "T" && $$3 ~ /^_?qortoo_/ { sym = $$3; sub(/^_/, "", sym); print sym }' \
+		| sort -u > $$actual; \
+	if ! diff -u qortoo-ffi/abi-symbols.txt $$actual; then \
+		echo "error: exported qortoo_* symbols changed — update qortoo-ffi/abi-symbols.txt" >&2; \
+		echo "       and bump QORTOO_ABI_VERSION_MAJOR/MINOR in qortoo-ffi/src/version.rs" >&2; \
+		rm -f $$actual; \
+		exit 1; \
+	fi; \
+	rm -f $$actual
+
 # ── Go binding (go/qortoo, linked against qortoo-ffi) ────────────────────────────
 .PHONY: ffi
 ffi:
 	cargo build -p qortoo-ffi
 
+# Stages a location-independent native SDK — qortoo.h, libqortoo_ffi.a, and
+# pkg-config metadata — under target/native-sdk/$(NATIVE_SDK_PROFILE). The Go
+# binding carries no default include/library path (see go/qortoo/cgo.go): every
+# target below points CGO_CFLAGS/CGO_LDFLAGS at this staged directory, never at a
+# fixed relative path. Debug and release land in separate directories, so there is
+# no shared location where the wrong one could get linked by mistake.
+NATIVE_SDK_PROFILE ?= debug
+NATIVE_SDK_DIR := target/native-sdk/$(NATIVE_SDK_PROFILE)
+QORTOO_FFI_VERSION := $(shell grep -m1 '^version' qortoo-ffi/Cargo.toml | cut -d'"' -f2)
+RUST_TARGET := $(shell rustc -vV | sed -n 's/^host: //p')
+
+.PHONY: native-sdk-stage
+native-sdk-stage:
+	cargo build -p qortoo-ffi $(if $(filter release,$(NATIVE_SDK_PROFILE)),--release)
+	rm -rf $(NATIVE_SDK_DIR)
+	mkdir -p $(NATIVE_SDK_DIR)/include $(NATIVE_SDK_DIR)/lib/pkgconfig
+	cp qortoo-ffi/include/qortoo.h $(NATIVE_SDK_DIR)/include/
+	cp target/$(NATIVE_SDK_PROFILE)/libqortoo_ffi.a $(NATIVE_SDK_DIR)/lib/
+	sed 's/@VERSION@/$(QORTOO_FFI_VERSION)/' qortoo-ffi/qortoo-ffi.pc.in > $(NATIVE_SDK_DIR)/lib/pkgconfig/qortoo-ffi.pc
+	@abi_major=$$(grep '#define QORTOO_ABI_VERSION_MAJOR' qortoo-ffi/include/qortoo.h | awk '{print $$NF}'); \
+	abi_minor=$$(grep '#define QORTOO_ABI_VERSION_MINOR' qortoo-ffi/include/qortoo.h | awk '{print $$NF}'); \
+	printf '{\n  "sdk_version": "%s",\n  "abi_version_major": %s,\n  "abi_version_minor": %s,\n  "profile": "%s",\n  "target": "%s"\n}\n' \
+		"$(QORTOO_FFI_VERSION)" "$$abi_major" "$$abi_minor" "$(NATIVE_SDK_PROFILE)" "$(RUST_TARGET)" \
+		> $(NATIVE_SDK_DIR)/manifest.json
+
 .PHONY: go-test
-go-test: ffi
+go-test: export CGO_CFLAGS := -I$(CURDIR)/target/native-sdk/debug/include
+go-test: export CGO_LDFLAGS := -L$(CURDIR)/target/native-sdk/debug/lib
+go-test: native-sdk-stage
 	cd go/qortoo && go vet ./... && go test -race ./...
 
 # ── Benchmarks (Rust core vs. Go binding; see docs/performance.md) ─────────────
@@ -35,20 +95,14 @@ go-test: ffi
 bench-rust:
 	cargo bench --bench qortoo_bench
 
-# Go benchmarks must link the RELEASE qortoo-ffi: cgo.go lists target/debug
-# before target/release, so a leftover debug artifact would silently be linked
-# and make every number meaningless. Remove it first (restore with `make ffi`),
-# then refuse to run if any debug artifact is still there.
+# Go benchmarks must link the RELEASE qortoo-ffi. native-sdk-stage keeps
+# debug/release in separate directories (target/native-sdk/{debug,release}), so
+# there is no shared location where a debug artifact could get linked instead.
 .PHONY: bench-go
+bench-go: export CGO_CFLAGS := -I$(CURDIR)/target/native-sdk/release/include
+bench-go: export CGO_LDFLAGS := -L$(CURDIR)/target/native-sdk/release/lib
 bench-go:
-	rm -f target/debug/libqortoo_ffi.a target/debug/libqortoo_ffi.dylib target/debug/libqortoo_ffi.so
-	cargo build -p qortoo-ffi --release
-	@for lib in target/debug/libqortoo_ffi.a target/debug/libqortoo_ffi.dylib target/debug/libqortoo_ffi.so; do \
-		if [ -e "$$lib" ]; then \
-			echo "error: $$lib still exists; Go would link the debug build instead of the release build" >&2; \
-			exit 1; \
-		fi; \
-	done
+	$(MAKE) native-sdk-stage NATIVE_SDK_PROFILE=release
 	cd go/qortoo && go test -run '^$$' -bench '^BenchmarkIncreaseBy$$' -benchmem -benchtime 200000x -count 10 ./...
 	cd go/qortoo && go test -run '^$$' -bench '^BenchmarkGetValue$$' -benchmem -benchtime 2000000x -count 10 ./...
 	cd go/qortoo && go test -run '^$$' -bench '^BenchmarkTransaction$$' -benchmem -benchtime 20000x -count 10 ./...

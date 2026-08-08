@@ -1,9 +1,15 @@
 // Package qortoo is the Go binding of the Qortoo CRDT SDK (qortoo-rs).
 //
-// It links the qortoo-ffi static library built from the same repository:
+// It statically links the qortoo-ffi native library. This package carries no default
+// include or library search path: point CGO_CFLAGS at the SDK's include directory and
+// CGO_LDFLAGS at the directory holding libqortoo_ffi.a before building or testing, e.g.
 //
-//	cargo build -p qortoo-ffi          # or: make ffi
-//	go test ./go/...
+//	export CGO_CFLAGS="-I/path/to/native-sdk/include"
+//	export CGO_LDFLAGS="-L/path/to/native-sdk/lib"
+//	go test ./...
+//
+// Inside this repository, `make native-sdk-stage` builds qortoo-ffi and stages that
+// layout under target/native-sdk.
 //
 // Every object returned by this package owns a native handle and must be
 // released with its Close method. As a backstop, an unreachable wrapper frees
@@ -28,8 +34,7 @@
 package qortoo
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../../qortoo-ffi/include
-#cgo LDFLAGS: -L${SRCDIR}/../../target/debug -L${SRCDIR}/../../target/release -lqortoo_ffi
+#cgo LDFLAGS: -lqortoo_ffi
 #cgo linux LDFLAGS: -lm -ldl -lpthread
 
 #include <stdlib.h>

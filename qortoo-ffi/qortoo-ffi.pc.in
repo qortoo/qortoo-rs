@@ -1,0 +1,19 @@
+# pkg-config metadata for the qortoo-ffi native SDK.
+#
+# `${pcfiledir}` is resolved by pkg-config itself to this file's own directory, so the
+# staged SDK (include/, lib/, lib/pkgconfig/qortoo-ffi.pc) stays correct no matter where
+# it is copied or installed — never hardcode an absolute path here.
+#
+# Only the library itself is described. Platform-specific system libraries needed on
+# top of libqortoo_ffi.a (e.g. -lm -ldl -lpthread on Linux) are not included: a Go
+# consumer already gets those from cgo.go's `#cgo linux LDFLAGS: ...` directive, and a
+# non-Go consumer must add them itself for its target OS.
+prefix=${pcfiledir}/../..
+includedir=${prefix}/include
+libdir=${prefix}/lib
+
+Name: qortoo-ffi
+Description: Qortoo CRDT SDK native library (C ABI)
+Version: @VERSION@
+Cflags: -I${includedir}
+Libs: -L${libdir} -lqortoo_ffi
