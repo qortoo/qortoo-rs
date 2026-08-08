@@ -1,10 +1,10 @@
 .PHONY: install
 install:
-	cargo install cargo-tarpaulin
+	cargo install cargo-tarpaulin --version 0.37.0 --locked
 
 .PHONY: lint
 lint:
-	cargo +nightly fmt --all --check
+	cargo +nightly-2026-08-02 fmt --all --check
 	cargo check --all-features --tests
 	cargo clippy --workspace --all-targets --tests --all-features -- -D warnings
 

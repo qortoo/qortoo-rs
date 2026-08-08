@@ -84,7 +84,7 @@ When you change behavior described in one of these documents, update it in the s
 
 ## Coding Style & Naming Conventions
 - Follow standard Rust style: 4-space indentation, `snake_case` for functions/modules, `PascalCase` for types.
-- Formatting uses `.rustfmt.toml` (`group_imports = "StdExternalCrate"` — std, external, then local imports; `imports_granularity = "Crate"` — group imports at crate level). Requires nightly rustfmt (`cargo +nightly fmt`).
+- Formatting uses `.rustfmt.toml` (`group_imports = "StdExternalCrate"` — std, external, then local imports; `imports_granularity = "Crate"` — group imports at crate level). Requires the pinned nightly rustfmt (`cargo +nightly-2026-08-02 fmt`).
 - Treat clippy warnings as errors (`make lint`).
 
 ## Testing Guidelines
