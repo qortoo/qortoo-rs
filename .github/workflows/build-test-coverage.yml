@@ -127,19 +127,24 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-ffi-1.97.1-
 
-      - name: Build FFI library
-        run: cargo build -p qortoo-ffi
-
       # The FFI's own tests cover process-global state (observability init/shutdown,
       # trace-context propagation), which needs one process per case — hence separate
       # test binaries rather than a subset of the core suite.
       - name: Run FFI tests
         run: cargo test -p qortoo-ffi
 
+      # Stages qortoo.h and libqortoo_ffi.a under target/native-sdk/debug (also builds
+      # qortoo-ffi as a side effect). go/qortoo carries no default include/library
+      # search path, so CGO_CFLAGS/CGO_LDFLAGS must point at this staged directory. No
+      # LD_LIBRARY_PATH/DYLD_LIBRARY_PATH is needed: the binding links the static
+      # library, so there is nothing to find at runtime.
+      - name: Stage native SDK
+        run: make native-sdk-stage
+
       - name: Run Go tests
         env:
-          LD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
-          DYLD_LIBRARY_PATH: ${{ github.workspace }}/target/debug
+          CGO_CFLAGS: -I${{ github.workspace }}/target/native-sdk/debug/include
+          CGO_LDFLAGS: -L${{ github.workspace }}/target/native-sdk/debug/lib
         run: |
           cd go/qortoo
           go vet ./...
