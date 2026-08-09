@@ -22,6 +22,8 @@
 //! - `counter` — `Counter` handle, operations, transactions, and handlers
 //! - `observability` — process-global logging/tracing/metrics setup and the W3C
 //!   trace-context bridge used by the `*_with_context` entry points
+//! - `version` — ABI and SDK version contract; check `qortoo_abi_version_major`
+//!   before making any other call into this library
 
 // The safety contract (pointer validity, ownership, threading) is uniform across all
 // exported functions and documented once in the module docs above.
@@ -34,6 +36,7 @@ mod handler;
 mod local_connectivity;
 mod observability;
 mod util;
+mod version;
 
 pub use client::*;
 pub use counter::*;
@@ -42,3 +45,4 @@ pub use handler::*;
 pub use local_connectivity::*;
 pub use observability::*;
 pub use util::*;
+pub use version::*;

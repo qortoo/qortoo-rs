@@ -54,6 +54,18 @@
 #define QORTOO_ERR_OBSERVABILITY_PARTIALLY_INITIALIZED 906
 
 /**
+ * ABI major version this build implements. Bump on any breaking change to exported
+ * symbols, struct layout, or calling convention.
+ */
+#define QORTOO_ABI_VERSION_MAJOR 0
+
+/**
+ * ABI minor version this build implements. Bump when symbols are added without
+ * breaking existing ones; reset to 0 when the major version bumps.
+ */
+#define QORTOO_ABI_VERSION_MINOR 1
+
+/**
  * Opaque handle to a `qortoo::Client`.
  */
 typedef struct QortooClient QortooClient;
@@ -417,6 +429,24 @@ void qortoo_observability_shutdown(uint64_t timeout_ms, struct QortooError *err_
  * Releases a string returned by this library (or set into a `QortooError`).
  */
 void qortoo_string_free(char *s);
+
+/**
+ * Returns the ABI major version this library implements. Compare against the value
+ * the binding was generated for before making any other call into this library.
+ */
+uint32_t qortoo_abi_version_major(void);
+
+/**
+ * Returns the ABI minor version this library implements.
+ */
+uint32_t qortoo_abi_version_minor(void);
+
+/**
+ * Returns this crate's SDK version (`CARGO_PKG_VERSION`, e.g. `"0.1.0"`). Distinct
+ * from the ABI version: the SDK version can advance without an ABI break. Release the
+ * returned string with `qortoo_string_free`.
+ */
+char *qortoo_sdk_version(void);
 
 #ifdef __cplusplus
 }  // extern "C"
