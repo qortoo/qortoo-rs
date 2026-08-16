@@ -97,8 +97,8 @@ name = "trace"
 path = "examples/observability/trace.rs"
 required-features = ["observability-trace"]
 
-# Rust half of the Rust/Go benchmark pair; the Go half lives in
-# `go/qortoo/benchmark_test.go` (see `docs/performance.md`).
+# Fixed-budget Rust core harness. Language bindings can pair its Go-format output
+# with their own measurements; see `docs/performance.md`.
 [[bench]]
 name = "qortoo_bench"
 harness = false

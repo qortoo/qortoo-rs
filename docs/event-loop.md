@@ -3,6 +3,7 @@
 ## Overview
 
 Each datatype instance owns a dedicated `EventLoop`. It runs on a `spawn_blocking` thread and is responsible for:
+
 - Triggering push/pull sync after local writes complete
 - Reacting to server-side realtime notifications
 - Managing exponential backoff on transient errors
@@ -61,6 +62,7 @@ pub enum Event {
 ```
 
 `PushTransaction` response channel (`resp_tx`):
+
 - `Some(tx)` — sent by `sync()`; blocks caller until complete, returns error if any
 - `None` — sent by realtime auto-push or Notify-triggered push; result is discarded
 
@@ -68,8 +70,9 @@ pub enum Event {
 (`Event::push_transaction`), and the loop enters that span around `push_pull()`. Without
 it a sync would be traced under the span the loop captured once at startup, detaching it
 from whoever asked for it. With it, the sync — and the handler notifications dispatched
-from inside it — stay in the requester's trace, which is what lets a Go caller's trace
-context reach the core spans (see [`docs/go-binding.md`](go-binding.md#observability)).
+from inside it — stay in the requester's trace, which is what lets a foreign caller's
+trace context reach the core spans (see
+[`docs/go-binding.md`](go-binding.md#observability-boundary)).
 
 ---
 
@@ -201,6 +204,7 @@ Exponential backoff is implemented via `backon::ExponentialBuilder`.
 **BackOff entry**: Transient errors such as `DatatypeError::SyncFailed` (connectivity timeout, server internal error) map to `RecoveryAction::RetryWithBackOff` via `.mapping()`, which the loop derives into `LoopMode::BackOff`.
 
 **BackOff exit**:
+
 - Explicit `sync()` succeeds (via unbounded channel, bypasses wait)
 - BackOff timer expires → automatic retry succeeds
 

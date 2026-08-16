@@ -1,4 +1,4 @@
-//! C ABI for the Qortoo SDK, consumed by the Go binding under `go/qortoo`.
+//! C ABI for the Qortoo SDK, consumed by language bindings such as `qortoo-go`.
 //!
 //! # Conventions
 //!

@@ -1,11 +1,10 @@
 //! Rust half of the Rust/Go benchmark pair.
 //!
-//! Every scenario here has a counterpart of the same name in
-//! `go/qortoo/benchmark_test.go`, so subtracting the two ns/op figures yields the
-//! cost of the cgo binding for that operation. Keep the two files in sync: a
-//! change to a workload or a budget on one side is meaningless unless it is
-//! mirrored on the other. See `docs/performance.md` for the recorded baselines
-//! and the measurement protocol.
+//! Every scenario here has a counterpart of the same name in qortoo-go's
+//! `benchmark_test.go`, so subtracting the two ns/op figures yields the cost of
+//! the cgo binding for that operation. Keep both files and qortoo-go's
+//! `benchmarks/contract.tsv` in sync. See `docs/performance.md` for the Rust
+//! harness rules and qortoo-go's `docs/performance.md` for comparison tooling.
 //!
 //! Common conditions (mirrored in Go): the connectivity backend is
 //! `LocalConnectivity` in manual mode (`set_realtime(false)`) so no background
@@ -26,8 +25,8 @@
 //!
 //! So both sides run a pinned budget instead: `BUDGET` operations per round,
 //! `ROUNDS` rounds, datatype replaced every `RESET_EVERY_*` operations outside
-//! the measured region. Run the Go side with the matching `-benchtime <budget>x`
-//! (`make bench-go` does).
+//! the measured region. The qortoo-go benchmark runner supplies the matching
+//! `-benchtime <budget>x` values from its checked contract.
 
 use std::{
     hint::black_box,
@@ -114,8 +113,7 @@ fn timed_with_reset(
 fn scenario(name: &str, budget: u64, mut round: impl FnMut(usize) -> Duration) {
     // One discarded round: the machine is still settling when the first scenario
     // starts (the build just finished, CPU clocks are ramping), which otherwise
-    // shows up as a two- to threefold outlier in the first samples. The Go half
-    // runs later in `make bench` and does not need one.
+    // shows up as a two- to threefold outlier in the first samples.
     round(usize::MAX);
 
     let mut per_op = Vec::with_capacity(ROUNDS);
@@ -251,12 +249,12 @@ fn bench_build_counter() {
 
 fn main() {
     // Go benchmark format: configuration lines first, then one line per sample.
-    // The data goes to stdout so `make bench-rust > file` yields a file benchstat
+    // The data goes to stdout so `make bench > file` yields a file benchstat
     // can read; the human-readable summary goes to stderr.
     println!("goos: {}", go_os());
     println!("goarch: {}", go_arch());
     println!("pkg: qortoo");
-    eprintln!("qortoo Rust benchmarks (fixed budget; pair with go/qortoo/benchmark_test.go)");
+    eprintln!("qortoo Rust benchmarks (fixed budget; pair with qortoo-go)");
     eprintln!(
         "{:<16} {:>13}  {:>10} {:>10} {:>10}",
         "scenario", "budget x rounds", "min ns/op", "med ns/op", "max ns/op"

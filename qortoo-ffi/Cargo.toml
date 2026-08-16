@@ -8,7 +8,7 @@ publish = false
 [lib]
 name = "qortoo_ffi"
 # `rlib` is only there so the integration tests under `tests/` can link this crate;
-# the Go binding consumes `staticlib`. No `cdylib`: a dynamically-linked
+# language bindings consume `staticlib`. No `cdylib`: a dynamically-linked
 # libqortoo_ffi carries the build machine's absolute path in its `install_name`
 # (Mach-O `LC_ID_DYLIB`) unless that's explicitly overridden at link time, which
 # breaks the moment the library is installed anywhere else. Static linking sidesteps

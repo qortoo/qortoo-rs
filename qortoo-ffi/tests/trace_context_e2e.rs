@@ -1,9 +1,8 @@
 //! End-to-end check that a foreign caller's W3C trace context reaches the core spans.
 //!
-//! The Go half of this path (turning a `context.Context` into the two headers) is
-//! covered by `go/qortoo/observability_test.go`; this file covers everything after the
-//! headers arrive: the FFI span, the sync that runs on the event-loop thread, and the
-//! push/pull spans the core emits there.
+//! A language binding is responsible for turning its context into the two headers; this
+//! file covers everything after the headers arrive: the FFI span, the sync that runs on
+//! the event-loop thread, and the push/pull spans the core emits there.
 
 use std::{ffi::CString, ptr, time::Duration};
 

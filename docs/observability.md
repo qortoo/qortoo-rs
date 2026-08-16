@@ -27,7 +27,8 @@ process-global pipeline. Creating a `Client` never installs one implicitly.
 also handles stdout logs. In Rust unit tests, enabling `observability-trace` installs that
 log and trace pipeline automatically. `observability-metrics` does not compile tracing
 subscriber or OpenTelemetry dependencies. Choose the narrow feature when only one exporter
-is needed; `qortoo-ffi` enables the umbrella because the Go API exposes both exporter options.
+is needed; `qortoo-ffi` enables the umbrella because foreign bindings can expose both
+exporter options.
 
 ## Managed Setup
 
