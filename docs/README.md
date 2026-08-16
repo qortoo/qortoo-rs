@@ -40,9 +40,9 @@ Each datatype is composed of five layers stacked vertically. A user operation pa
 | [Handler System](handler-system.md) | `DatatypeHandler`, `HandlersManager`, priority-based async dispatch |
 | [Event Loop](event-loop.md) | Priority-based event processing, channel types, and exponential backoff behavior |
 | [Error Handling](error-handling.md) | Error taxonomy, `RecoveryAction` routing, and sync-path vs commit-path recovery |
-| [Observability](observability.md) | Tracing, log layer, Prometheus metrics, Pyroscope profiling, and the Go binding's exporter setup |
-| [Go Binding](go-binding.md) | C ABI (`qortoo-ffi`), cgo package (`go/qortoo`), observability setup, and trace-context propagation |
-| [Performance](performance.md) | Rust/Go benchmark pair, fixed-budget harness, benchstat and Bencher tracking |
+| [Observability](observability.md) | Rust tracing, log layer, Prometheus metrics, Pyroscope profiling, and managed exporters |
+| [C ABI and Native SDK](go-binding.md) | `qortoo-ffi` ownership, error/callback contracts, header generation, and SDK staging |
+| [Performance](performance.md) | Rust core fixed-budget benchmark harness and comparison contract |
 
 ## Usage Guides
 
