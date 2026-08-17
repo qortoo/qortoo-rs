@@ -2,8 +2,8 @@
 
 [![codecov](https://codecov.io/gh/qortoo/qortoo-rs/branch/main/graph/badge.svg)](https://codecov.io/gh/qortoo/qortoo-rs)
 [![CI](https://github.com/qortoo/qortoo-rs/actions/workflows/build-test-coverage.yml/badge.svg)](https://github.com/qortoo/qortoo-rs/actions/workflows/build-test-coverage.yml)
-![GitHub commit activity](https://img.shields.io/github/commit-activity/w/qortoo/qortoo-rs)
-![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/qortoo/qortoo-rs/build-test-coverage.yml)
+[![GitHub commit activity](https://img.shields.io/github/commit-activity/w/qortoo/qortoo-rs)](https://github.com/qortoo/qortoo-rs/graphs/commit-activity)
+[![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/qortoo/qortoo-rs/build-test-coverage.yml)](https://github.com/qortoo/qortoo-rs/actions/workflows/build-test-coverage.yml)
 
 Qortoo is a Rust SDK for conflict-free datatypes with distributed synchronization capabilities.
 
