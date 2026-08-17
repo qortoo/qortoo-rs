@@ -10,8 +10,20 @@ lint:
 
 .PHONY: tarpaulin
 tarpaulin:
-	-cargo tarpaulin -o html -o xml -o Lcov --workspace --tests --all-features --engine Llvm --fail-under 90 --output-dir ./coverage --exclude-files 'benches/*'
+	cargo tarpaulin -o html -o xml -o Lcov --workspace --tests --all-features --engine Llvm --fail-under 90 --output-dir ./coverage --exclude-files 'benches/*'
 	open coverage/tarpaulin-report.html
+
+# Local, informational only — not run in CI. Line coverage is a poor completeness
+# signal for a C ABI boundary crate: most of qortoo-ffi is one-line pass-through
+# wrappers, and a hard percentage gate on it tends to reward filler tests (a null-check
+# nobody would otherwise write, a core algorithm re-verified through a pointer) instead
+# of real boundary contract coverage. The authoritative completeness bar is the
+# reviewable checklist in the FFI test-plan doc: every `qortoo_*` symbol exercised,
+# every null/invalid-UTF-8/ownership/error-code case asserted — not this number. Run it
+# yourself if you want a rough sanity check after touching qortoo-ffi/src.
+.PHONY: ffi-coverage
+ffi-coverage:
+	cargo tarpaulin -p qortoo-ffi --tests --all-features --engine Llvm --include-files 'qortoo-ffi/src/*' --fail-under 85
 
 .PHONY: doc
 doc:

@@ -95,7 +95,7 @@ pub(crate) unsafe fn set_err(err_out: *mut QortooError, code: i32, msg: &str) {
 
 #[cfg(test)]
 mod tests_error {
-    use qortoo::ObservabilityError;
+    use qortoo::{ClientError, DatatypeError, ObservabilityError, ServerRejectReason};
 
     use super::*;
 
@@ -118,5 +118,100 @@ mod tests_error {
             codes.iter().all(|c| (900..=906).contains(c)),
             "observability codes stay in the 900 block the bindings mirror"
         );
+    }
+
+    #[test]
+    fn can_map_every_client_error_variant_to_its_exact_code() {
+        assert_eq!(
+            client_error_code(&ClientError::InvalidCollectionName(String::new())),
+            100
+        );
+        assert_eq!(
+            client_error_code(&ClientError::FailedToSubscribeOrCreateDatatype(
+                String::new()
+            )),
+            101
+        );
+    }
+
+    #[test]
+    fn can_map_every_datatype_error_variant_to_its_exact_code() {
+        assert_eq!(
+            datatype_error_code(&DatatypeError::TransactionFailed(String::new())),
+            201
+        );
+        assert_eq!(
+            datatype_error_code(&DatatypeError::Internal(String::new())),
+            202
+        );
+        assert_eq!(
+            datatype_error_code(&DatatypeError::Disallowed(String::new())),
+            205
+        );
+        assert_eq!(
+            datatype_error_code(&DatatypeError::NotWritable(String::new())),
+            206
+        );
+        assert_eq!(datatype_error_code(&DatatypeError::ReadonlyViolation), 207);
+        assert_eq!(
+            datatype_error_code(&DatatypeError::SyncFailed(String::new())),
+            210
+        );
+        assert_eq!(
+            datatype_error_code(&DatatypeError::PushBufferExceededMaxMemSize),
+            211
+        );
+        assert_eq!(
+            datatype_error_code(&DatatypeError::ServerRejected(
+                ServerRejectReason::CreateFailed(String::new())
+            )),
+            213
+        );
+    }
+
+    #[test]
+    fn can_accept_a_null_out_pointer_in_set_err_and_clear_err() {
+        unsafe {
+            set_err(ptr::null_mut(), 42, "ignored");
+            clear_err(ptr::null_mut());
+        }
+    }
+
+    #[test]
+    fn can_populate_a_non_null_out_pointer_via_set_err() {
+        let mut err = QortooError {
+            code: 0,
+            msg: ptr::null_mut(),
+        };
+        unsafe { set_err(&mut err, 42, "boom") };
+        assert_eq!(err.code, 42);
+        assert!(!err.msg.is_null());
+        let msg = unsafe { CString::from_raw(err.msg) };
+        assert_eq!(msg.to_str().unwrap(), "boom");
+    }
+
+    #[test]
+    fn can_reset_a_non_null_out_pointer_via_clear_err() {
+        let mut err = QortooError {
+            code: 7,
+            msg: crate::util::to_owned_c_string("stale"),
+        };
+        unsafe { clear_err(&mut err) };
+        assert_eq!(err.code, 0);
+        assert!(err.msg.is_null());
+    }
+
+    #[test]
+    fn can_fall_back_to_a_null_message_on_an_embedded_nul_without_losing_the_code() {
+        let mut err = QortooError {
+            code: 0,
+            msg: ptr::null_mut(),
+        };
+        unsafe { set_err(&mut err, 13, "bad\0message") };
+        assert_eq!(
+            err.code, 13,
+            "the code must survive even though the message could not"
+        );
+        assert!(err.msg.is_null());
     }
 }

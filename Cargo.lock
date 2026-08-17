@@ -1977,6 +1977,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry_sdk",
  "qortoo",
+ "rstest",
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",

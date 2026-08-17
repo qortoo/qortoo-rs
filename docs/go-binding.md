@@ -81,7 +81,7 @@ must be rejected; minor additions remain compatible within the major version.
 `qortoo_sdk_version()` returns the native SDK package version. During the pre-1.0 period,
 native SDK and language-binding releases use lockstep versions.
 
-Two checks keep the ABI reviewable:
+Two checks keep the ABI reviewable, and both run in CI:
 
 ```shell
 make ffi-header-check   # generated qortoo.h must match the checked-in header
@@ -90,6 +90,12 @@ make abi-symbols-check  # exported qortoo_* symbols must match the allowlist
 
 Any public symbol or declaration change requires an ABI version decision and an update
 to `qortoo-ffi/abi-symbols.txt` when appropriate.
+
+`make ffi-coverage` is also available locally as a rough sanity check, but it is not a
+CI gate: line coverage isn't a good completeness signal for a boundary crate that's
+mostly thin pass-through wrappers, and gating on it tends to reward filler tests over
+real contract coverage. Treat the null-pointer/invalid-UTF-8/ownership/error-code test
+matrix itself — not a percentage — as the bar for "is this boundary tested."
 
 ## Native SDK Staging
 
