@@ -147,4 +147,23 @@ mod tests_trace_context {
         );
         assert_eq!(unsafe { optional_str(std::ptr::null()) }, None);
     }
+
+    #[test]
+    fn can_treat_invalid_utf8_c_strings_as_absent() {
+        // A stray UTF-8 continuation byte, NUL-terminated.
+        let bytes: [c_char; 3] = ['b' as c_char, 0x80u8 as c_char, 0];
+        assert_eq!(unsafe { optional_str(bytes.as_ptr()) }, None);
+    }
+
+    #[test]
+    fn can_expose_every_inserted_key_via_carrier_keys() {
+        let mut map = HashMap::new();
+        map.insert(TRACEPARENT.to_string(), valid_traceparent());
+        map.insert(TRACESTATE.to_string(), "vendor=value".to_string());
+        let carrier = Carrier(map);
+
+        let mut keys = carrier.keys();
+        keys.sort_unstable();
+        assert_eq!(keys, vec![TRACEPARENT, TRACESTATE]);
+    }
 }

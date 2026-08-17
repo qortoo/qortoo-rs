@@ -35,3 +35,4 @@ opentelemetry_sdk = { version = "^0.32", features = ["trace", "testing"] }
 tracing-subscriber = { version = "^0.3.23", features = ["env-filter"] }
 metrics-util = { version = "^0.20", features = ["debugging"] }
 awaitility = "^0.4"
+rstest = "^0.26"

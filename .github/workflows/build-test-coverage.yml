@@ -40,6 +40,11 @@ jobs:
       - name: Build
         run: cargo build --verbose
 
+      - name: Check qortoo-ffi ABI contract
+        run: |
+          make ffi-header-check
+          make abi-symbols-check
+
       - name: Check observability feature boundaries
         run: |
           cargo check --no-default-features

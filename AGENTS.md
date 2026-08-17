@@ -10,7 +10,7 @@ Shared across all qortoo-* repos (canonical text in [qortoo-harness `AGENTS.md`]
 - All code comments and documentation must be written in **English**.
 - Favor SOLID principles, especially Single Responsibility (SRP) and Open/Closed (OCP), where practical. Check for these during review.
 - Structure important concepts under `./docs/` so they're easy to follow from Markdown and diagrams grounded in the actual code. Use the `/qortoo-shared:doc-new` command to scaffold a new concept document.
-- Individual plans, task lists, and working notes belong in the gitignored `.local/` at the repo root — never commit them or propose committing them. Claude Code's project-scoped agent memory (`.claude/agent-memory/`) is likewise personal and gitignored, not shared team knowledge.
+- All individual plan documents, regardless of the repository they concern, belong in the qortoo-harness repository's gitignored `.local/plans/` directory. Task lists and working notes likewise belong under qortoo-harness's `.local/` — never commit them or propose committing them. Claude Code's project-scoped agent memory (`.claude/agent-memory/`) is likewise personal and gitignored, not shared team knowledge.
 
 ## Project Structure & Module Organization
 - `src/` holds the Rust crate, with modules like `clients/`, `connectivity/`, `datatypes/`, `errors/`, `observability/`, `operations/`, `types/`, and `utils/`, plus shared roots like `constants.rs` and `defaults.rs`.
@@ -91,11 +91,16 @@ When you change behavior described in one of these documents, update it in the s
 - Treat clippy warnings as errors (`make lint`).
 
 ## Testing Guidelines
+- Name test functions `can_<behavior>` (e.g. `can_reject_a_null_collection`), describing the
+  behavior being proven rather than the code path under test — consistent across unit and
+  integration tests in this repo.
 - Use `cargo test` for unit/integration tests; async tests use `#[tokio::test(flavor = "multi_thread", worker_threads = N)]`.
 - Test macros: `get_test_collection_name!()`, `get_test_func_name!()` for unique names; `new_attribute!(DataType::Counter)` and `new_client_common!()` for unit-level construction.
 - Parametric tests use `rstest`; polling assertions use `awaitility`.
 - Prefer `#[instrument]` on tests that need tracing.
 - **`LocalConnectivity` realtime pitfall**: call `connectivity.set_realtime(false)` before creating datatypes when you need deterministic test ordering (e.g., to register a handler before the first auto-sync fires).
+- **`qortoo-ffi` test scope**: before writing a test under `qortoo-ffi/tests/` or `qortoo-ffi/src/`, ask "if the C ABI were deleted and this called the safe Rust API directly, would it still make sense as a `qortoo-rs` test?" If yes, it belongs in `qortoo-rs`, not `qortoo-ffi` — CRDT correctness, state-machine transitions, and sync semantics are the core's responsibility to prove, not the boundary's. Keep `qortoo-ffi` tests scoped to what only exists at the boundary: null-pointer/invalid-UTF-8 handling, ownership (exactly-once free/userdata-drop), Rust-error-to-i32 code mapping, and callback-trampoline marshalling. When a test needs the counter in a particular state, treat that as minimal setup, not the thing under test — don't re-derive multi-client sync or CRDT value propagation to prove a pointer argument works. Also apply this within `qortoo-ffi` itself: if another test in the same crate already exercises a call as incidental setup, or already proves the same fact more strongly, a dedicated smoke test for it adds no signal.
+- **`qortoo-ffi` completeness signal**: don't use `make ffi-coverage`'s line-coverage percentage as a target to hit (it isn't a CI gate). Most of `qortoo-ffi` is thin pass-through wrappers, so a coverage percentage rewards filler tests over real boundary coverage. Judge completeness by the explicit contract checklist instead — every exported symbol exercised, every null/invalid-UTF-8/ownership/error-code case asserted — and treat an uncovered line as worth investigating only if it's a case that checklist actually calls for.
 
 ## Naming Validation
 Collection names and datatype keys must:
