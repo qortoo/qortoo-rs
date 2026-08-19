@@ -7,7 +7,7 @@ Qortoo is a Rust SDK for conflict-free replicated data types (CRDTs) with distri
 ## Critical guidelines
 
 Shared across all qortoo-* repos (canonical text in [qortoo-harness `AGENTS.md`](https://github.com/qortoo/qortoo-harness)):
-- All code comments and documentation must be written in **English**.
+- All code comments and shared, tracked documentation must be written in **English**. Personal plan documents under `qortoo-harness/.local/plans/` are the exception: they must use the language of the current user session.
 - Favor SOLID principles, especially Single Responsibility (SRP) and Open/Closed (OCP), where practical. Check for these during review.
 - Structure important concepts under `./docs/` so they're easy to follow from Markdown and diagrams grounded in the actual code. Use the `/qortoo-shared:doc-new` command to scaffold a new concept document.
 - All individual plan documents, regardless of the repository they concern, belong in the qortoo-harness repository's gitignored `.local/plans/` directory. Task lists and working notes likewise belong under qortoo-harness's `.local/` — never commit them or propose committing them. Claude Code's project-scoped agent memory (`.claude/agent-memory/`) is likewise personal and gitignored, not shared team knowledge.
