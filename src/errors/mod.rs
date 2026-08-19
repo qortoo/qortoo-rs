@@ -26,7 +26,11 @@ pub fn with_stack_trace(
     trace: &std::backtrace::Backtrace,
     caller: &std::panic::Location,
 ) -> String {
-    let bt_parsed = btparse::deserialize(trace).unwrap();
+    // Stack traces are diagnostic only. Preserve the original error when a
+    // platform produces an empty or otherwise unparsable backtrace.
+    let Ok(bt_parsed) = btparse::deserialize(trace) else {
+        return String::new();
+    };
     let mut s = String::new();
     let mut stack_count = 0;
     for frame in bt_parsed.frames {
@@ -74,7 +78,11 @@ pub(crate) use with_err_out;
 
 #[cfg(test)]
 mod tests_datatype_errors {
-    use std::io::{Error, ErrorKind};
+    use std::{
+        backtrace::Backtrace,
+        io::{Error, ErrorKind},
+        panic::Location,
+    };
 
     use crossbeam_channel::TrySendError;
 
@@ -100,6 +108,13 @@ mod tests_datatype_errors {
         assert!(!equal_errors!(&e1, &e3));
         let e4 = e3.clone();
         assert_eq!(e3, e4);
+    }
+
+    #[test]
+    fn can_omit_an_unavailable_stack_trace() {
+        let stack_trace = super::with_stack_trace(&Backtrace::disabled(), Location::caller());
+
+        assert!(stack_trace.is_empty());
     }
 
     #[test]
