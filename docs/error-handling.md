@@ -238,6 +238,10 @@ let err = with_err_out!(InternalReason::EventLoop(err_msg).into_error());
 
 The macro captures `Backtrace::force_capture()` and `Location::caller()`, then calls
 `with_stack_trace` which filters frames by `SDK_NAME` and formats them with `↘︎` arrows.
+Stack traces are diagnostic only: when a platform returns an unavailable, empty, or
+otherwise unparsable backtrace, the log omits the filtered trace and preserves the
+original typed error. Stack-trace formatting must never replace an application error or
+surface as a panic across an FFI boundary.
 
 ---
 
