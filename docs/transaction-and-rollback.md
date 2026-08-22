@@ -51,7 +51,8 @@ flowchart TD
 ```rust
 // MutableDatatype::execute_local_operation
 op.set_lamport(self.op_id.lamport + 1);          // compute, do not advance yet
-let result = self.crdt.execute_local_operation(&op);
+let context = OperationContext::new(&op, &self.op_id.cuid);
+let result = self.crdt.execute_local_operation(&context);
 if result.is_ok() {
     let is_new_tx = self.tx_record.record_operation(&self.op_id, self.state, op);
     self.op_id.next(is_new_tx);                  // advance only on success

@@ -4,6 +4,7 @@ use crate::{
     DatatypeError,
     datatypes::common::ReturnType,
     operations::{Operation, body::OperationBody},
+    types::operation_context::OperationContext,
 };
 
 #[derive(Debug, Default, Clone, Display)]
@@ -21,10 +22,11 @@ impl CounterCrdt {
         self.value
     }
 
-    pub fn execute_common_operation(
+    pub(crate) fn execute_common_operation(
         &mut self,
-        op: &Operation,
+        context: &OperationContext<'_>,
     ) -> Result<ReturnType, DatatypeError> {
+        let op = context.operation();
         match op.body {
             OperationBody::CounterIncrease(ref body) => {
                 let ret = self.increase_by(body.delta);

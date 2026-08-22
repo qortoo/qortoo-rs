@@ -16,7 +16,9 @@ use crate::{
         with_err_out,
     },
     operations::{Operation, body::OperationBody, transaction::Transaction},
-    types::{checkpoint::CheckPoint, operation_id::OperationId},
+    types::{
+        checkpoint::CheckPoint, operation_context::OperationContext, operation_id::OperationId,
+    },
 };
 
 pub(crate) const DATATYPE_ERR_MSG_NO_SNAPSHOT: &str = "no snapshot operation";
@@ -153,7 +155,8 @@ impl MutableDatatype {
     ) -> Result<(), DatatypeError> {
         for op in tx.iter() {
             self.op_id.lamport = self.op_id.lamport.max(op.lamport);
-            self.crdt.execute_remote_operation(op)?;
+            let context = OperationContext::new(op, &tx.cuid);
+            self.crdt.execute_remote_operation(&context)?;
         }
         Ok(())
     }
@@ -164,7 +167,10 @@ impl MutableDatatype {
         mut op: Operation,
     ) -> Result<ReturnType, DatatypeError> {
         op.set_lamport(self.op_id.lamport + 1);
-        let result = self.crdt.execute_local_operation(&op);
+        let result = {
+            let context = OperationContext::new(&op, &self.op_id.cuid);
+            self.crdt.execute_local_operation(&context)
+        };
         if result.is_ok() {
             let is_new_tx = self.tx_record.record_operation(&self.op_id, self.state, op);
             self.op_id.next(is_new_tx);

@@ -7,6 +7,7 @@ use crate::{
     datatypes::{common::ReturnType, crdts::counter_crdt::CounterCrdt},
     errors::datatypes::InternalReason,
     operations::Operation,
+    types::operation_context::OperationContext,
 };
 
 pub mod counter_crdt;
@@ -24,27 +25,13 @@ impl Crdt {
         }
     }
 
-    pub fn execute_local_operation(&mut self, op: &Operation) -> Result<ReturnType, DatatypeError> {
-        #[cfg(test)]
-        {
-            if let OperationBody::Delay4Test(body) = &op.body {
-                return match body.run() {
-                    Ok(_) => Ok(ReturnType::None),
-                    Err(_) => Err(InternalReason::ExecuteOperation(format!("{body}")).into_error()),
-                };
-            }
-        }
-        match self {
-            Crdt::Counter(c) => c.execute_common_operation(op),
-        }
-    }
-
-    pub fn execute_remote_operation(
+    pub(crate) fn execute_local_operation(
         &mut self,
-        op: &Operation,
+        context: &OperationContext<'_>,
     ) -> Result<ReturnType, DatatypeError> {
         #[cfg(test)]
         {
+            let op = context.operation();
             if let OperationBody::Delay4Test(body) = &op.body {
                 return match body.run() {
                     Ok(_) => Ok(ReturnType::None),
@@ -53,7 +40,26 @@ impl Crdt {
             }
         }
         match self {
-            Crdt::Counter(c) => c.execute_common_operation(op),
+            Crdt::Counter(c) => c.execute_common_operation(context),
+        }
+    }
+
+    pub(crate) fn execute_remote_operation(
+        &mut self,
+        context: &OperationContext<'_>,
+    ) -> Result<ReturnType, DatatypeError> {
+        #[cfg(test)]
+        {
+            let op = context.operation();
+            if let OperationBody::Delay4Test(body) = &op.body {
+                return match body.run() {
+                    Ok(_) => Ok(ReturnType::None),
+                    Err(_) => Err(InternalReason::ExecuteOperation(format!("{body}")).into_error()),
+                };
+            }
+        }
+        match self {
+            Crdt::Counter(c) => c.execute_common_operation(context),
         }
     }
 

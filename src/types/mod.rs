@@ -7,11 +7,8 @@ pub mod datatype;
 )]
 pub mod element_id;
 pub mod notification;
+pub(crate) mod operation_context;
 pub mod operation_id;
 pub mod push_pull_pack;
-#[allow(
-    dead_code,
-    reason = "Timestamp is consumed by upcoming non-commutative CRDT implementations"
-)]
 pub mod timestamp;
 pub mod uid;

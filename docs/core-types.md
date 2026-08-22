@@ -91,6 +91,12 @@ replicas of the datatype resolve the same competing changes in the same way.
 Equality, ordering, and hashing all describe this same `(Lamport, CUID)` identity.
 That consistency allows a CRDT rule to read naturally as “the greater timestamp wins.”
 
+An `Operation` stores Lamport time, while the originating CUID is stored in the local
+`OperationId` or the enclosing remote `Transaction`. At the execution boundary,
+`OperationContext` combines those two sources into a `Timestamp`: local execution uses
+the local operation ID's CUID, and remote execution uses the transaction's CUID. The
+context is ephemeral; it does not change the persisted operation or transaction format.
+
 ### Exact element identity: ElementId
 
 One logical operation can create more than one element. Those elements share a
@@ -159,6 +165,7 @@ The concept definitions are kept together under `src/types/`:
 | `Uid`, `Cuid`, `Duid` | `src/types/uid.rs` |
 | `Timestamp` | `src/types/timestamp.rs` |
 | `ElementId` | `src/types/element_id.rs` |
+| `OperationContext` | `src/types/operation_context.rs` |
 | `OperationId` | `src/types/operation_id.rs` |
 | `CheckPoint` | `src/types/checkpoint.rs` |
 
@@ -168,10 +175,12 @@ The concepts participate in a change from creation to synchronization as follows
 
 1. A client has a stable `Cuid`. A datatype has a stable `Duid`, and every replica of
    that datatype carries the same DUID.
-2. A successful local operation receives the next Lamport time. The first operation in
-   a local transaction also advances that client's transaction sequence.
-3. A non-commutative CRDT records a `Timestamp` so every replica of the datatype can
-   select the same winner when changes compete.
+2. A local operation receives the next Lamport time. `OperationContext` combines that
+   time with the local CUID before CRDT execution. Remote execution combines the
+   operation's Lamport time with its transaction's CUID.
+3. After successful execution, the first operation in a local transaction advances that
+   client's transaction sequence. A non-commutative CRDT can retain the context's
+   `Timestamp` so every replica selects the same winner when changes compete.
 4. If one operation creates multiple addressable elements, each receives an
    `ElementId` with the same timestamp and a distinct delimiter.
 5. A transaction carries its client-side `cseq`, and the server places received
@@ -184,8 +193,9 @@ sequenceDiagram
     participant D as Local datatype replica
     participant S as Synchronization service
 
-    C->>C: Advance OperationId
-    C->>D: Apply change with Timestamp
+    C->>C: Assign next Lamport time
+    C->>D: Build OperationContext and apply change
+    D->>C: Advance OperationId after success
     opt Multiple elements
         C->>D: Distinguish each ElementId
     end
