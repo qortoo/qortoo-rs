@@ -22,6 +22,7 @@ flowchart TD
 > For datatype lifecycle states and write-access rules see [`docs/datatype-state.md`](datatype-state.md).
 > For event loop internals (channel architecture, BackOff, Notify flow) see [`docs/event-loop.md`](event-loop.md).
 > For error taxonomy and `RecoveryAction` routing see [`docs/error-handling.md`](error-handling.md).
+> For UID roles, CRDT ordering keys, and client/server transaction sequence types see [`docs/core-types.md`](core-types.md).
 
 ### Layer Responsibilities
 
@@ -100,7 +101,10 @@ flowchart TD
 
 | Type | Location | Purpose |
 |------|----------|---------|
-| `OperationId` | `src/types/operation_id.rs` | `(lamport, cuid, cseq)` — identifies an operation's position |
+| `Uid` / `Cuid` / `Duid` | `src/types/uid.rs` | Immutable identities for clients and logical datatypes; see [`docs/core-types.md`](core-types.md) |
+| `Timestamp` / `ElementId` | `src/types/timestamp.rs`, `src/types/element_id.rs` | CRDT precedence and exact element identity; see [`docs/core-types.md`](core-types.md) |
+| `OperationId` | `src/types/operation_id.rs` | Mutable local Lamport/cseq progress; see [`docs/core-types.md`](core-types.md) |
+| `CheckPoint` | `src/types/checkpoint.rs` | Carries server-side and client-side transaction sequences; see [`docs/core-types.md`](core-types.md) |
 | `Operation` | `src/operations/mod.rs` | Single CRDT operation with `OperationBody` and `lamport` |
 | `Transaction` | `src/operations/transaction.rs` | Ordered group of operations sharing `cuid`/`cseq` |
 | `TxRecord` | `src/datatypes/tx_record.rs` | Pending transaction buffer + rollback save point |

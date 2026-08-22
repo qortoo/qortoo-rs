@@ -33,6 +33,7 @@ Each datatype is composed of five layers stacked vertically. A user operation pa
 | Document | Description |
 |----------|-------------|
 | [Architecture](architecture.md) | Layer stack, shared state model, operation flow, and concurrency model |
+| [Core Types](core-types.md) | UID roles, CRDT timestamps and element IDs, operation progress, and transaction sequence coordinates |
 | [Client and DatatypeBuilder](client-and-datatype-builder.md) | `Client` builder pattern, collection/key naming validation, and the `DatatypeBuilder` chain |
 | [Datatype State](datatype-state.md) | `DatatypeState` lifecycle, write access, sync intent states, and unsubscribe cleanup |
 | [Transaction and Rollback](transaction-and-rollback.md) | `TxRecord` structure, transaction lifecycle, and inverse-operation rollback |
