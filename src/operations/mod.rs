@@ -5,8 +5,6 @@ use std::{
 
 use chrono::Local;
 
-#[cfg(test)]
-use crate::operations::body::Delay4TestBody;
 use crate::operations::body::{CounterIncreaseBody, OperationBody, SnapshotBody};
 
 pub mod body;
@@ -41,14 +39,6 @@ impl Operation {
     pub fn new_snapshot(body: Box<[u8]>) -> Self {
         let op_body = SnapshotBody::new(body);
         Self::new(OperationBody::Snapshot(op_body))
-    }
-
-    #[cfg(test)]
-    pub fn new_delay_for_test(duration_ms: u64, success: bool) -> Self {
-        Self::new(OperationBody::Delay4Test(Delay4TestBody::new(
-            duration_ms,
-            success,
-        )))
     }
 
     pub fn set_lamport(&mut self, lamport: u64) {
@@ -105,8 +95,6 @@ mod tests_operations {
     fn can_measure_operation_size() {
         let constant_size = (size_of::<u64>() + size_of::<SystemTime>()) as u64;
         let op = Operation::new_counter_increase(1);
-        assert_eq!(op.size(), constant_size + op.body.size());
-        let op = Operation::new_delay_for_test(1, true);
         assert_eq!(op.size(), constant_size + op.body.size());
     }
 }

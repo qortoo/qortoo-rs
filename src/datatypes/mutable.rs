@@ -225,13 +225,13 @@ mod tests_mutable_datatype {
 
     use crate::{
         DataType,
-        datatypes::{common::new_attribute, transactional::TransactionalDatatype},
+        datatypes::{common::new_attribute, crdts::Crdt, transactional::TransactionalDatatype},
         operations::Operation,
     };
 
     #[test]
     #[instrument]
-    fn can_fail_operation_execution() {
+    fn can_preserve_transaction_state_when_operation_execution_fails() {
         let attr = new_attribute!(DataType::Counter);
         let tx_dt = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
         {
@@ -242,11 +242,13 @@ mod tests_mutable_datatype {
             assert_eq!(mutable.op_id, mutable.tx_record.rollback_op_id);
         }
 
-        let op1 = Operation::new_delay_for_test(10, true);
+        let op1 = Operation::new_counter_increase(1);
         let result1 = tx_dt.execute_local_operation_as_tx(Default::default(), op1);
         assert!(result1.is_ok());
         {
             let mutable = tx_dt.mutable.write();
+            let Crdt::Counter(counter) = &mutable.crdt;
+            assert_eq!(counter.value(), 1);
             assert_eq!(1, mutable.op_id.cseq);
             assert!(mutable.tx_record.pending.is_none());
             assert_eq!(mutable.tx_record.rollback_action_count(), 0);
@@ -256,11 +258,13 @@ mod tests_mutable_datatype {
             );
         }
 
-        let op2 = Operation::new_delay_for_test(10, false);
+        let op2 = Operation::new_snapshot(Vec::new().into_boxed_slice());
         let result2 = tx_dt.execute_local_operation_as_tx(Default::default(), op2);
         assert!(result2.is_err());
         {
             let mutable = tx_dt.mutable.write();
+            let Crdt::Counter(counter) = &mutable.crdt;
+            assert_eq!(counter.value(), 1);
             assert_eq!(1, mutable.op_id.cseq);
             assert!(mutable.tx_record.pending.is_none());
             assert_eq!(mutable.tx_record.rollback_action_count(), 0);

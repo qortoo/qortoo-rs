@@ -104,8 +104,8 @@ flowchart TD
 | `Uid` / `Cuid` / `Duid` | `src/types/uid.rs` | Immutable identities for clients and logical datatypes; see [`docs/core-types.md`](core-types.md) |
 | `Timestamp` / `ElementId` | `src/types/timestamp.rs`, `src/types/element_id.rs` | CRDT precedence and exact element identity; see [`docs/core-types.md`](core-types.md) |
 | `OperationContext` | `src/types/operation_context.rs` | Execution-only combination of an operation and its origin-derived `Timestamp` |
-| `LocalOperationOutcome` | `src/datatypes/crdts/mod.rs` | Local execution result containing the caller value and local-only rollback action |
-| `RollbackAction` | `src/datatypes/crdts/mod.rs` | Top-level wrapper that dispatches a CRDT-specific rollback action to the matching CRDT |
+| `LocalOperationOutcome` | `src/datatypes/crdts/execution.rs` | Local execution result containing the caller value and local-only rollback action |
+| `RollbackAction` | `src/datatypes/crdts/execution.rs` | Top-level wrapper that dispatches a CRDT-specific rollback action to the matching CRDT |
 | `OperationId` | `src/types/operation_id.rs` | Mutable local Lamport/cseq progress; see [`docs/core-types.md`](core-types.md) |
 | `CheckPoint` | `src/types/checkpoint.rs` | Carries server-side and client-side transaction sequences; see [`docs/core-types.md`](core-types.md) |
 | `Operation` | `src/operations/mod.rs` | Single CRDT operation with `OperationBody` and `lamport` |
