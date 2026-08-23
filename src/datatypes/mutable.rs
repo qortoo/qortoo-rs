@@ -91,8 +91,10 @@ impl MutableDatatype {
     #[instrument(skip_all)]
     pub fn do_rollback(&mut self) {
         if let Some(tx) = self.tx_record.pending.take() {
-            for op in tx.iter().rev() {
-                if let Err(e) = self.crdt.execute_inverse_operation(op) {
+            let rollback_actions = self.tx_record.take_rollback_actions();
+            debug_assert_eq!(tx.operations.len(), rollback_actions.len());
+            for action in rollback_actions.into_iter().rev() {
+                if let Err(e) = self.crdt.apply_rollback_action(action) {
                     with_err_out!(e);
                 }
             }
@@ -123,11 +125,13 @@ impl MutableDatatype {
             if tx.cuid == self.op_id.cuid {
                 if let Err(err) = self.push_buffer.enqueue(tx.clone()) {
                     // The clone passed to enqueue is dropped on failure, so this Arc is unique
-                    // again; restore pending so RecoveryAction::RollbackTransaction can undo it.
+                    // again. Restore the wire transaction while retaining its rollback actions
+                    // so RecoveryAction::RollbackTransaction can undo the local changes.
                     self.tx_record.pending = Arc::try_unwrap(tx).ok();
                     return Err(err);
                 }
             }
+            self.tx_record.discard_rollback_actions();
         }
         Ok(true)
     }
@@ -167,15 +171,16 @@ impl MutableDatatype {
         mut op: Operation,
     ) -> Result<ReturnType, DatatypeError> {
         op.set_lamport(self.op_id.lamport + 1);
-        let result = {
+        let outcome = {
             let context = OperationContext::new(&op, &self.op_id.cuid);
-            self.crdt.execute_local_operation(&context)
+            self.crdt.execute_local_operation(&context)?
         };
-        if result.is_ok() {
-            let is_new_tx = self.tx_record.record_operation(&self.op_id, self.state, op);
-            self.op_id.next(is_new_tx);
-        }
-        result
+        let (return_value, rollback_action) = outcome.into_parts();
+        let is_new_tx =
+            self.tx_record
+                .record_operation(&self.op_id, self.state, op, rollback_action);
+        self.op_id.next(is_new_tx);
+        Ok(return_value)
     }
 
     pub fn new_snapshot_operation(&self) -> Operation {
@@ -233,6 +238,7 @@ mod tests_mutable_datatype {
             let mutable = tx_dt.mutable.write();
             assert_eq!(0, mutable.op_id.cseq);
             assert!(mutable.tx_record.pending.is_none());
+            assert_eq!(mutable.tx_record.rollback_action_count(), 0);
             assert_eq!(mutable.op_id, mutable.tx_record.rollback_op_id);
         }
 
@@ -243,6 +249,7 @@ mod tests_mutable_datatype {
             let mutable = tx_dt.mutable.write();
             assert_eq!(1, mutable.op_id.cseq);
             assert!(mutable.tx_record.pending.is_none());
+            assert_eq!(mutable.tx_record.rollback_action_count(), 0);
             assert_eq!(
                 mutable.op_id.cseq,
                 mutable.tx_record.rollback_op_id.cseq + 1
@@ -256,6 +263,38 @@ mod tests_mutable_datatype {
             let mutable = tx_dt.mutable.write();
             assert_eq!(1, mutable.op_id.cseq);
             assert!(mutable.tx_record.pending.is_none());
+            assert_eq!(mutable.tx_record.rollback_action_count(), 0);
         }
+    }
+
+    #[test]
+    #[instrument]
+    fn can_manage_rollback_action_lifetimes() {
+        let attr = new_attribute!(DataType::Counter);
+        let mut mutable = super::MutableDatatype::new(attr, Default::default(), Default::default());
+
+        mutable
+            .execute_local_operation(Operation::new_counter_increase(3))
+            .unwrap();
+        assert_eq!(mutable.tx_record.rollback_action_count(), 1);
+        assert!(mutable.end_transaction(None, true).unwrap());
+        assert_eq!(mutable.tx_record.rollback_action_count(), 0);
+
+        mutable
+            .execute_local_operation(Operation::new_counter_increase(5))
+            .unwrap();
+        assert_eq!(mutable.tx_record.rollback_action_count(), 1);
+        assert!(!mutable.end_transaction(None, false).unwrap());
+        assert_eq!(mutable.tx_record.rollback_action_count(), 0);
+        let crate::datatypes::crdts::Crdt::Counter(counter) = &mutable.crdt;
+        assert_eq!(counter.value(), 3);
+
+        mutable
+            .execute_local_operation(Operation::new_counter_increase(7))
+            .unwrap();
+        assert_eq!(mutable.tx_record.rollback_action_count(), 1);
+        mutable.reset();
+        assert!(mutable.tx_record.pending.is_none());
+        assert_eq!(mutable.tx_record.rollback_action_count(), 0);
     }
 }

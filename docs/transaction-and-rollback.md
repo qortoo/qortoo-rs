@@ -2,11 +2,12 @@
 
 ## Overview
 
-Every local write in Qortoo-rs is atomic. If any operation in a transaction fails, all previously applied operations are undone via **inverse operations** — no CRDT clone is kept.
+Every local write in Qortoo-rs is atomic. If any operation in a transaction fails, all previously applied operations are undone via local-only **rollback actions** — no CRDT clone is kept and rollback state is never added to the wire operation.
 
 The central struct is `TxRecord` (`src/datatypes/tx_record.rs`), which lives inside `MutableDatatype` and manages:
-1. The **pending transaction buffer** — operations applied but not yet committed
-2. The **rollback save point** — the `OperationId` and `DatatypeState` to restore on failure
+1. The **pending wire transaction** — operations applied but not yet committed
+2. The **local rollback actions** — state restoration commands paired with those operations
+3. The **rollback save point** — the `OperationId` and `DatatypeState` to restore on failure
 
 ## TxRecord Structure
 
@@ -15,10 +16,12 @@ pub struct TxRecord {
     pub pending: Option<Transaction>,   // None = no active transaction
     pub rollback_op_id: OperationId,    // op_id before the transaction started
     pub rollback_state: DatatypeState,  // state before the transaction started
+    rollback_actions: Vec<RollbackAction>,
 }
 ```
 
 - `pending` is `None` when idle, `Some(tx)` while a transaction is in progress.
+- `rollback_actions` contains one local-only action for each operation in `pending`.
 - `rollback_op_id` and `rollback_state` are captured at the moment the **first operation of a new transaction** is recorded (`record_operation`). They are not updated for subsequent operations in the same transaction.
 
 ## Transaction Lifecycle
@@ -26,15 +29,17 @@ pub struct TxRecord {
 ```mermaid
 flowchart TD
     Idle["Idle\n(pending = None)"]
-    RecordFirst["record_operation()\n──────────────────────────────────────\npending = Some(Transaction::new(cuid, cseq+1))\nrollback_op_id = current op_id  ← save point set HERE\nrollback_state = current state  ← save point set HERE\nop appended to pending.operations"]
+    Execute["execute_local_operation()\nlocate target once, capture pre-state, then mutate\nreturn value + rollback action"]
+    RecordFirst["record_operation()\n──────────────────────────────────────\npending = Some(Transaction::new(cuid, cseq+1))\nrollback_op_id = current op_id  ← save point set HERE\nrollback_state = current state  ← save point set HERE\nwire op + local action appended"]
     Advance1["op_id.next(is_new_tx=true)\n→ cseq += 1, lamport += 1"]
-    RecordMore["record_operation() (is_new = false)\nop appended to pending.operations"]
+    RecordMore["record_operation() (is_new = false)\nwire op + local action appended"]
     Advance2["op_id.next(is_new_tx=false)\n→ lamport += 1  (cseq unchanged within same tx)"]
-    Commit["end_transaction(committed=true)\npending.take() → push_buffer.enqueue(tx)\npending = None\n(rollback_op_id / rollback_state remain stale — harmless)"]
-    Rollback["end_transaction(committed=false) → do_rollback()\npending.take() → iter().rev() → execute_inverse_operation()\nop_id = rollback_op_id\nset_state(rollback_state)\npending = None"]
+    Commit["end_transaction(committed=true)\npending.take() → push_buffer.enqueue(tx)\ndiscard rollback actions\n(rollback save point remains stale — harmless)"]
+    Rollback["end_transaction(committed=false) → do_rollback()\ntake actions → reverse → apply_rollback_action()\nop_id = rollback_op_id\nset_state(rollback_state)\npending/actions cleared"]
     IdleEnd["Idle"]
 
-    Idle -->|"first execute_local_operation() succeeds"| RecordFirst
+    Idle -->|"local operation"| Execute
+    Execute -->|"succeeds"| RecordFirst
     RecordFirst --> Advance1
     Advance1 -->|"more operations succeed"| RecordMore
     RecordMore --> Advance2
@@ -52,18 +57,23 @@ flowchart TD
 // MutableDatatype::execute_local_operation
 op.set_lamport(self.op_id.lamport + 1);          // compute, do not advance yet
 let context = OperationContext::new(&op, &self.op_id.cuid);
-let result = self.crdt.execute_local_operation(&context);
-if result.is_ok() {
-    let is_new_tx = self.tx_record.record_operation(&self.op_id, self.state, op);
-    self.op_id.next(is_new_tx);                  // advance only on success
-}
+let outcome = self.crdt.execute_local_operation(&context)?;
+let (return_value, rollback_action) = outcome.into_parts();
+let is_new_tx = self.tx_record.record_operation(
+    &self.op_id,
+    self.state,
+    op,
+    rollback_action,
+);
+self.op_id.next(is_new_tx);                      // advance only on success
+Ok(return_value)
 ```
 
 On failure: `op_id` is untouched, `pending` is unchanged. The next operation retries the same lamport slot.
 
-## Rollback via Inverse Operations
+## Rollback via Local Actions
 
-Instead of keeping a shadow clone of the CRDT, rollback applies the **inverse of each operation in reverse order**:
+Local execution locates its target once, captures the pre-mutation state needed for rollback, applies the mutation, and returns both the caller-facing value and rollback action as a `LocalOperationOutcome`. The action is recorded only if execution succeeds. Rollback applies those actions in reverse order:
 
 ```mermaid
 flowchart LR
@@ -73,18 +83,32 @@ flowchart LR
     end
     subgraph rollback["Rollback (reversed)"]
         direction LR
-        D["inverse(op_C)"] --> E["inverse(op_B)"] --> F["inverse(op_A)"]
+        D["rollback(action_C)"] --> E["rollback(action_B)"] --> F["rollback(action_A)"]
     end
     applied -.->|rollback| rollback
 ```
 
-Each CRDT operation must implement `execute_inverse_operation`. For `CounterIncrease(delta)`, the inverse is `increase_by(-delta)`.
+Rollback actions are local implementation details and are not serialized into `Operation` or `Transaction`. For `CounterIncrease(delta)`, the action increases by the wrapping inverse delta. Both forward and rollback additions use the same wrapping `i64` arithmetic (modulo 2^64), including the self-inverse `i64::MIN` case. A non-invertible CRDT can instead capture the exact state it needs to restore without duplicating that state in the wire payload.
+
+Each concrete CRDT owns its action enum. The top-level `RollbackAction` has one wrapper variant per CRDT, not one variant per operation:
+
+```rust
+enum RollbackAction {
+    Counter(CounterRollbackAction),
+    Variable(VariableRollbackAction),
+    Map(MapRollbackAction),
+}
+```
+
+`LocalOperationOutcome` stores the top-level `RollbackAction`. Each concrete CRDT wraps its own action when it creates the outcome, but it never matches actions owned by other CRDTs. The `Crdt` wrapper is the only place that matches a CRDT instance with its action family during rollback. Adding a Variable or Map action therefore does not require changing Counter rollback code.
 
 ```rust
 // MutableDatatype::do_rollback
 if let Some(tx) = self.tx_record.pending.take() {
-    for op in tx.iter().rev() {
-        self.crdt.execute_inverse_operation(op);
+    let actions = self.tx_record.take_rollback_actions();
+    debug_assert_eq!(tx.operations.len(), actions.len());
+    for action in actions.into_iter().rev() {
+        self.crdt.apply_rollback_action(action);
     }
     self.op_id = self.tx_record.rollback_op_id.clone();
     self.set_state(self.tx_record.rollback_state);
@@ -134,9 +158,9 @@ flowchart TD
 
 ## Adding a New CRDT Operation Type
 
-When adding a new `OperationBody` variant, two implementations are required:
+When adding a new local `OperationBody` variant, two local responsibilities must be implemented atomically:
 
-1. `execute_local_operation` — apply the operation to the CRDT state
-2. `execute_inverse_operation` — undo the operation (used by rollback)
+1. `execute_local_operation` — locate the target once, capture the state required for rollback, apply the change, and return `LocalOperationOutcome`
+2. `apply_rollback_action` — restore the captured state during rollback
 
-Both must be implemented at the concrete CRDT level (e.g., `CounterCrdt`) and dispatched through the `Crdt` enum wrapper in `src/datatypes/crdts/mod.rs`.
+An `Err` from local execution must leave the CRDT unchanged because no rollback action is recorded for a failed operation. Remote execution uses `execute_remote_operation` returning `Result<()>`; it never creates rollback actions. Local execution, remote execution, and rollback application are implemented at the concrete CRDT level (for example, `CounterCrdt`). The `Crdt` enum wrapper in `src/datatypes/crdts/mod.rs` lifts each concrete action into `RollbackAction` and owns the single mismatch check.

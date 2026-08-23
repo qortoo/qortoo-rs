@@ -4,13 +4,41 @@ use derive_more::Display;
 use crate::operations::body::OperationBody;
 use crate::{
     DataType, DatatypeError,
-    datatypes::{common::ReturnType, crdts::counter_crdt::CounterCrdt},
+    datatypes::{
+        common::ReturnType,
+        crdts::counter_crdt::{CounterCrdt, CounterRollbackAction},
+    },
     errors::datatypes::InternalReason,
-    operations::Operation,
     types::operation_context::OperationContext,
 };
 
 pub mod counter_crdt;
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum RollbackAction {
+    Counter(CounterRollbackAction),
+    #[cfg(test)]
+    Noop,
+}
+
+#[derive(Debug)]
+pub(crate) struct LocalOperationOutcome {
+    return_value: ReturnType,
+    rollback_action: RollbackAction,
+}
+
+impl LocalOperationOutcome {
+    pub(crate) fn new(return_value: ReturnType, rollback_action: RollbackAction) -> Self {
+        Self {
+            return_value,
+            rollback_action,
+        }
+    }
+
+    pub(crate) fn into_parts(self) -> (ReturnType, RollbackAction) {
+        (self.return_value, self.rollback_action)
+    }
+}
 
 #[derive(Debug, Clone, Display)]
 pub enum Crdt {
@@ -28,47 +56,57 @@ impl Crdt {
     pub(crate) fn execute_local_operation(
         &mut self,
         context: &OperationContext<'_>,
-    ) -> Result<ReturnType, DatatypeError> {
+    ) -> Result<LocalOperationOutcome, DatatypeError> {
         #[cfg(test)]
         {
             let op = context.operation();
             if let OperationBody::Delay4Test(body) = &op.body {
                 return match body.run() {
-                    Ok(_) => Ok(ReturnType::None),
+                    Ok(_) => Ok(LocalOperationOutcome::new(
+                        ReturnType::None,
+                        RollbackAction::Noop,
+                    )),
                     Err(_) => Err(InternalReason::ExecuteOperation(format!("{body}")).into_error()),
                 };
             }
         }
         match self {
-            Crdt::Counter(c) => c.execute_common_operation(context),
+            Crdt::Counter(c) => c.execute_local_operation(context),
         }
     }
 
     pub(crate) fn execute_remote_operation(
         &mut self,
         context: &OperationContext<'_>,
-    ) -> Result<ReturnType, DatatypeError> {
+    ) -> Result<(), DatatypeError> {
         #[cfg(test)]
         {
             let op = context.operation();
             if let OperationBody::Delay4Test(body) = &op.body {
                 return match body.run() {
-                    Ok(_) => Ok(ReturnType::None),
+                    Ok(_) => Ok(()),
                     Err(_) => Err(InternalReason::ExecuteOperation(format!("{body}")).into_error()),
                 };
             }
         }
         match self {
-            Crdt::Counter(c) => c.execute_common_operation(context),
+            Crdt::Counter(c) => c.execute_remote_operation(context),
         }
     }
 
-    pub fn execute_inverse_operation(
+    pub(crate) fn apply_rollback_action(
         &mut self,
-        op: &Operation,
-    ) -> Result<ReturnType, DatatypeError> {
-        match self {
-            Crdt::Counter(c) => c.execute_inverse_operation(op),
+        action: RollbackAction,
+    ) -> Result<(), DatatypeError> {
+        match (self, action) {
+            (Crdt::Counter(c), RollbackAction::Counter(action)) => c.apply_rollback_action(action),
+            #[cfg(test)]
+            (_, RollbackAction::Noop) => Ok(()),
+            #[allow(unreachable_patterns)]
+            _ => Err(InternalReason::ExecuteOperation(
+                "rollback action does not match crdt".to_owned(),
+            )
+            .into_error()),
         }
     }
 

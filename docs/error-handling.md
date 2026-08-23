@@ -200,7 +200,7 @@ push buffer, the pending transaction is restored and the routed error is returne
 flowchart TD
     ET["mutable.end_transaction()"]
     ENQ["push_buffer.enqueue(tx)"]
-    RESTORE["restore tx_record.pending\n(Arc::try_unwrap)"]
+    RESTORE["restore tx_record.pending\nretain local rollback actions"]
     APPLY["mutable.apply_action(RollbackTransaction)\n→ do_rollback()"]
     NOTIFY["call_error_handler(error)\n(after write-lock release)"]
 

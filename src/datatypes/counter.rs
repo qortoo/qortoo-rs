@@ -43,6 +43,8 @@ impl Counter {
     ///
     /// Returns the new counter-value after the increment.
     /// This operation is conflict-free and can be safely called concurrently.
+    /// Arithmetic uses wrapping `i64` addition (modulo 2^64), so incrementing
+    /// `i64::MAX` by 1 produces `i64::MIN`.
     ///
     /// # Arguments
     ///
