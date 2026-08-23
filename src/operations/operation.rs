@@ -1,0 +1,82 @@
+use std::{
+    fmt::{Debug, Display, Formatter},
+    time::SystemTime,
+};
+
+use chrono::Local;
+
+use super::{body::OperationBody, memory::MemoryMeasurable};
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct Operation {
+    pub lamport: u64,
+    pub body: OperationBody,
+    at: SystemTime,
+}
+
+impl Operation {
+    pub fn new(body: OperationBody) -> Self {
+        Self {
+            lamport: Default::default(),
+            body,
+            at: SystemTime::now(),
+        }
+    }
+
+    pub fn set_lamport(&mut self, lamport: u64) {
+        self.lamport = lamport;
+    }
+}
+
+impl Debug for Operation {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.to_string().as_str())
+    }
+}
+
+impl Display for Operation {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!(
+            "{}.{} {:?})",
+            self.lamport,
+            self.body,
+            chrono::DateTime::<Local>::from(self.at)
+        ))
+    }
+}
+
+impl MemoryMeasurable for Operation {
+    fn size(&self) -> u64 {
+        (size_of::<u64>() + size_of::<SystemTime>()) as u64 + self.body.size()
+    }
+}
+
+#[cfg(test)]
+mod tests_operation {
+    use std::time::SystemTime;
+
+    use tracing::info;
+
+    use crate::operations::{MemoryMeasurable, Operation};
+
+    #[test]
+    fn can_new_and_print_operations() {
+        let op = Operation::new_counter_increase(1);
+        info!("{op} vs. {op:?}");
+        let s = op.to_string();
+        assert_eq!(s, format!("{op:?}"));
+
+        let hello = String::from("hello");
+        let hello_bytes: Box<[u8]> = hello.into_bytes().into_boxed_slice();
+        let snap_op = Operation::new_snapshot(hello_bytes);
+        assert_eq!(format!("{snap_op}"), format!("{snap_op:?}"));
+        info!("{snap_op} vs. {snap_op:?}");
+    }
+
+    #[test]
+    fn can_measure_operation_size() {
+        let constant_size = (size_of::<u64>() + size_of::<SystemTime>()) as u64;
+        let op = Operation::new_counter_increase(1);
+        assert_eq!(op.size(), constant_size + op.body.size());
+    }
+}

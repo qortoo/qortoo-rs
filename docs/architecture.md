@@ -108,7 +108,7 @@ flowchart TD
 | `RollbackAction` | `src/datatypes/crdts/execution.rs` | Top-level wrapper that dispatches a CRDT-specific rollback action to the matching CRDT |
 | `OperationId` | `src/types/operation_id.rs` | Mutable local Lamport/cseq progress; see [`docs/core-types.md`](core-types.md) |
 | `CheckPoint` | `src/types/checkpoint.rs` | Carries server-side and client-side transaction sequences; see [`docs/core-types.md`](core-types.md) |
-| `Operation` | `src/operations/mod.rs` | Single CRDT operation with `OperationBody` and `lamport` |
+| `Operation` | `src/operations/operation.rs` | Single CRDT operation with `OperationBody` and `lamport` |
 | `Transaction` | `src/operations/transaction.rs` | Ordered group of operations sharing `cuid`/`cseq` |
 | `TxRecord` | `src/datatypes/tx_record.rs` | Pending wire transaction + local rollback actions + rollback save point |
 | `PushPullPack` | `src/types/push_pull_pack.rs` | Wire format for push/pull exchange |
