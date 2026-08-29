@@ -1,9 +1,10 @@
-use super::counter_crdt::CounterRollbackAction;
+use super::{counter_crdt::CounterRollbackAction, variable_crdt::VariableRollbackAction};
 use crate::datatypes::common::ReturnType;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum RollbackAction {
     Counter(CounterRollbackAction),
+    Variable(VariableRollbackAction),
 }
 
 #[derive(Debug)]

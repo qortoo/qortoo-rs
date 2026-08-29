@@ -151,7 +151,9 @@ mod tests_counter_crdt {
             let context = OperationContext::new(&operation, &Cuid::default());
             let outcome = counter.execute_local_operation(&context).unwrap();
             let (return_value, action) = outcome.into_parts();
-            let RollbackAction::Counter(action) = action;
+            let RollbackAction::Counter(action) = action else {
+                panic!("expected a counter rollback action");
+            };
 
             assert!(matches!(return_value, ReturnType::Counter(value) if value == expected_value));
             assert_eq!(counter.value(), expected_value);

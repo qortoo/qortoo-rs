@@ -181,6 +181,7 @@ pub(crate) use new_attribute;
 pub enum ReturnType {
     None,
     Counter(i64),
+    Variable(Option<Arc<[u8]>>),
 }
 
 impl Debug for ReturnType {
@@ -188,12 +189,18 @@ impl Debug for ReturnType {
         match self {
             ReturnType::None => f.write_str("None"),
             ReturnType::Counter(value) => f.debug_tuple("Counter").field(value).finish(),
+            ReturnType::Variable(value) => f
+                .debug_struct("Variable")
+                .field("present", &value.is_some())
+                .field("value_size", &value.as_ref().map(|value| value.len()))
+                .finish(),
         }
     }
 }
 
 #[cfg(test)]
 mod tests_attribute {
+    use std::sync::Arc;
 
     use tracing::info;
 
@@ -238,6 +245,14 @@ mod tests_attribute {
         assert_eq!(
             format!("{:?}", super::ReturnType::Counter(42)),
             "Counter(42)"
+        );
+        let value: Arc<[u8]> = Arc::from(b"do-not-log".as_slice());
+        let debug = format!("{:?}", super::ReturnType::Variable(Some(value)));
+        assert_eq!(debug, "Variable { present: true, value_size: Some(10) }");
+        assert!(!debug.contains("do-not-log"));
+        assert_eq!(
+            format!("{:?}", super::ReturnType::Variable(None)),
+            "Variable { present: false, value_size: None }"
         );
     }
 }

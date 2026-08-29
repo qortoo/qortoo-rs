@@ -1,18 +1,28 @@
 #![allow(
     dead_code,
-    reason = "Variable CRDT execution wiring is implemented in the next slice"
+    reason = "Variable CRDT is connected to the top-level Crdt enum in the next slice"
 )]
 
 use std::{
     cmp::Ordering,
     fmt::{Debug, Formatter},
+    sync::Arc,
 };
 
-use crate::{DatatypeError, errors::datatypes::InternalReason, types::timestamp::Timestamp};
+use crate::{
+    DatatypeError,
+    datatypes::{
+        common::ReturnType,
+        crdts::{LocalOperationOutcome, RollbackAction},
+    },
+    errors::datatypes::InternalReason,
+    operations::body::OperationBody,
+    types::{operation_context::OperationContext, timestamp::Timestamp},
+};
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct VariableState {
-    value: Box<[u8]>,
+    value: Arc<[u8]>,
     timestamp: Timestamp,
 }
 
@@ -46,6 +56,11 @@ impl Debug for VariableState {
 pub(crate) enum VariableSetOutcome {
     Applied { previous: Option<VariableState> },
     Unchanged,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum VariableRollbackAction {
+    Restore { previous: Option<VariableState> },
 }
 
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -82,6 +97,62 @@ impl VariableCrdt {
         }
     }
 
+    pub(crate) fn execute_local_operation(
+        &mut self,
+        context: &OperationContext<'_>,
+    ) -> Result<LocalOperationOutcome, DatatypeError> {
+        let OperationBody::VariableSet(body) = &context.operation().body else {
+            return Err(InternalReason::ExecuteOperation(
+                "variable cannot execute this local operation".to_owned(),
+            )
+            .into_error());
+        };
+
+        let VariableSetOutcome::Applied { previous } =
+            self.apply_set(&body.value, context.timestamp())?
+        else {
+            return Err(InternalReason::ExecuteOperation(
+                "local variable set did not advance the winning timestamp".to_owned(),
+            )
+            .into_error());
+        };
+        let previous_value = previous
+            .as_ref()
+            .map(|previous| Arc::clone(&previous.value));
+
+        Ok(LocalOperationOutcome::new(
+            ReturnType::Variable(previous_value),
+            RollbackAction::Variable(VariableRollbackAction::Restore { previous }),
+        ))
+    }
+
+    pub(crate) fn execute_remote_operation(
+        &mut self,
+        context: &OperationContext<'_>,
+    ) -> Result<(), DatatypeError> {
+        let OperationBody::VariableSet(body) = &context.operation().body else {
+            return Err(InternalReason::ExecuteOperation(
+                "variable cannot execute this remote operation".to_owned(),
+            )
+            .into_error());
+        };
+
+        self.apply_set(&body.value, context.timestamp())?;
+        Ok(())
+    }
+
+    pub(crate) fn apply_rollback_action(
+        &mut self,
+        action: VariableRollbackAction,
+    ) -> Result<(), DatatypeError> {
+        match action {
+            VariableRollbackAction::Restore { previous } => {
+                self.winning = previous;
+                Ok(())
+            }
+        }
+    }
+
     fn replace(&mut self, value: &[u8], timestamp: &Timestamp) -> VariableSetOutcome {
         let previous = self.winning.replace(VariableState::new(value, timestamp));
         VariableSetOutcome::Applied { previous }
@@ -99,10 +170,16 @@ impl Debug for VariableCrdt {
 #[cfg(test)]
 mod tests_variable_crdt {
     use super::*;
-    use crate::types::uid::Cuid;
+    use crate::{operations::Operation, types::uid::Cuid};
 
     fn timestamp(lamport: u64, cuid: &str) -> Timestamp {
         Timestamp::new(lamport, &Cuid::try_from(cuid).unwrap())
+    }
+
+    fn variable_set_operation(value: &[u8], lamport: u64) -> Operation {
+        let mut operation = Operation::new_variable_set(value.into());
+        operation.set_lamport(lamport);
+        operation
     }
 
     #[test]
@@ -207,5 +284,99 @@ mod tests_variable_crdt {
         assert!(!error.to_string().contains("secret"));
         assert_eq!(variable.value(), Some(b"winning-secret".as_slice()));
         assert_eq!(variable.timestamp(), Some(&timestamp));
+    }
+
+    #[test]
+    fn can_execute_and_rollback_local_variable_sets_in_reverse_order() {
+        let mut variable = VariableCrdt::default();
+        let cuid = Cuid::try_from("0000000000000001").unwrap();
+        let first_operation = variable_set_operation(b"first", 1);
+        let first_context = OperationContext::new(&first_operation, &cuid);
+
+        let first_outcome = variable.execute_local_operation(&first_context).unwrap();
+        let (first_return, first_action) = first_outcome.into_parts();
+        let RollbackAction::Variable(first_action) = first_action else {
+            panic!("expected a variable rollback action");
+        };
+        assert!(matches!(first_return, ReturnType::Variable(None)));
+
+        let second_operation = variable_set_operation(b"second", 2);
+        let second_context = OperationContext::new(&second_operation, &cuid);
+        let second_outcome = variable.execute_local_operation(&second_context).unwrap();
+        let (second_return, second_action) = second_outcome.into_parts();
+        let RollbackAction::Variable(second_action) = second_action else {
+            panic!("expected a variable rollback action");
+        };
+        let ReturnType::Variable(Some(previous_value)) = second_return else {
+            panic!("expected the previous variable value");
+        };
+        let VariableRollbackAction::Restore {
+            previous: Some(previous_state),
+        } = &second_action
+        else {
+            panic!("expected the previous variable state");
+        };
+        assert_eq!(previous_value.as_ref(), b"first");
+        assert!(Arc::ptr_eq(&previous_value, &previous_state.value));
+        assert_eq!(variable.value(), Some(b"second".as_slice()));
+        assert_eq!(variable.timestamp(), Some(second_context.timestamp()));
+
+        variable.apply_rollback_action(second_action).unwrap();
+        assert_eq!(variable.value(), Some(b"first".as_slice()));
+        assert_eq!(variable.timestamp(), Some(first_context.timestamp()));
+
+        variable.apply_rollback_action(first_action).unwrap();
+        assert_eq!(variable.value(), None);
+        assert_eq!(variable.timestamp(), None);
+    }
+
+    #[test]
+    fn can_execute_remote_variable_sets_with_lww_precedence() {
+        let mut variable = VariableCrdt::default();
+        let cuid = Cuid::try_from("0000000000000001").unwrap();
+        let winning_operation = variable_set_operation(b"winning", 2);
+        let winning_context = OperationContext::new(&winning_operation, &cuid);
+        variable.execute_remote_operation(&winning_context).unwrap();
+
+        let stale_operation = variable_set_operation(b"stale", 1);
+        let stale_context = OperationContext::new(&stale_operation, &cuid);
+        variable.execute_remote_operation(&stale_context).unwrap();
+
+        assert_eq!(variable.value(), Some(b"winning".as_slice()));
+        assert_eq!(variable.timestamp(), Some(winning_context.timestamp()));
+    }
+
+    #[test]
+    fn can_reject_a_local_variable_set_without_a_newer_timestamp() {
+        let mut variable = VariableCrdt::default();
+        let cuid = Cuid::try_from("0000000000000001").unwrap();
+        let winning_timestamp = Timestamp::new(2, &cuid);
+        variable.apply_set(b"winning", &winning_timestamp).unwrap();
+        let stale_operation = variable_set_operation(b"winning", 1);
+        let stale_context = OperationContext::new(&stale_operation, &cuid);
+
+        let error = variable
+            .execute_local_operation(&stale_context)
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("did not advance the winning timestamp")
+        );
+        assert_eq!(variable.value(), Some(b"winning".as_slice()));
+        assert_eq!(variable.timestamp(), Some(&winning_timestamp));
+    }
+
+    #[test]
+    fn can_reject_non_variable_operations() {
+        let mut variable = VariableCrdt::default();
+        let operation = Operation::new_counter_increase(1);
+        let context = OperationContext::new(&operation, &Cuid::default());
+
+        assert!(variable.execute_local_operation(&context).is_err());
+        assert!(variable.execute_remote_operation(&context).is_err());
+        assert_eq!(variable.value(), None);
+        assert_eq!(variable.timestamp(), None);
     }
 }
