@@ -7,7 +7,10 @@ use std::{
 
 use nanoid::nanoid;
 
-use crate::types::common::ArcStr;
+use crate::{
+    errors::datatypes::{DatatypeError, deserialize_error},
+    types::common::ArcStr,
+};
 
 pub type Cuid = Uid;
 pub type Duid = Uid;
@@ -24,6 +27,24 @@ impl Uid {
 
     pub fn new_nil() -> Self {
         Self(Arc::from("0000000000000000"))
+    }
+
+    pub(crate) fn to_bytes(&self) -> [u8; UID_LEN] {
+        let mut encoded = [0; UID_LEN];
+        encoded.copy_from_slice(self.0.as_bytes());
+        encoded
+    }
+
+    pub(crate) fn from_bytes(encoded: &[u8]) -> Result<Self, DatatypeError> {
+        if encoded.len() != UID_LEN {
+            return Err(deserialize_error(
+                "uid",
+                format_args!("expected {UID_LEN} bytes, got {}", encoded.len()),
+            ));
+        }
+        let value = std::str::from_utf8(encoded)
+            .map_err(|_| deserialize_error("uid", "not valid UTF-8"))?;
+        Self::try_from(value).map_err(|_| deserialize_error("uid", "invalid format"))
     }
 
     fn validate(s: &str) -> bool {
@@ -133,6 +154,47 @@ mod tests_uid {
             uid_set.insert(uid);
         }
         assert_eq!(uid_set.len(), LIMIT + 1)
+    }
+
+    #[test]
+    fn can_round_trip_uid_bytes() {
+        let uids = [Uid::new_nil(), Uid::try_from("-_00000000000000").unwrap()];
+
+        for uid in uids {
+            let encoded = uid.to_bytes();
+            let decoded = Uid::from_bytes(&encoded).unwrap();
+
+            assert_eq!(decoded, uid);
+            assert_eq!(encoded.as_slice(), uid.as_ref().as_bytes());
+        }
+    }
+
+    #[test]
+    fn can_reject_invalid_uid_bytes() {
+        let error = Uid::from_bytes(&[]).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("deserialize: uid: expected 16 bytes, got 0")
+        );
+
+        let mut invalid_utf8 = Uid::new_nil().to_bytes();
+        invalid_utf8[0] = 0xff;
+        let error = Uid::from_bytes(&invalid_utf8).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("deserialize: uid: not valid UTF-8")
+        );
+
+        let mut invalid_format = Uid::new_nil().to_bytes();
+        invalid_format[0] = b'(';
+        let error = Uid::from_bytes(&invalid_format).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("deserialize: uid: invalid format")
+        );
     }
 
     #[rstest]

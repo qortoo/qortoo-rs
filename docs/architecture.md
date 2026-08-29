@@ -68,7 +68,7 @@ flowchart TD
 flowchart TD
     User["User calls counter.increase(1)"]
     TX["TransactionalDatatype::execute_local_operation_as_tx()\n──────────────────────────────────────\nacquire op_mutex\nbegin_transaction_if_needed()\n→ creates TransactionContext + DeferGuard"]
-    MU["MutableDatatype::execute_local_operation()\n──────────────────────────────────────\nop.set_lamport(op_id.lamport + 1)\ncontext = OperationContext::new(&op, &op_id.cuid)\noutcome = crdt.execute_local_operation(&context)\n→ return value + rollback action"]
+    MU["MutableDatatype::execute_local_operation()\n──────────────────────────────────────\nop.set_lamport(op_id.lamport + 1)\ncontext = OperationContext::try_new(&op, &op_id.cuid)?\n→ rejects modification Lamport 0\noutcome = crdt.execute_local_operation(&context)\n→ return value + rollback action"]
     Ok["YES: succeeds\ntx_record.record_operation() ← append wire op + local rollback action\nop_id.next(is_new_tx) ← advance lamport (and cseq if new tx)"]
     Err["NO: fails\nreturn Err (op_id unchanged)"]
     Defer["DeferGuard drop → end_transaction(committed=true)\npush_buffer.enqueue(tx) ← ready to sync"]
@@ -84,7 +84,7 @@ flowchart TD
 flowchart TD
     EL["EventLoop fires PushTransaction event"]
     PP["WiredDatatype::push_pull()\n──────────────────────────────────────\nmutable.read() → assemble PushPullPack (push_buffer contents)\nconnectivity.push_pull(&pack)"]
-    Apply["mutable.write() → apply pulled transactions\n──────────────────────────────────────\nOperationContext::new(op, &tx.cuid)\nexecute_remote_transaction() for each remote tx\npush_buffer.deque(acked_cseq)"]
+    Apply["mutable.write() → apply pulled transactions\n──────────────────────────────────────\nOperationContext::try_new(op, &tx.cuid)?\n→ rejects modification Lamport 0\nexecute_remote_transaction() for each remote tx\npush_buffer.deque(acked_cseq)"]
     State["set_state(pulled.state)"]
 
     EL --> PP --> Apply --> State
@@ -103,7 +103,7 @@ flowchart TD
 |------|----------|---------|
 | `Uid` / `Cuid` / `Duid` | `src/types/uid.rs` | Immutable identities for clients and logical datatypes; see [`docs/core-types.md`](core-types.md) |
 | `Timestamp` / `ElementId` | `src/types/timestamp.rs`, `src/types/element_id.rs` | CRDT precedence and exact element identity; see [`docs/core-types.md`](core-types.md) |
-| `OperationContext` | `src/types/operation_context.rs` | Execution-only combination of an operation and its origin-derived `Timestamp` |
+| `OperationContext` | `src/types/operation_context.rs` | Validated execution-only combination of a positive-Lamport modification operation and its origin-derived `Timestamp`; snapshot application bypasses it |
 | `LocalOperationOutcome` | `src/datatypes/crdts/execution.rs` | Local execution result containing the caller value and local-only rollback action |
 | `RollbackAction` | `src/datatypes/crdts/execution.rs` | Top-level wrapper that dispatches a CRDT-specific rollback action to the matching CRDT |
 | `OperationId` | `src/types/operation_id.rs` | Mutable local Lamport/cseq progress; see [`docs/core-types.md`](core-types.md) |

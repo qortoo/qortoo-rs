@@ -181,7 +181,7 @@ pub(crate) use new_attribute;
 pub enum ReturnType {
     None,
     Counter(i64),
-    Variable(Option<Arc<[u8]>>),
+    Variable(Arc<[u8]>),
 }
 
 impl Debug for ReturnType {
@@ -191,8 +191,7 @@ impl Debug for ReturnType {
             ReturnType::Counter(value) => f.debug_tuple("Counter").field(value).finish(),
             ReturnType::Variable(value) => f
                 .debug_struct("Variable")
-                .field("present", &value.is_some())
-                .field("value_size", &value.as_ref().map(|value| value.len()))
+                .field("value_size", &value.len())
                 .finish(),
         }
     }
@@ -247,12 +246,8 @@ mod tests_attribute {
             "Counter(42)"
         );
         let value: Arc<[u8]> = Arc::from(b"do-not-log".as_slice());
-        let debug = format!("{:?}", super::ReturnType::Variable(Some(value)));
-        assert_eq!(debug, "Variable { present: true, value_size: Some(10) }");
+        let debug = format!("{:?}", super::ReturnType::Variable(value));
+        assert_eq!(debug, "Variable { value_size: 10 }");
         assert!(!debug.contains("do-not-log"));
-        assert_eq!(
-            format!("{:?}", super::ReturnType::Variable(None)),
-            "Variable { present: false, value_size: None }"
-        );
     }
 }

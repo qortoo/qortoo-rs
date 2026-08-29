@@ -147,8 +147,9 @@ mod tests_counter_crdt {
             [(0, i64::MIN, i64::MIN), (i64::MAX, 1, i64::MIN)]
         {
             let mut counter = CounterCrdt::from_bytes(&initial_value.to_le_bytes());
-            let operation = Operation::new_counter_increase(delta);
-            let context = OperationContext::new(&operation, &Cuid::default());
+            let mut operation = Operation::new_counter_increase(delta);
+            operation.set_lamport(1);
+            let context = OperationContext::try_new(&operation, &Cuid::default()).unwrap();
             let outcome = counter.execute_local_operation(&context).unwrap();
             let (return_value, action) = outcome.into_parts();
             let RollbackAction::Counter(action) = action else {

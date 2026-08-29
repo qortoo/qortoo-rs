@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use thiserror::Error;
 
 /// Internal SDK error reason, used by the event loop for action routing.
@@ -67,6 +69,11 @@ impl InternalReason {
             | InternalReason::GetPushingTransactions => self.into_error().mapping(),
         }
     }
+}
+
+/// Constructs a deserialization error with a stable component context.
+pub(crate) fn deserialize_error(context: &str, message: impl Display) -> DatatypeError {
+    InternalReason::Deserialize(format!("{context}: {message}")).into_error()
 }
 
 /// Reason a server permanently rejected a datatype operation.

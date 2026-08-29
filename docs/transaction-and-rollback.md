@@ -56,7 +56,7 @@ flowchart TD
 ```rust
 // MutableDatatype::execute_local_operation
 op.set_lamport(self.op_id.lamport + 1);          // compute, do not advance yet
-let context = OperationContext::new(&op, &self.op_id.cuid);
+let context = OperationContext::try_new(&op, &self.op_id.cuid)?;
 let outcome = self.crdt.execute_local_operation(&context)?;
 let (return_value, rollback_action) = outcome.into_parts();
 let is_new_tx = self.tx_record.record_operation(

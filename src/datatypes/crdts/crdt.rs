@@ -5,7 +5,8 @@ use super::{
     execution::{LocalOperationOutcome, RollbackAction},
 };
 use crate::{
-    DataType, DatatypeError, errors::datatypes::InternalReason,
+    DataType, DatatypeError,
+    errors::datatypes::{InternalReason, deserialize_error},
     types::operation_context::OperationContext,
 };
 
@@ -64,11 +65,10 @@ impl Crdt {
         match self {
             Self::Counter(c) => {
                 if serialized.len() != 8 {
-                    return Err(InternalReason::Deserialize(format!(
-                        "counter crdt: expected 8 bytes, got {}",
-                        serialized.len()
-                    ))
-                    .into_error());
+                    return Err(deserialize_error(
+                        "counter crdt",
+                        format_args!("expected 8 bytes, got {}", serialized.len()),
+                    ));
                 }
                 let mut array = [0u8; 8];
                 array.copy_from_slice(serialized);

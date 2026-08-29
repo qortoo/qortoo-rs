@@ -158,8 +158,8 @@ impl MutableDatatype {
         tx: Arc<Transaction>,
     ) -> Result<(), DatatypeError> {
         for op in tx.iter() {
+            let context = OperationContext::try_new(op, &tx.cuid)?;
             self.op_id.lamport = self.op_id.lamport.max(op.lamport);
-            let context = OperationContext::new(op, &tx.cuid);
             self.crdt.execute_remote_operation(&context)?;
         }
         Ok(())
@@ -172,7 +172,7 @@ impl MutableDatatype {
     ) -> Result<ReturnType, DatatypeError> {
         op.set_lamport(self.op_id.lamport + 1);
         let outcome = {
-            let context = OperationContext::new(&op, &self.op_id.cuid);
+            let context = OperationContext::try_new(&op, &self.op_id.cuid)?;
             self.crdt.execute_local_operation(&context)?
         };
         let (return_value, rollback_action) = outcome.into_parts();
@@ -226,7 +226,8 @@ mod tests_mutable_datatype {
     use crate::{
         DataType,
         datatypes::{common::new_attribute, crdts::Crdt, transactional::TransactionalDatatype},
-        operations::Operation,
+        operations::{Operation, transaction::Transaction},
+        types::uid::Cuid,
     };
 
     #[test]
@@ -300,5 +301,28 @@ mod tests_mutable_datatype {
         mutable.reset();
         assert!(mutable.tx_record.pending.is_none());
         assert_eq!(mutable.tx_record.rollback_action_count(), 0);
+    }
+
+    #[test]
+    #[instrument]
+    fn can_reject_a_remote_counter_operation_with_zero_lamport() {
+        let attr = new_attribute!(DataType::Counter);
+        let mut mutable = super::MutableDatatype::new(attr, Default::default(), Default::default());
+        let cuid = Cuid::try_from("0000000000000001").unwrap();
+        let mut transaction = Transaction::new(&cuid, 1);
+        transaction.push_operation(Operation::new_counter_increase(1));
+
+        let error = mutable
+            .execute_remote_transaction(std::sync::Arc::new(transaction))
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("modification operation must use a positive Lamport timestamp")
+        );
+        let Crdt::Counter(counter) = &mutable.crdt;
+        assert_eq!(counter.value(), 0);
+        assert_eq!(mutable.op_id.lamport, 0);
     }
 }

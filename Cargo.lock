@@ -1954,6 +1954,8 @@ dependencies = [
  "pyroscope",
  "regex",
  "rstest",
+ "serde",
+ "serde_json",
  "serial_test",
  "strum_macros",
  "thiserror",

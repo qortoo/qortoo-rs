@@ -9,16 +9,26 @@ use std::{
     sync::Arc,
 };
 
+use serde::Deserialize;
+
+use super::snapshot_reader::SnapshotReader;
 use crate::{
     DatatypeError,
     datatypes::{
         common::ReturnType,
         crdts::{LocalOperationOutcome, RollbackAction},
     },
-    errors::datatypes::InternalReason,
+    errors::datatypes::{InternalReason, deserialize_error},
     operations::body::OperationBody,
-    types::{operation_context::OperationContext, timestamp::Timestamp},
+    types::{
+        operation_context::OperationContext,
+        timestamp::{TIMESTAMP_ENCODED_LEN, Timestamp},
+    },
 };
+
+const SNAPSHOT_VERSION: u8 = 1;
+const SNAPSHOT_CONTEXT: &str = "variable crdt";
+const INITIAL_VALUE: &[u8] = b"null";
 
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct VariableState {
@@ -54,42 +64,46 @@ impl Debug for VariableState {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum VariableSetOutcome {
-    Applied { previous: Option<VariableState> },
+    Applied { previous: VariableState },
     Unchanged,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum VariableRollbackAction {
-    Restore { previous: Option<VariableState> },
+    Restore { previous: VariableState },
 }
 
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct VariableCrdt {
-    winning: Option<VariableState>,
+    winning: VariableState,
+}
+
+impl Default for VariableCrdt {
+    fn default() -> Self {
+        Self {
+            winning: VariableState::new(INITIAL_VALUE, &Timestamp::initial()),
+        }
+    }
 }
 
 impl VariableCrdt {
-    pub(crate) fn value(&self) -> Option<&[u8]> {
-        self.winning.as_ref().map(VariableState::value)
+    pub(crate) fn value(&self) -> &[u8] {
+        self.winning.value()
     }
 
-    pub(crate) fn timestamp(&self) -> Option<&Timestamp> {
-        self.winning.as_ref().map(VariableState::timestamp)
+    pub(crate) fn timestamp(&self) -> &Timestamp {
+        self.winning.timestamp()
     }
 
-    pub(crate) fn apply_set(
+    fn apply_set(
         &mut self,
         value: &[u8],
         timestamp: &Timestamp,
     ) -> Result<VariableSetOutcome, DatatypeError> {
-        let Some(current) = &self.winning else {
-            return Ok(self.replace(value, timestamp));
-        };
-
-        match timestamp.cmp(current.timestamp()) {
+        match timestamp.cmp(self.winning.timestamp()) {
             Ordering::Greater => Ok(self.replace(value, timestamp)),
             Ordering::Less => Ok(VariableSetOutcome::Unchanged),
-            Ordering::Equal if value == current.value() => Ok(VariableSetOutcome::Unchanged),
+            Ordering::Equal if value == self.winning.value() => Ok(VariableSetOutcome::Unchanged),
             Ordering::Equal => Err(InternalReason::ExecuteOperation(format!(
                 "variable received different values for timestamp {timestamp}"
             ))
@@ -116,9 +130,7 @@ impl VariableCrdt {
             )
             .into_error());
         };
-        let previous_value = previous
-            .as_ref()
-            .map(|previous| Arc::clone(&previous.value));
+        let previous_value = Arc::clone(&previous.value);
 
         Ok(LocalOperationOutcome::new(
             ReturnType::Variable(previous_value),
@@ -153,10 +165,75 @@ impl VariableCrdt {
         }
     }
 
+    pub(crate) fn to_bytes(&self) -> Box<[u8]> {
+        let mut serialized = Vec::new();
+        serialized.push(SNAPSHOT_VERSION);
+        serialized.extend_from_slice(&self.winning.timestamp.to_bytes());
+        let value_length = u64::try_from(self.winning.value.len())
+            .expect("variable snapshot payload length exceeds u64");
+        serialized.extend_from_slice(&value_length.to_le_bytes());
+        serialized.extend_from_slice(&self.winning.value);
+        serialized.into_boxed_slice()
+    }
+
+    pub(crate) fn from_bytes(serialized: &[u8]) -> Result<Self, DatatypeError> {
+        let mut reader = SnapshotReader::new(serialized, SNAPSHOT_CONTEXT);
+        let version = reader.read_u8("version")?;
+        if version != SNAPSHOT_VERSION {
+            return Err(deserialize_error(
+                SNAPSHOT_CONTEXT,
+                format_args!("unsupported version {version}"),
+            ));
+        }
+
+        let timestamp = reader.read_bytes("winning timestamp", TIMESTAMP_ENCODED_LEN)?;
+        let timestamp = Timestamp::from_bytes(timestamp)?;
+        let value_length = reader.read_u64_le("JSON length")?;
+        let value_length = usize::try_from(value_length).map_err(|_| {
+            deserialize_error(SNAPSHOT_CONTEXT, "JSON length does not fit this platform")
+        })?;
+        let value = reader.read_bytes("JSON payload", value_length)?;
+        validate_snapshot_json(value)?;
+        validate_snapshot_state(value, &timestamp)?;
+        let winning = VariableState::new(value, &timestamp);
+
+        reader.finish()?;
+        Ok(Self { winning })
+    }
+
     fn replace(&mut self, value: &[u8], timestamp: &Timestamp) -> VariableSetOutcome {
-        let previous = self.winning.replace(VariableState::new(value, timestamp));
+        let previous = std::mem::replace(&mut self.winning, VariableState::new(value, timestamp));
         VariableSetOutcome::Applied { previous }
     }
+}
+
+fn validate_snapshot_json(value: &[u8]) -> Result<(), DatatypeError> {
+    let mut deserializer = serde_json::Deserializer::from_slice(value);
+    serde::de::IgnoredAny::deserialize(&mut deserializer).map_err(|error| {
+        deserialize_error(
+            SNAPSHOT_CONTEXT,
+            format_args!("invalid JSON payload: {error}"),
+        )
+    })?;
+    deserializer.end().map_err(|error| {
+        deserialize_error(
+            SNAPSHOT_CONTEXT,
+            format_args!("invalid JSON payload: {error}"),
+        )
+    })
+}
+
+fn validate_snapshot_state(value: &[u8], timestamp: &Timestamp) -> Result<(), DatatypeError> {
+    if timestamp.lamport() > 0 {
+        return Ok(());
+    }
+    if timestamp.is_initial() && value == INITIAL_VALUE {
+        return Ok(());
+    }
+    Err(deserialize_error(
+        SNAPSHOT_CONTEXT,
+        "Lamport zero is reserved for the initial null state",
+    ))
 }
 
 impl Debug for VariableCrdt {
@@ -170,7 +247,10 @@ impl Debug for VariableCrdt {
 #[cfg(test)]
 mod tests_variable_crdt {
     use super::*;
-    use crate::{operations::Operation, types::uid::Cuid};
+    use crate::{
+        operations::Operation,
+        types::uid::{Cuid, UID_LEN},
+    };
 
     fn timestamp(lamport: u64, cuid: &str) -> Timestamp {
         Timestamp::new(lamport, &Cuid::try_from(cuid).unwrap())
@@ -182,12 +262,21 @@ mod tests_variable_crdt {
         operation
     }
 
+    fn serialized_snapshot(lamport: u64, cuid: [u8; UID_LEN], value: &[u8]) -> Vec<u8> {
+        let mut serialized = vec![SNAPSHOT_VERSION];
+        serialized.extend_from_slice(&lamport.to_le_bytes());
+        serialized.extend_from_slice(&cuid);
+        serialized.extend_from_slice(&(value.len() as u64).to_le_bytes());
+        serialized.extend_from_slice(value);
+        serialized
+    }
+
     #[test]
-    fn can_start_a_variable_without_a_value() {
+    fn can_start_a_variable_with_the_initial_null_state() {
         let variable = VariableCrdt::default();
 
-        assert_eq!(variable.value(), None);
-        assert_eq!(variable.timestamp(), None);
+        assert_eq!(variable.value(), b"null");
+        assert!(variable.timestamp().is_initial());
     }
 
     #[test]
@@ -197,9 +286,29 @@ mod tests_variable_crdt {
 
         let outcome = variable.apply_set(b"first", &timestamp).unwrap();
 
-        assert_eq!(outcome, VariableSetOutcome::Applied { previous: None });
-        assert_eq!(variable.value(), Some(b"first".as_slice()));
-        assert_eq!(variable.timestamp(), Some(&timestamp));
+        let VariableSetOutcome::Applied { previous } = outcome else {
+            panic!("expected an applied variable set");
+        };
+        assert_eq!(previous.value(), b"null");
+        assert!(previous.timestamp().is_initial());
+        assert_eq!(variable.value(), b"first");
+        assert_eq!(variable.timestamp(), &timestamp);
+    }
+
+    #[test]
+    fn can_apply_an_explicit_null_over_the_initial_null_value() {
+        let mut variable = VariableCrdt::default();
+        let timestamp = timestamp(1, "0000000000000001");
+
+        let outcome = variable.apply_set(b"null", &timestamp).unwrap();
+
+        let VariableSetOutcome::Applied { previous } = outcome else {
+            panic!("expected an applied variable set");
+        };
+        assert_eq!(previous.value(), b"null");
+        assert!(previous.timestamp().is_initial());
+        assert_eq!(variable.value(), b"null");
+        assert_eq!(variable.timestamp(), &timestamp);
     }
 
     #[test]
@@ -213,16 +322,13 @@ mod tests_variable_crdt {
 
         let outcome = variable.apply_set(b"winning", &winning_timestamp).unwrap();
 
-        let VariableSetOutcome::Applied {
-            previous: Some(previous),
-        } = outcome
-        else {
+        let VariableSetOutcome::Applied { previous } = outcome else {
             panic!("expected the previous variable state");
         };
         assert_eq!(previous.value(), b"previous");
         assert_eq!(previous.timestamp(), &previous_timestamp);
-        assert_eq!(variable.value(), Some(b"winning".as_slice()));
-        assert_eq!(variable.timestamp(), Some(&winning_timestamp));
+        assert_eq!(variable.value(), b"winning");
+        assert_eq!(variable.timestamp(), &winning_timestamp);
     }
 
     #[test]
@@ -235,8 +341,8 @@ mod tests_variable_crdt {
         let outcome = variable.apply_set(b"stale", &stale_timestamp).unwrap();
 
         assert_eq!(outcome, VariableSetOutcome::Unchanged);
-        assert_eq!(variable.value(), Some(b"winning".as_slice()));
-        assert_eq!(variable.timestamp(), Some(&winning_timestamp));
+        assert_eq!(variable.value(), b"winning");
+        assert_eq!(variable.timestamp(), &winning_timestamp);
     }
 
     #[test]
@@ -248,8 +354,8 @@ mod tests_variable_crdt {
         let outcome = variable.apply_set(b"same", &timestamp).unwrap();
 
         assert_eq!(outcome, VariableSetOutcome::Unchanged);
-        assert_eq!(variable.value(), Some(b"same".as_slice()));
-        assert_eq!(variable.timestamp(), Some(&timestamp));
+        assert_eq!(variable.value(), b"same");
+        assert_eq!(variable.timestamp(), &timestamp);
     }
 
     #[test]
@@ -261,12 +367,9 @@ mod tests_variable_crdt {
 
         let outcome = variable.apply_set(b"higher", &higher_timestamp).unwrap();
 
-        assert!(matches!(
-            outcome,
-            VariableSetOutcome::Applied { previous: Some(_) }
-        ));
-        assert_eq!(variable.value(), Some(b"higher".as_slice()));
-        assert_eq!(variable.timestamp(), Some(&higher_timestamp));
+        assert!(matches!(outcome, VariableSetOutcome::Applied { .. }));
+        assert_eq!(variable.value(), b"higher");
+        assert_eq!(variable.timestamp(), &higher_timestamp);
     }
 
     #[test]
@@ -282,8 +385,8 @@ mod tests_variable_crdt {
         assert!(matches!(&error, DatatypeError::Internal(_)));
         assert!(error.to_string().contains("different values for timestamp"));
         assert!(!error.to_string().contains("secret"));
-        assert_eq!(variable.value(), Some(b"winning-secret".as_slice()));
-        assert_eq!(variable.timestamp(), Some(&timestamp));
+        assert_eq!(variable.value(), b"winning-secret");
+        assert_eq!(variable.timestamp(), &timestamp);
     }
 
     #[test]
@@ -291,43 +394,51 @@ mod tests_variable_crdt {
         let mut variable = VariableCrdt::default();
         let cuid = Cuid::try_from("0000000000000001").unwrap();
         let first_operation = variable_set_operation(b"first", 1);
-        let first_context = OperationContext::new(&first_operation, &cuid);
+        let first_context = OperationContext::try_new(&first_operation, &cuid).unwrap();
 
         let first_outcome = variable.execute_local_operation(&first_context).unwrap();
         let (first_return, first_action) = first_outcome.into_parts();
         let RollbackAction::Variable(first_action) = first_action else {
             panic!("expected a variable rollback action");
         };
-        assert!(matches!(first_return, ReturnType::Variable(None)));
+        let ReturnType::Variable(first_previous_value) = first_return else {
+            panic!("expected the initial variable value");
+        };
+        let VariableRollbackAction::Restore {
+            previous: first_previous_state,
+        } = &first_action;
+        assert_eq!(first_previous_value.as_ref(), b"null");
+        assert!(Arc::ptr_eq(
+            &first_previous_value,
+            &first_previous_state.value
+        ));
+        assert!(first_previous_state.timestamp().is_initial());
 
         let second_operation = variable_set_operation(b"second", 2);
-        let second_context = OperationContext::new(&second_operation, &cuid);
+        let second_context = OperationContext::try_new(&second_operation, &cuid).unwrap();
         let second_outcome = variable.execute_local_operation(&second_context).unwrap();
         let (second_return, second_action) = second_outcome.into_parts();
         let RollbackAction::Variable(second_action) = second_action else {
             panic!("expected a variable rollback action");
         };
-        let ReturnType::Variable(Some(previous_value)) = second_return else {
+        let ReturnType::Variable(previous_value) = second_return else {
             panic!("expected the previous variable value");
         };
         let VariableRollbackAction::Restore {
-            previous: Some(previous_state),
-        } = &second_action
-        else {
-            panic!("expected the previous variable state");
-        };
+            previous: previous_state,
+        } = &second_action;
         assert_eq!(previous_value.as_ref(), b"first");
         assert!(Arc::ptr_eq(&previous_value, &previous_state.value));
-        assert_eq!(variable.value(), Some(b"second".as_slice()));
-        assert_eq!(variable.timestamp(), Some(second_context.timestamp()));
+        assert_eq!(variable.value(), b"second");
+        assert_eq!(variable.timestamp(), second_context.timestamp());
 
         variable.apply_rollback_action(second_action).unwrap();
-        assert_eq!(variable.value(), Some(b"first".as_slice()));
-        assert_eq!(variable.timestamp(), Some(first_context.timestamp()));
+        assert_eq!(variable.value(), b"first");
+        assert_eq!(variable.timestamp(), first_context.timestamp());
 
         variable.apply_rollback_action(first_action).unwrap();
-        assert_eq!(variable.value(), None);
-        assert_eq!(variable.timestamp(), None);
+        assert_eq!(variable.value(), b"null");
+        assert!(variable.timestamp().is_initial());
     }
 
     #[test]
@@ -335,15 +446,15 @@ mod tests_variable_crdt {
         let mut variable = VariableCrdt::default();
         let cuid = Cuid::try_from("0000000000000001").unwrap();
         let winning_operation = variable_set_operation(b"winning", 2);
-        let winning_context = OperationContext::new(&winning_operation, &cuid);
+        let winning_context = OperationContext::try_new(&winning_operation, &cuid).unwrap();
         variable.execute_remote_operation(&winning_context).unwrap();
 
         let stale_operation = variable_set_operation(b"stale", 1);
-        let stale_context = OperationContext::new(&stale_operation, &cuid);
+        let stale_context = OperationContext::try_new(&stale_operation, &cuid).unwrap();
         variable.execute_remote_operation(&stale_context).unwrap();
 
-        assert_eq!(variable.value(), Some(b"winning".as_slice()));
-        assert_eq!(variable.timestamp(), Some(winning_context.timestamp()));
+        assert_eq!(variable.value(), b"winning");
+        assert_eq!(variable.timestamp(), winning_context.timestamp());
     }
 
     #[test]
@@ -353,7 +464,7 @@ mod tests_variable_crdt {
         let winning_timestamp = Timestamp::new(2, &cuid);
         variable.apply_set(b"winning", &winning_timestamp).unwrap();
         let stale_operation = variable_set_operation(b"winning", 1);
-        let stale_context = OperationContext::new(&stale_operation, &cuid);
+        let stale_context = OperationContext::try_new(&stale_operation, &cuid).unwrap();
 
         let error = variable
             .execute_local_operation(&stale_context)
@@ -364,19 +475,138 @@ mod tests_variable_crdt {
                 .to_string()
                 .contains("did not advance the winning timestamp")
         );
-        assert_eq!(variable.value(), Some(b"winning".as_slice()));
-        assert_eq!(variable.timestamp(), Some(&winning_timestamp));
+        assert_eq!(variable.value(), b"winning");
+        assert_eq!(variable.timestamp(), &winning_timestamp);
     }
 
     #[test]
     fn can_reject_non_variable_operations() {
         let mut variable = VariableCrdt::default();
-        let operation = Operation::new_counter_increase(1);
-        let context = OperationContext::new(&operation, &Cuid::default());
+        let mut operation = Operation::new_counter_increase(1);
+        operation.set_lamport(1);
+        let context = OperationContext::try_new(&operation, &Cuid::default()).unwrap();
 
         assert!(variable.execute_local_operation(&context).is_err());
         assert!(variable.execute_remote_operation(&context).is_err());
-        assert_eq!(variable.value(), None);
-        assert_eq!(variable.timestamp(), None);
+        assert_eq!(variable.value(), b"null");
+        assert!(variable.timestamp().is_initial());
+    }
+
+    #[test]
+    fn can_round_trip_an_initial_null_variable_snapshot() {
+        let variable = VariableCrdt::default();
+
+        let serialized = variable.to_bytes();
+        let decoded = VariableCrdt::from_bytes(&serialized).unwrap();
+
+        assert_eq!(serialized[0], SNAPSHOT_VERSION);
+        assert_eq!(&serialized[1..9], &0_u64.to_le_bytes());
+        assert_eq!(&serialized[9..25], b"0000000000000000");
+        assert_eq!(&serialized[25..33], &4_u64.to_le_bytes());
+        assert_eq!(&serialized[33..], b"null");
+        assert_eq!(decoded, variable);
+    }
+
+    #[test]
+    fn can_round_trip_a_variable_snapshot_with_its_winning_timestamp() {
+        let mut variable = VariableCrdt::default();
+        let timestamp = timestamp(7, "0000000000000001");
+        let value = br#"{"name":"qortoo"}"#;
+        variable.apply_set(value, &timestamp).unwrap();
+
+        let serialized = variable.to_bytes();
+        let decoded = VariableCrdt::from_bytes(&serialized).unwrap();
+
+        assert_eq!(serialized[0], SNAPSHOT_VERSION);
+        assert_eq!(&serialized[1..9], &7_u64.to_le_bytes());
+        assert_eq!(&serialized[9..25], b"0000000000000001");
+        assert_eq!(&serialized[25..33], &(value.len() as u64).to_le_bytes());
+        assert_eq!(&serialized[33..], value);
+        assert_eq!(decoded, variable);
+    }
+
+    #[test]
+    fn can_preserve_the_real_timestamp_of_an_explicit_null_set() {
+        let explicit_timestamp = timestamp(7, "0000000000000001");
+        let serialized = serialized_snapshot(7, *b"0000000000000001", b"null");
+        let variable = VariableCrdt::from_bytes(&serialized).unwrap();
+
+        assert_eq!(variable.value(), b"null");
+        assert_eq!(variable.timestamp(), &explicit_timestamp);
+        assert!(!variable.timestamp().is_initial());
+    }
+
+    #[test]
+    fn can_reject_malformed_variable_snapshots() {
+        let valid_cuid = *b"0000000000000001";
+        let mut invalid_utf8_cuid = valid_cuid;
+        invalid_utf8_cuid[0] = 0xff;
+        let mut invalid_format_cuid = valid_cuid;
+        invalid_format_cuid[0] = b'(';
+
+        let nil_cuid = *b"0000000000000000";
+        let mut truncated_payload = serialized_snapshot(7, valid_cuid, b"null");
+        truncated_payload[25..33].copy_from_slice(&5_u64.to_le_bytes());
+        let mut trailing_payload = serialized_snapshot(7, valid_cuid, b"null");
+        trailing_payload.push(0);
+
+        let cases = [
+            ("empty", Vec::new(), "truncated version"),
+            (
+                "missing lamport",
+                vec![SNAPSHOT_VERSION],
+                "truncated winning timestamp",
+            ),
+            (
+                "unsupported version",
+                vec![SNAPSHOT_VERSION + 1],
+                "unsupported version",
+            ),
+            (
+                "truncated CUID",
+                serialized_snapshot(7, valid_cuid, b"null")[..9].to_vec(),
+                "truncated winning timestamp",
+            ),
+            (
+                "invalid UTF-8 CUID",
+                serialized_snapshot(7, invalid_utf8_cuid, b"null"),
+                "deserialize: uid: not valid UTF-8",
+            ),
+            (
+                "invalid CUID format",
+                serialized_snapshot(7, invalid_format_cuid, b"null"),
+                "deserialize: uid: invalid format",
+            ),
+            (
+                "truncated payload",
+                truncated_payload,
+                "truncated JSON payload",
+            ),
+            (
+                "invalid JSON",
+                serialized_snapshot(7, valid_cuid, b"not-json"),
+                "invalid JSON payload",
+            ),
+            (
+                "non-null initial value",
+                serialized_snapshot(0, nil_cuid, b"false"),
+                "reserved for the initial null state",
+            ),
+            (
+                "non-nil initial CUID",
+                serialized_snapshot(0, valid_cuid, b"null"),
+                "reserved for the initial null state",
+            ),
+            ("trailing payload bytes", trailing_payload, "trailing bytes"),
+        ];
+
+        for (case, serialized, expected_error) in cases {
+            let error = VariableCrdt::from_bytes(&serialized).unwrap_err();
+            assert!(matches!(&error, DatatypeError::Internal(_)), "{case}");
+            assert!(
+                error.to_string().contains(expected_error),
+                "{case}: {error}"
+            );
+        }
     }
 }
