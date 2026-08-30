@@ -141,6 +141,13 @@ pub enum DatatypeError {
     /// The server permanently rejected the operation. The datatype transitions to `Disabled`.
     #[error("[DatatypeError] server rejected: {0:?}")]
     ServerRejected(ServerRejectReason) = 213,
+    /// A user value could not be converted to or from its stored JSON representation.
+    ///
+    /// Returned directly to the API caller when encoding a value into JSON bytes or
+    /// decoding stored JSON bytes into the requested type fails. The datatype state is
+    /// unchanged, and this error is never routed through the event loop.
+    #[error("[DatatypeError] value conversion failed: {0}")]
+    ValueConversion(String) = 214,
 }
 
 impl DatatypeError {
@@ -173,7 +180,8 @@ impl DatatypeError {
             // the event loop. Reaching here indicates a misrouted error.
             DatatypeError::TransactionFailed(_)
             | DatatypeError::Disallowed(_)
-            | DatatypeError::NotWritable(_) => {
+            | DatatypeError::NotWritable(_)
+            | DatatypeError::ValueConversion(_) => {
                 unreachable!(
                     "variant {:?} must not be routed through DatatypeError::mapping()",
                     self
