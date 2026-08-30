@@ -1,15 +1,19 @@
 use derive_more::Display;
 
+use super::snapshot_codec::SnapshotCodec;
 use crate::{
     DatatypeError,
     datatypes::{
         common::ReturnType,
         crdts::{LocalOperationOutcome, RollbackAction},
     },
-    errors::datatypes::InternalReason,
+    errors::datatypes::{InternalReason, deserialize_error},
     operations::body::OperationBody,
     types::operation_context::OperationContext,
 };
+
+const SNAPSHOT_CONTEXT: &str = "counter crdt";
+const SNAPSHOT_LEN: usize = size_of::<i64>();
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum CounterRollbackAction {
@@ -83,17 +87,23 @@ impl CounterCrdt {
             }
         }
     }
+}
 
-    #[inline]
-    pub fn to_bytes(&self) -> [u8; 8] {
-        self.value.to_le_bytes()
+impl SnapshotCodec for CounterCrdt {
+    fn encode_snapshot(&self) -> Box<[u8]> {
+        Box::new(self.value.to_le_bytes())
     }
 
-    #[inline]
-    pub fn from_bytes(bytes: &[u8; 8]) -> Self {
-        Self {
-            value: i64::from_le_bytes(*bytes),
-        }
+    fn decode_snapshot(snapshot: &[u8]) -> Result<Self, DatatypeError> {
+        let bytes: [u8; SNAPSHOT_LEN] = snapshot.try_into().map_err(|_| {
+            deserialize_error(
+                SNAPSHOT_CONTEXT,
+                format_args!("expected {SNAPSHOT_LEN} bytes, got {}", snapshot.len()),
+            )
+        })?;
+        Ok(Self {
+            value: i64::from_le_bytes(bytes),
+        })
     }
 }
 
@@ -104,7 +114,7 @@ mod tests_counter_crdt {
     use crate::{
         datatypes::{
             common::ReturnType,
-            crdts::{RollbackAction, counter_crdt::CounterCrdt},
+            crdts::{RollbackAction, counter_crdt::CounterCrdt, snapshot_codec::SnapshotCodec},
         },
         operations::Operation,
         types::{operation_context::OperationContext, uid::Cuid},
@@ -121,7 +131,7 @@ mod tests_counter_crdt {
     #[test]
     #[instrument]
     fn can_wrap_counter_arithmetic_at_i64_boundaries() {
-        let mut counter = CounterCrdt::from_bytes(&i64::MAX.to_le_bytes());
+        let mut counter = CounterCrdt::decode_snapshot(&i64::MAX.to_le_bytes()).unwrap();
 
         assert_eq!(counter.increase_by(1), i64::MIN);
         assert_eq!(counter.increase_by(-1), i64::MAX);
@@ -132,12 +142,24 @@ mod tests_counter_crdt {
         let mut counter = CounterCrdt::default();
         counter.increase_by(123);
 
-        let serialized = counter.to_bytes();
+        let serialized = counter.encode_snapshot();
         info!("serialized counter: {serialized:?}");
-        assert_eq!(serialized, 123_i64.to_le_bytes());
+        assert_eq!(serialized.as_ref(), &123_i64.to_le_bytes());
 
-        let deserialized: CounterCrdt = CounterCrdt::from_bytes(&serialized);
+        let deserialized = CounterCrdt::decode_snapshot(&serialized).unwrap();
         assert_eq!(deserialized.value(), counter.value());
+    }
+
+    #[test]
+    #[instrument]
+    fn can_reject_an_invalid_counter_snapshot_length() {
+        let error = CounterCrdt::decode_snapshot(&[]).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("deserialize: counter crdt: expected 8 bytes, got 0")
+        );
     }
 
     #[test]
@@ -146,7 +168,7 @@ mod tests_counter_crdt {
         for (initial_value, delta, expected_value) in
             [(0, i64::MIN, i64::MIN), (i64::MAX, 1, i64::MIN)]
         {
-            let mut counter = CounterCrdt::from_bytes(&initial_value.to_le_bytes());
+            let mut counter = CounterCrdt::decode_snapshot(&initial_value.to_le_bytes()).unwrap();
             let mut operation = Operation::new_counter_increase(delta);
             operation.set_lamport(1);
             let context = OperationContext::try_new(&operation, &Cuid::default()).unwrap();

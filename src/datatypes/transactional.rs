@@ -386,7 +386,6 @@ mod tests_transactional {
         Client, DataType, DatatypeState,
         datatypes::{
             common::new_attribute,
-            crdts::Crdt,
             transactional::{TransactionContext, TransactionalDatatype},
         },
         operations::Operation,
@@ -416,7 +415,7 @@ mod tests_transactional {
         assert!(result.is_ok());
 
         let mutable = tx_dt.mutable.read();
-        let Crdt::Counter(c) = &mutable.crdt;
+        let c = mutable.crdt.as_counter().expect("expected a counter crdt");
         assert_eq!(c.value(), 0);
         assert_eq!(mutable.op_id.cseq, 0);
         assert_ne!(mutable.get_state(), DatatypeState::Disabled);

@@ -6,7 +6,6 @@ use crate::{
     DatatypeError, IntoString,
     datatypes::{
         common::{ReturnType, datatype_instrument},
-        crdts::Crdt,
         datatype::DatatypeBlanket,
         transactional::{TransactionContext, TransactionalDatatype},
     },
@@ -115,8 +114,11 @@ impl Counter {
     /// ```
     pub fn get_value(&self) -> i64 {
         let mutable = self.datatype.mutable.read();
-        let Crdt::Counter(c) = &mutable.crdt;
-        c.value()
+        mutable
+            .crdt
+            .as_counter()
+            .expect("counter datatype must contain a counter crdt")
+            .value()
     }
 
     datatype_instrument! {

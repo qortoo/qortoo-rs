@@ -1,6 +1,7 @@
 pub mod counter_crdt;
 mod crdt;
 mod execution;
+mod snapshot_codec;
 mod snapshot_reader;
 mod variable_crdt;
 

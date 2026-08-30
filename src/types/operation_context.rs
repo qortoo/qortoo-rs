@@ -36,10 +36,6 @@ impl<'a> OperationContext<'a> {
         self.operation
     }
 
-    #[allow(
-        dead_code,
-        reason = "Timestamp is consumed by upcoming non-commutative CRDT implementations"
-    )]
     pub(crate) fn timestamp(&self) -> &Timestamp {
         &self.timestamp
     }

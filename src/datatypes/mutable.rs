@@ -225,7 +225,7 @@ mod tests_mutable_datatype {
 
     use crate::{
         DataType,
-        datatypes::{common::new_attribute, crdts::Crdt, transactional::TransactionalDatatype},
+        datatypes::{common::new_attribute, transactional::TransactionalDatatype},
         operations::{Operation, transaction::Transaction},
         types::uid::Cuid,
     };
@@ -248,7 +248,7 @@ mod tests_mutable_datatype {
         assert!(result1.is_ok());
         {
             let mutable = tx_dt.mutable.write();
-            let Crdt::Counter(counter) = &mutable.crdt;
+            let counter = mutable.crdt.as_counter().expect("expected a counter crdt");
             assert_eq!(counter.value(), 1);
             assert_eq!(1, mutable.op_id.cseq);
             assert!(mutable.tx_record.pending.is_none());
@@ -264,7 +264,7 @@ mod tests_mutable_datatype {
         assert!(result2.is_err());
         {
             let mutable = tx_dt.mutable.write();
-            let Crdt::Counter(counter) = &mutable.crdt;
+            let counter = mutable.crdt.as_counter().expect("expected a counter crdt");
             assert_eq!(counter.value(), 1);
             assert_eq!(1, mutable.op_id.cseq);
             assert!(mutable.tx_record.pending.is_none());
@@ -291,7 +291,7 @@ mod tests_mutable_datatype {
         assert_eq!(mutable.tx_record.rollback_action_count(), 1);
         assert!(!mutable.end_transaction(None, false).unwrap());
         assert_eq!(mutable.tx_record.rollback_action_count(), 0);
-        let crate::datatypes::crdts::Crdt::Counter(counter) = &mutable.crdt;
+        let counter = mutable.crdt.as_counter().expect("expected a counter crdt");
         assert_eq!(counter.value(), 3);
 
         mutable
@@ -321,7 +321,7 @@ mod tests_mutable_datatype {
                 .to_string()
                 .contains("modification operation must use a positive Lamport timestamp")
         );
-        let Crdt::Counter(counter) = &mutable.crdt;
+        let counter = mutable.crdt.as_counter().expect("expected a counter crdt");
         assert_eq!(counter.value(), 0);
         assert_eq!(mutable.op_id.lamport, 0);
     }

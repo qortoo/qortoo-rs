@@ -1,17 +1,12 @@
-#![allow(
-    dead_code,
-    reason = "Variable CRDT is connected to the top-level Crdt enum in the next slice"
-)]
-
 use std::{
     cmp::Ordering,
-    fmt::{Debug, Formatter},
+    fmt::{Debug, Display, Formatter},
     sync::Arc,
 };
 
 use serde::Deserialize;
 
-use super::snapshot_reader::SnapshotReader;
+use super::{snapshot_codec::SnapshotCodec, snapshot_reader::SnapshotReader};
 use crate::{
     DatatypeError,
     datatypes::{
@@ -74,7 +69,7 @@ pub(crate) enum VariableRollbackAction {
 }
 
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct VariableCrdt {
+pub struct VariableCrdt {
     winning: VariableState,
 }
 
@@ -165,7 +160,14 @@ impl VariableCrdt {
         }
     }
 
-    pub(crate) fn to_bytes(&self) -> Box<[u8]> {
+    fn replace(&mut self, value: &[u8], timestamp: &Timestamp) -> VariableSetOutcome {
+        let previous = std::mem::replace(&mut self.winning, VariableState::new(value, timestamp));
+        VariableSetOutcome::Applied { previous }
+    }
+}
+
+impl SnapshotCodec for VariableCrdt {
+    fn encode_snapshot(&self) -> Box<[u8]> {
         let mut serialized = Vec::new();
         serialized.push(SNAPSHOT_VERSION);
         serialized.extend_from_slice(&self.winning.timestamp.to_bytes());
@@ -176,8 +178,8 @@ impl VariableCrdt {
         serialized.into_boxed_slice()
     }
 
-    pub(crate) fn from_bytes(serialized: &[u8]) -> Result<Self, DatatypeError> {
-        let mut reader = SnapshotReader::new(serialized, SNAPSHOT_CONTEXT);
+    fn decode_snapshot(snapshot: &[u8]) -> Result<Self, DatatypeError> {
+        let mut reader = SnapshotReader::new(snapshot, SNAPSHOT_CONTEXT);
         let version = reader.read_u8("version")?;
         if version != SNAPSHOT_VERSION {
             return Err(deserialize_error(
@@ -199,11 +201,6 @@ impl VariableCrdt {
 
         reader.finish()?;
         Ok(Self { winning })
-    }
-
-    fn replace(&mut self, value: &[u8], timestamp: &Timestamp) -> VariableSetOutcome {
-        let previous = std::mem::replace(&mut self.winning, VariableState::new(value, timestamp));
-        VariableSetOutcome::Applied { previous }
     }
 }
 
@@ -241,6 +238,17 @@ impl Debug for VariableCrdt {
         f.debug_struct("VariableCrdt")
             .field("winning", &self.winning)
             .finish()
+    }
+}
+
+impl Display for VariableCrdt {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "(size:{}, timestamp:{})",
+            self.value().len(),
+            self.timestamp()
+        )
     }
 }
 
@@ -496,8 +504,8 @@ mod tests_variable_crdt {
     fn can_round_trip_an_initial_null_variable_snapshot() {
         let variable = VariableCrdt::default();
 
-        let serialized = variable.to_bytes();
-        let decoded = VariableCrdt::from_bytes(&serialized).unwrap();
+        let serialized = variable.encode_snapshot();
+        let decoded = VariableCrdt::decode_snapshot(&serialized).unwrap();
 
         assert_eq!(serialized[0], SNAPSHOT_VERSION);
         assert_eq!(&serialized[1..9], &0_u64.to_le_bytes());
@@ -514,8 +522,8 @@ mod tests_variable_crdt {
         let value = br#"{"name":"qortoo"}"#;
         variable.apply_set(value, &timestamp).unwrap();
 
-        let serialized = variable.to_bytes();
-        let decoded = VariableCrdt::from_bytes(&serialized).unwrap();
+        let serialized = variable.encode_snapshot();
+        let decoded = VariableCrdt::decode_snapshot(&serialized).unwrap();
 
         assert_eq!(serialized[0], SNAPSHOT_VERSION);
         assert_eq!(&serialized[1..9], &7_u64.to_le_bytes());
@@ -529,7 +537,7 @@ mod tests_variable_crdt {
     fn can_preserve_the_real_timestamp_of_an_explicit_null_set() {
         let explicit_timestamp = timestamp(7, "0000000000000001");
         let serialized = serialized_snapshot(7, *b"0000000000000001", b"null");
-        let variable = VariableCrdt::from_bytes(&serialized).unwrap();
+        let variable = VariableCrdt::decode_snapshot(&serialized).unwrap();
 
         assert_eq!(variable.value(), b"null");
         assert_eq!(variable.timestamp(), &explicit_timestamp);
@@ -601,7 +609,7 @@ mod tests_variable_crdt {
         ];
 
         for (case, serialized, expected_error) in cases {
-            let error = VariableCrdt::from_bytes(&serialized).unwrap_err();
+            let error = VariableCrdt::decode_snapshot(&serialized).unwrap_err();
             assert!(matches!(&error, DatatypeError::Internal(_)), "{case}");
             assert!(
                 error.to_string().contains(expected_error),
