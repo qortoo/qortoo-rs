@@ -171,9 +171,9 @@ mod tests_variable {
     use tracing::instrument;
 
     use crate::{
-        DataType, DatatypeError, DatatypeState,
+        Client, DataType, DatatypeError, DatatypeState, LocalConnectivity,
         datatypes::{datatype::Datatype, variable::Variable},
-        utils::test_utils::get_test_func_name,
+        utils::test_utils::{get_test_collection_name, get_test_func_name, get_test_ids},
     };
 
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -277,6 +277,38 @@ mod tests_variable {
         });
         assert!(result.is_err());
         assert_eq!(variable.get::<i64>().unwrap(), 2);
+    }
+
+    #[test]
+    #[instrument]
+    fn can_propagate_a_sequential_set_between_two_clients() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let (collection, key, _) = get_test_ids!();
+        let client1 = Client::builder(collection.clone(), "client1")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let client2 = Client::builder(collection, "client2")
+            .with_connectivity(connectivity)
+            .build()
+            .unwrap();
+
+        let variable1 = client1
+            .create_datatype(key.clone())
+            .build_variable()
+            .unwrap();
+        variable1.sync().unwrap();
+
+        let variable2 = client2.subscribe_datatype(key).build_variable().unwrap();
+        variable2.sync().unwrap();
+        assert_eq!(variable2.get::<Value>().unwrap(), Value::Null);
+
+        variable1.set(&sample_profile()).unwrap();
+        variable1.sync().unwrap();
+
+        variable2.sync().unwrap();
+        assert_eq!(variable2.get::<Profile>().unwrap(), sample_profile());
     }
 
     #[test]
