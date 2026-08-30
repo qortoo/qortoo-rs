@@ -14,6 +14,16 @@ use crate::{
 };
 
 /// A counter is a conflict-free datatype that supports increment operations.
+///
+/// The value starts at `0` and changes only through increments. Increments made
+/// concurrently on different replicas all survive rather than overwriting one
+/// another, so every replica converges to their sum.
+///
+/// Arithmetic uses wrapping `i64` addition (modulo 2^64) on every path, rollback
+/// included, so increasing [`i64::MAX`] by 1 produces [`i64::MIN`].
+///
+/// Like every datatype, a `Counter` shares the lifecycle, synchronization, and
+/// handler API of [`Datatype`](crate::Datatype).
 #[derive(Clone)]
 pub struct Counter {
     datatype: Arc<TransactionalDatatype>,
@@ -40,10 +50,9 @@ impl Counter {
     datatype_instrument! {
     /// Increases the counter by the specified delta value.
     ///
-    /// Returns the new counter-value after the increment.
-    /// This operation is conflict-free and can be safely called concurrently.
-    /// Arithmetic uses wrapping `i64` addition (modulo 2^64), so incrementing
-    /// `i64::MAX` by 1 produces `i64::MIN`.
+    /// The increment is recorded as a conflict-free operation, so it can be
+    /// called concurrently with increments on other replicas without any of
+    /// them being lost.
     ///
     /// # Arguments
     ///
@@ -51,7 +60,9 @@ impl Counter {
     ///
     /// # Returns
     ///
-    /// The new counter-value after applying the increment
+    /// The new counter-value after applying the increment, or
+    /// [`DatatypeError::NotWritable`] when the datatype's state forbids writes
+    /// and [`DatatypeError::ReadonlyViolation`] when it is readonly
     ///
     /// # Examples
     ///
@@ -77,7 +88,8 @@ impl Counter {
 
     /// Increases the counter by 1.
     ///
-    /// This is a convenience method equivalent to `increase_by(1)`.
+    /// This is a convenience method equivalent to
+    /// [`increase_by(1)`](Self::increase_by) and reports the same errors.
     ///
     /// # Returns
     ///
@@ -97,6 +109,10 @@ impl Counter {
     }
 
     /// Gets the current counter-value without modifying it.
+    ///
+    /// This is a local read: it creates no operation and does not change the
+    /// datatype version, so it is allowed in every state, readonly datatypes
+    /// included.
     ///
     /// # Returns
     ///
@@ -124,8 +140,8 @@ impl Counter {
     datatype_instrument! {
     /// Executes multiple operations atomically within a transaction.
     ///
-    /// If the transaction function returns an error, all operations within
-    /// the transaction are rolled back, leaving the counter unchanged.
+    /// If `tx_func` returns an error, every [`increase_by`](Self::increase_by)
+    /// within the transaction is rolled back, leaving the counter unchanged.
     ///
     /// # Arguments
     ///
@@ -134,7 +150,10 @@ impl Counter {
     ///
     /// # Returns
     ///
-    /// `Ok(())` if the transaction succeeded, `Err(DatatypeError)` otherwise
+    /// `Ok(())` if the transaction committed,
+    /// [`DatatypeError::TransactionFailed`] if `tx_func` returned an error, or
+    /// [`DatatypeError::NotWritable`] / [`DatatypeError::ReadonlyViolation`] if
+    /// writes are not allowed
     ///
     /// # Examples
     ///
