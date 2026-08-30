@@ -6,7 +6,7 @@ use std::{
 use parking_lot::RwLock;
 
 use crate::{
-    Counter, DataType,
+    Counter, DataType, Variable,
     clients::common::ClientCommon,
     datatypes::{
         datatype_set::DatatypeSet, option::DatatypeOption, transactional::TransactionalDatatype,
@@ -146,10 +146,11 @@ impl Attribute {
 
     pub fn get_datatype_set(&self) -> Option<DatatypeSet> {
         let transactional = self.weak_transactional.read().as_ref()?.upgrade()?;
-        Some(match self.r#type {
-            DataType::Counter => DatatypeSet::Counter(Counter::new(transactional)),
-            _ => return None,
-        })
+        match self.r#type {
+            DataType::Counter => Some(DatatypeSet::Counter(Counter::new(transactional))),
+            DataType::Variable => Some(DatatypeSet::Variable(Variable::new(transactional))),
+            DataType::Map => None,
+        }
     }
 
     pub(crate) fn detach_datatype_if_same_instance(&self) {

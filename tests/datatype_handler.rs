@@ -1,7 +1,6 @@
 mod tests_datatype_handler {
     use std::time::Duration;
 
-    use DatatypeSet::Counter;
     use qortoo::{Client, Datatype, DatatypeHandler, DatatypeSet, DatatypeState};
     use tracing::{info, instrument};
 
@@ -15,7 +14,9 @@ mod tests_datatype_handler {
         let tx_priority_0 = tx.clone();
 
         let handler0 = DatatypeHandler::new().set_on_state_change(move |ds, old, new| {
-            let Counter(counter) = ds;
+            let DatatypeSet::Counter(counter) = ds else {
+                panic!("expected DatatypeSet::Counter for a counter datatype");
+            };
             assert_ne!(old, new);
             assert_eq!(counter.get_state(), new);
             assert_eq!(counter.get_key(), "counter-1");
@@ -24,7 +25,9 @@ mod tests_datatype_handler {
         });
 
         let handler1 = DatatypeHandler::new().set_on_state_change(move |ds, _, _| {
-            let Counter(counter) = ds;
+            let DatatypeSet::Counter(counter) = ds else {
+                panic!("expected DatatypeSet::Counter for a counter datatype");
+            };
             tx.send((1, counter.get_value())).unwrap();
         });
 

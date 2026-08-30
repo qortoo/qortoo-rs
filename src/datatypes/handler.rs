@@ -159,7 +159,8 @@ mod tests_handers_manager {
     use tracing::{info, instrument};
 
     use crate::{
-        Client, Datatype, DatatypeError, DatatypeHandler, DatatypeState, LocalConnectivity,
+        Client, Datatype, DatatypeError, DatatypeHandler, DatatypeSet, DatatypeState,
+        LocalConnectivity,
         utils::test_utils::{get_test_collection_name, get_test_func_name},
     };
 
@@ -204,6 +205,36 @@ mod tests_handers_manager {
         awaitility::at_most(Duration::from_secs(2))
             .poll_interval(Duration::from_micros(100))
             .until(|| call_count.load(Ordering::Relaxed) == 2);
+    }
+
+    #[test]
+    #[instrument]
+    fn can_pass_a_variable_datatype_set_to_the_handler() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .with_connectivity(connectivity)
+            .build()
+            .unwrap();
+
+        let call_count = Arc::new(AtomicUsize::new(0));
+        let count_for_handler = call_count.clone();
+
+        let handler = DatatypeHandler::new().set_on_state_change(move |ds, _, _| {
+            assert!(matches!(ds, DatatypeSet::Variable(_)));
+            count_for_handler.fetch_add(1, Ordering::Relaxed);
+        });
+
+        let variable = client
+            .create_datatype(get_test_func_name!())
+            .with_handler(0, handler)
+            .build_variable()
+            .unwrap();
+
+        variable.sync().unwrap();
+        awaitility::at_most(Duration::from_secs(2))
+            .poll_interval(Duration::from_micros(100))
+            .until(|| call_count.load(Ordering::Relaxed) == 1);
     }
 
     #[test]
