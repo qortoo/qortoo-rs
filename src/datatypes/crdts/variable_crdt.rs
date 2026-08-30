@@ -86,6 +86,12 @@ impl VariableCrdt {
         self.winning.value()
     }
 
+    /// Returns the winning JSON payload as a shared handle, so a reader can drop the
+    /// datatype lock before decoding without copying the payload bytes.
+    pub(crate) fn shared_value(&self) -> Arc<[u8]> {
+        Arc::clone(&self.winning.value)
+    }
+
     pub(crate) fn timestamp(&self) -> &Timestamp {
         self.winning.timestamp()
     }
