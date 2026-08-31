@@ -15,8 +15,9 @@ use std::{
 };
 
 use qortoo_ffi::{
-    QortooClient, QortooCounter, QortooError, QortooLocalConnectivity, qortoo_client_free,
-    qortoo_counter_free, qortoo_local_connectivity_free, qortoo_string_free,
+    QortooClient, QortooCounter, QortooError, QortooLocalConnectivity, QortooVariable,
+    qortoo_client_free, qortoo_counter_free, qortoo_local_connectivity_free, qortoo_string_free,
+    qortoo_variable_free,
 };
 
 /// A fresh, zeroed `QortooError` ready to be passed as an out-parameter.
@@ -145,5 +146,13 @@ pub struct CounterGuard(pub *mut QortooCounter);
 impl Drop for CounterGuard {
     fn drop(&mut self) {
         unsafe { qortoo_counter_free(self.0) };
+    }
+}
+
+pub struct VariableGuard(pub *mut QortooVariable);
+
+impl Drop for VariableGuard {
+    fn drop(&mut self) {
+        unsafe { qortoo_variable_free(self.0) };
     }
 }

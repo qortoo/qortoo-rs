@@ -9,7 +9,7 @@ use crate::{
         common::{ReturnType, datatype_instrument},
         datatype::DatatypeBlanket,
         transactional::{TransactionContext, TransactionalDatatype},
-        value::{decode_json_value, encode_json_value},
+        value::{decode_json_value, encode_json_value, validate_json_value},
     },
     errors::{BoxedError, datatypes::InternalReason},
     operations::Operation,
@@ -27,6 +27,8 @@ use crate::{
 /// any serializable value and [`get`](Self::get) decodes the current value into
 /// the requested type. A value that cannot be converted surfaces as
 /// [`DatatypeError::ValueConversion`], leaving the variable unchanged.
+/// [`set_raw`](Self::set_raw) and [`get_raw`](Self::get_raw) work in the stored
+/// JSON bytes directly, for a caller that already holds serialized JSON.
 ///
 /// Like every datatype, a `Variable` shares the lifecycle, synchronization, and
 /// handler API of [`Datatype`](crate::Datatype).
@@ -79,18 +81,42 @@ impl Variable {
         &self,
         value: &T,
     ) -> Result<serde_json::Value, DatatypeError> {
-        let encoded = encode_json_value(value)?;
-        let op = Operation::new_variable_set(encoded);
+        let previous = self.set_encoded(encode_json_value(value)?)?;
+        decode_json_value(&previous)
+    }}
 
+    datatype_instrument! {
+    /// Sets the variable from serialized JSON bytes, storing them verbatim.
+    ///
+    /// `json` must be exactly one UTF-8 JSON value. Unlike [`set`](Self::set) the
+    /// bytes are not reparsed and reserialized, so property order and formatting
+    /// are preserved as the language-neutral stored representation — this is the
+    /// entry point a non-Rust binding forwards its own JSON encoder's output to.
+    ///
+    /// Returns the previous value's JSON bytes (the first set returns `b"null"`),
+    /// or [`DatatypeError::ValueConversion`] if `json` is not one JSON value, or
+    /// [`DatatypeError::NotWritable`] / [`DatatypeError::ReadonlyViolation`] if
+    /// writes are not allowed. The variable is left unchanged on every error.
+    pub fn set_raw(&self, json: &[u8]) -> Result<Box<[u8]>, DatatypeError> {
+        let previous = self.set_encoded(validate_json_value(json)?)?;
+        Ok(Box::from(&*previous))
+    }}
+
+    /// Shared write path: records `encoded` as an LWW set and returns the bytes the
+    /// variable held just before it.
+    fn set_encoded(&self, encoded: Box<[u8]>) -> Result<Arc<[u8]>, DatatypeError> {
+        let op = Operation::new_variable_set(encoded);
         let ret = self
             .datatype
             .execute_local_operation_as_tx(self.tx_ctx.clone(), op)?;
         trace!("set -> {ret:?}");
         match ret {
-            ReturnType::Variable(previous) => decode_json_value(&previous),
-            _ => Err(InternalReason::ExecuteOperation("unexpected return type".into()).into_error())
+            ReturnType::Variable(previous) => Ok(previous),
+            _ => {
+                Err(InternalReason::ExecuteOperation("unexpected return type".into()).into_error())
+            }
         }
-    }}
+    }
 
     /// Gets the current value decoded into the requested type.
     ///
@@ -106,15 +132,29 @@ impl Variable {
     /// The current value decoded as `T`, or
     /// [`DatatypeError::ValueConversion`] if the stored JSON does not fit `T`
     pub fn get<T: DeserializeOwned>(&self) -> Result<T, DatatypeError> {
-        let value = {
-            let mutable = self.datatype.mutable.read();
-            mutable
-                .crdt
-                .as_variable()
-                .expect("variable datatype must contain a variable crdt")
-                .shared_value()
-        };
-        decode_json_value(&value)
+        decode_json_value(&self.shared_value())
+    }
+
+    /// Returns the current value as its stored JSON bytes, verbatim.
+    ///
+    /// Like [`get`](Self::get) this is a side-effect-free local read allowed in
+    /// every state. The initial value and an explicit [`set_raw`](Self::set_raw)
+    /// of `b"null"` both read as `b"null"`. This is the counterpart to
+    /// [`get`](Self::get) for a binding that wants the raw bytes; it cannot fail
+    /// because the stored value is always exactly one JSON value.
+    pub fn get_raw(&self) -> Box<[u8]> {
+        Box::from(&*self.shared_value())
+    }
+
+    /// Clones the stored JSON bytes out from under the datatype read lock.
+    fn shared_value(&self) -> Arc<[u8]> {
+        self.datatype
+            .mutable
+            .read()
+            .crdt
+            .as_variable()
+            .expect("variable datatype must contain a variable crdt")
+            .shared_value()
     }
 
     datatype_instrument! {
@@ -280,6 +320,43 @@ mod tests_variable {
         let variable = Variable::new_for_test(DatatypeState::Disabled);
         let error = variable.set(&1_i64).unwrap_err();
         assert_eq!(error, DatatypeError::NotWritable(String::new()));
+    }
+
+    #[test]
+    #[instrument]
+    fn can_round_trip_raw_json_bytes_without_reformatting() {
+        let variable = Variable::new_for_test(DatatypeState::Creating);
+        assert_eq!(&*variable.get_raw(), b"null");
+
+        // Byte-for-byte preservation: key order and insignificant whitespace stay.
+        let payload = br#"{ "b": 2, "a": 1 }"#;
+        assert_eq!(&*variable.set_raw(payload).unwrap(), b"null");
+        assert_eq!(&*variable.get_raw(), payload);
+
+        // The previous value comes back as its stored bytes, not a reserialization.
+        assert_eq!(&*variable.set_raw(b"[1,2,3]").unwrap(), payload);
+    }
+
+    #[test]
+    #[instrument]
+    fn can_reject_raw_json_that_is_not_exactly_one_value() {
+        let variable = Variable::new_for_test(DatatypeState::Creating);
+        for bad in [b"".as_slice(), b"{", b"1 2", b"null null", b"\xff"] {
+            let error = variable.set_raw(bad).unwrap_err();
+            assert_eq!(error, DatatypeError::ValueConversion(String::new()));
+        }
+        // Every rejected set is a no-op.
+        assert_eq!(&*variable.get_raw(), b"null");
+    }
+
+    #[test]
+    #[instrument]
+    fn can_validate_raw_json_before_consulting_write_access() {
+        // `set_raw` shares the write-access gate with `set`; the only ordering it
+        // adds is that malformed JSON is rejected before that gate is reached.
+        let variable = Variable::new_for_test(DatatypeState::Disabled);
+        let error = variable.set_raw(b"{").unwrap_err();
+        assert_eq!(error, DatatypeError::ValueConversion(String::new()));
     }
 
     #[test]

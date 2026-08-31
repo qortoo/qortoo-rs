@@ -10,9 +10,9 @@ also establishes the SDK's language-neutral value contract: validated UTF-8 JSON
 
 ```mermaid
 flowchart TD
-    User["variable.set(&value) / variable.get::&lt;T&gt;()"]
-    PUB["Variable — src/datatypes/variable.rs\nset returns the previous value as serde_json::Value\nget decodes outside the datatype lock"]
-    VAL["value module — src/datatypes/value.rs\nencode_json_value / decode_json_value\nserde ↔ compact JSON bytes, errors → ValueConversion"]
+    User["variable.set(&value) / variable.get::&lt;T&gt;()\nvariable.set_raw(bytes) / variable.get_raw()"]
+    PUB["Variable — src/datatypes/variable.rs\nset/get convert via serde; set_raw/get_raw work in stored bytes\nset returns the previous value; get decodes outside the datatype lock"]
+    VAL["value module — src/datatypes/value.rs\nencode_json_value / decode_json_value / validate_json_value\nserde ↔ compact JSON bytes, errors → ValueConversion"]
     OP["VariableSetBody — src/operations/body/variable.rs\nopaque JSON payload on the wire"]
     CRDT["VariableCrdt — src/datatypes/crdts/variable_crdt.rs\nwinning: VariableState — value: Arc&lt;[u8]&gt; + timestamp\nLWW apply + exact-restore rollback + snapshot codec"]
 
@@ -29,12 +29,12 @@ is specific to Variable.
 
 | Type | Location | Purpose |
 |------|----------|---------|
-| `Variable` | `src/datatypes/variable.rs` | Public API: serde-generic `set`/`get` and `transaction`; implements `DatatypeBlanket` |
+| `Variable` | `src/datatypes/variable.rs` | Public API: serde-generic `set`/`get`, byte-level `set_raw`/`get_raw`, and `transaction`; implements `DatatypeBlanket` |
 | `VariableCrdt` | `src/datatypes/crdts/variable_crdt.rs` | LWW state machine holding the single `winning` state |
 | `VariableState` | `src/datatypes/crdts/variable_crdt.rs` | The unit of LWW state: JSON payload (`Arc<[u8]>`) bound to its winning `Timestamp` |
 | `VariableSetBody` | `src/operations/body/variable.rs` | Wire operation body carrying the JSON payload as opaque bytes |
 | `VariableRollbackAction` | `src/datatypes/crdts/variable_crdt.rs` | `Restore { previous }` — exact restore of a captured `VariableState` |
-| `encode_json_value` / `decode_json_value` | `src/datatypes/value.rs` | The public value boundary: serde values ↔ exactly one compact UTF-8 JSON value |
+| `encode_json_value` / `decode_json_value` / `validate_json_value` | `src/datatypes/value.rs` | The public value boundary: serde values ↔ exactly one UTF-8 JSON value; `validate_json_value` checks caller-supplied bytes without reserializing |
 | `DatatypeError::ValueConversion` | `src/errors/datatypes.rs` | Caller-facing conversion failure; returned directly, never routed through the event loop |
 
 ## How It Works
@@ -97,6 +97,12 @@ winning timestamp indicates a broken local clock.
 - **`get<T: DeserializeOwned>`** is a local read: no operation, no version change,
   allowed in every state. It clones the `Arc` handle under the datatype read lock and
   decodes after releasing it.
+- **`set_raw` / `get_raw`** are the byte-level counterparts for a caller that already
+  holds serialized JSON — a non-Rust binding forwarding its own encoder's output, or a
+  dynamic pipeline. `set_raw` validates the input as exactly one UTF-8 JSON value
+  (`validate_json_value`, no reserialization) and returns the previous value's stored
+  bytes; `get_raw` returns the current bytes verbatim and cannot fail. Both share the
+  execution and rollback path of `set`/`get`.
 - **Rollback** is an exact restore, not an inverse operation. `Set(new)` alone cannot
   reconstruct the previous value or its winning timestamp, so local execution captures
   the full previous `VariableState` in `VariableRollbackAction::Restore`. Applying a
@@ -129,7 +135,9 @@ untouched.
 - **`Variable` is not generic over `T`; its methods are.** The runtime registry,
   `DatatypeSet`, and handlers cannot know a concrete `T`, and successive Sets may
   store different JSON types. `set`/`get` take type parameters per call instead, and
-  `set` returns the previous value as dynamic JSON for the same reason.
+  `set` returns the previous value as dynamic JSON for the same reason. `set_raw`/
+  `get_raw` sidestep type parameters entirely by working in the stored JSON bytes,
+  which is what every non-Rust binding uses.
 - **Opaque payload on the wire.** `VariableSetBody` stores the JSON as bytes it never
   interprets; `Display`/`Debug` expose only the byte size, and `MemoryMeasurable`
   counts the real payload length. Validation happens once at the public boundary.

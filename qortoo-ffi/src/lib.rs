@@ -19,7 +19,10 @@
 //! - `handler` — foreign handler callbacks bridged into `DatatypeHandler`
 //! - `local_connectivity` — in-memory `LocalConnectivity` backend handle
 //! - `client` — `Client` handle and lifecycle entry points
+//! - `datatype` — build options and datatype-agnostic bodies shared by the
+//!   per-type handle modules
 //! - `counter` — `Counter` handle, operations, transactions, and handlers
+//! - `variable` — `Variable` handle, lifecycle, transactions, and handlers
 //! - `observability` — process-global logging/tracing/metrics setup and the W3C
 //!   trace-context bridge used by the `*_with_context` entry points
 //! - `version` — ABI and SDK version contract; check `qortoo_abi_version_major`
@@ -31,18 +34,22 @@
 
 mod client;
 mod counter;
+mod datatype;
 mod error;
 mod handler;
 mod local_connectivity;
 mod observability;
 mod util;
+mod variable;
 mod version;
 
 pub use client::*;
 pub use counter::*;
+pub use datatype::*;
 pub use error::*;
 pub use handler::*;
 pub use local_connectivity::*;
 pub use observability::*;
 pub use util::*;
+pub use variable::*;
 pub use version::*;
