@@ -189,6 +189,12 @@ mod tests_variable {
         }
     }
 
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    enum Status {
+        Active,
+        Retired { reason: String },
+    }
+
     #[test]
     #[instrument]
     fn can_round_trip_typed_values() {
@@ -200,6 +206,26 @@ mod tests_variable {
             variable.get::<Option<Profile>>().unwrap(),
             Some(sample_profile())
         );
+
+        let retired = Status::Retired {
+            reason: "eol".to_string(),
+        };
+        variable.set(&retired).unwrap();
+        assert_eq!(variable.get::<Status>().unwrap(), retired);
+        variable.set(&Status::Active).unwrap();
+        assert_eq!(variable.get::<Status>().unwrap(), Status::Active);
+    }
+
+    #[test]
+    #[instrument]
+    fn can_reject_a_shape_mismatched_get() {
+        let variable = Variable::new_for_test(DatatypeState::Creating);
+        variable.set("not a number").unwrap();
+
+        let error = variable.get::<i64>().unwrap_err();
+        assert_eq!(error, DatatypeError::ValueConversion(String::new()));
+        // The failed Get did not change the stored value.
+        assert_eq!(variable.get::<String>().unwrap(), "not a number");
     }
 
     #[test]
@@ -279,20 +305,28 @@ mod tests_variable {
         assert_eq!(variable.get::<i64>().unwrap(), 2);
     }
 
-    #[test]
-    #[instrument]
-    fn can_propagate_a_sequential_set_between_two_clients() {
+    /// Builds two `Client`s sharing one non-realtime `LocalConnectivity`, so writes only
+    /// propagate on an explicit `sync()`.
+    fn two_clients_sharing() -> (Client, Client) {
         let connectivity = LocalConnectivity::new_arc();
         connectivity.set_realtime(false);
-        let (collection, key, _) = get_test_ids!();
-        let client1 = Client::builder(collection.clone(), "client1")
+        let (collection, _, _) = get_test_ids!();
+        let client_a = Client::builder(collection.clone(), "client-a")
             .with_connectivity(connectivity.clone())
             .build()
             .unwrap();
-        let client2 = Client::builder(collection, "client2")
+        let client_b = Client::builder(collection, "client-b")
             .with_connectivity(connectivity)
             .build()
             .unwrap();
+        (client_a, client_b)
+    }
+
+    #[test]
+    #[instrument]
+    fn can_propagate_a_sequential_set_between_two_clients() {
+        let (client1, client2) = two_clients_sharing();
+        let (_, key, _) = get_test_ids!();
 
         let variable1 = client1
             .create_datatype(key.clone())
@@ -309,6 +343,123 @@ mod tests_variable {
 
         variable2.sync().unwrap();
         assert_eq!(variable2.get::<Profile>().unwrap(), sample_profile());
+    }
+
+    /// Has `client_a` and `client_b` each `Set` once from a shared baseline before either
+    /// syncs, so both writes land on the same Lamport, then syncs them in the requested
+    /// order. Returns the value each client observes afterward.
+    fn run_concurrent_set(
+        client_a: &Client,
+        client_b: &Client,
+        key: &str,
+        a_syncs_first: bool,
+    ) -> (String, String) {
+        let variable_a = client_a.create_datatype(key).build_variable().unwrap();
+        variable_a.sync().unwrap();
+        let variable_b = client_b.subscribe_datatype(key).build_variable().unwrap();
+        variable_b.sync().unwrap();
+
+        variable_a.set("from-a").unwrap();
+        variable_b.set("from-b").unwrap();
+
+        if a_syncs_first {
+            variable_a.sync().unwrap(); // pushes a's write
+            variable_b.sync().unwrap(); // pushes b's write, pulls a's write
+            variable_a.sync().unwrap(); // pulls b's write
+        } else {
+            variable_b.sync().unwrap();
+            variable_a.sync().unwrap();
+            variable_b.sync().unwrap();
+        }
+
+        (
+            variable_a.get::<String>().unwrap(),
+            variable_b.get::<String>().unwrap(),
+        )
+    }
+
+    #[test]
+    #[instrument]
+    fn can_converge_via_cuid_tie_break_regardless_of_sync_order() {
+        let (client_a, client_b) = two_clients_sharing();
+        // Equal-Lamport ties resolve to the greater Cuid (Timestamp's derived Ord compares
+        // lamport first, then cuid), independent of which client happens to sync first.
+        let expected = if client_a.get_cuid() > client_b.get_cuid() {
+            "from-a"
+        } else {
+            "from-b"
+        };
+
+        let (a_sees, b_sees) = run_concurrent_set(&client_a, &client_b, "key-a-first", true);
+        assert_eq!(a_sees, expected);
+        assert_eq!(b_sees, expected);
+
+        let (a_sees, b_sees) = run_concurrent_set(&client_a, &client_b, "key-b-first", false);
+        assert_eq!(a_sees, expected);
+        assert_eq!(b_sees, expected);
+    }
+
+    #[test]
+    #[instrument]
+    fn can_ignore_a_stale_transaction_that_arrives_after_a_newer_value() {
+        let (client_a, client_b) = two_clients_sharing();
+        let (_, key, _) = get_test_ids!();
+
+        let variable_a = client_a
+            .create_datatype(key.clone())
+            .build_variable()
+            .unwrap();
+        variable_a.sync().unwrap();
+        let variable_b = client_b.subscribe_datatype(key).build_variable().unwrap();
+        variable_b.sync().unwrap();
+
+        // client_a's write stays pending (simulating a delayed push) while client_b races
+        // ahead with two local writes of its own, ending at a strictly higher Lamport.
+        variable_a.set("stale").unwrap();
+        variable_b.set("intermediate").unwrap();
+        variable_b.set("newer").unwrap();
+        variable_b.sync().unwrap();
+
+        // client_a pushes its stale write and, in the same round trip, pulls client_b's two
+        // newer transactions; the higher Lamport wins at client_a too.
+        variable_a.sync().unwrap();
+        assert_eq!(variable_a.get::<String>().unwrap(), "newer");
+
+        // client_b finally receives client_a's stale write; it must not overwrite "newer".
+        variable_b.sync().unwrap();
+        assert_eq!(variable_b.get::<String>().unwrap(), "newer");
+    }
+
+    #[test]
+    #[instrument]
+    fn can_catch_up_a_late_subscriber_to_the_current_value_and_timestamp() {
+        let (client_a, client_b) = two_clients_sharing();
+        let (_, key, _) = get_test_ids!();
+
+        let variable_a = client_a
+            .create_datatype(key.clone())
+            .build_variable()
+            .unwrap();
+        variable_a.sync().unwrap();
+        variable_a.set("first").unwrap();
+        variable_a.sync().unwrap();
+        variable_a.set("second").unwrap();
+        variable_a.sync().unwrap();
+
+        // client_b only subscribes now, after several Sets already happened, and still
+        // catches up to the current value in a single sync — not just the first of the
+        // accumulated writes.
+        let variable_b = client_b.subscribe_datatype(key).build_variable().unwrap();
+        variable_b.sync().unwrap();
+        assert_eq!(variable_b.get::<String>().unwrap(), "second");
+
+        // The absorbed timestamp is the real winning one, not the initial sentinel: a
+        // further client_b Set is correctly ordered after client_a's history and
+        // propagates back, proving the caught-up Lamport is usable, not stale.
+        variable_b.set("third").unwrap();
+        variable_b.sync().unwrap();
+        variable_a.sync().unwrap();
+        assert_eq!(variable_a.get::<String>().unwrap(), "third");
     }
 
     #[test]
