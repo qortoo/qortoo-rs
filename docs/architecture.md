@@ -28,11 +28,11 @@ flowchart TD
 
 | Layer | Struct | Key Responsibility |
 |-------|--------|--------------------|
-| Public API | `Counter`, etc. | User-facing methods; implements `DatatypeBlanket` |
+| Public API | `Counter`, `Variable` | User-facing methods; implements `DatatypeBlanket` |
 | Transactional | `TransactionalDatatype` | Transaction scope via `TransactionContext` and `DeferGuard`; serializes concurrent ops via `op_mutex` / `tx_mutex` |
 | Mutable | `MutableDatatype` | Owns `Crdt`, `OperationId`, `PushBuffer`, `TxRecord`; executes and records operations |
 | Wired | `WiredDatatype` | Assembles `PushPullPack` and calls `Connectivity::push_pull`; drives the event loop |
-| CRDT | `CounterCrdt`, … | Pure state machine; no I/O, no locking |
+| CRDT | `CounterCrdt`, `VariableCrdt` | Pure state machine; no I/O, no locking; see [`docs/variable.md`](variable.md) for the LWW Variable |
 
 ## Shared State Model
 

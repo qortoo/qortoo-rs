@@ -88,7 +88,10 @@ flowchart LR
     applied -.->|rollback| rollback
 ```
 
-Rollback actions are local implementation details and are not serialized into `Operation` or `Transaction`. For `CounterIncrease(delta)`, the action increases by the wrapping inverse delta. Both forward and rollback additions use the same wrapping `i64` arithmetic (modulo 2^64), including the self-inverse `i64::MIN` case. A non-invertible CRDT can instead capture the exact state it needs to restore without duplicating that state in the wire payload.
+Rollback actions are local implementation details and are not serialized into `Operation` or `Transaction`. The two existing CRDTs illustrate the two possible shapes:
+
+- **Inverse operation** — for `CounterIncrease(delta)`, the action increases by the wrapping inverse delta. Both forward and rollback additions use the same wrapping `i64` arithmetic (modulo 2^64), including the self-inverse `i64::MIN` case.
+- **Exact restore** — `VariableSet(new)` is not invertible: the new value alone cannot reconstruct the previous value or its winning timestamp. `VariableRollbackAction::Restore` instead captures the full previous `VariableState` (payload + timestamp) at execution time, without duplicating that state in the wire payload (see [`docs/variable.md`](variable.md)).
 
 Each concrete CRDT owns its action enum. The top-level `RollbackAction` has one wrapper variant per CRDT, not one variant per operation:
 
@@ -96,11 +99,10 @@ Each concrete CRDT owns its action enum. The top-level `RollbackAction` has one 
 enum RollbackAction {
     Counter(CounterRollbackAction),
     Variable(VariableRollbackAction),
-    Map(MapRollbackAction),
 }
 ```
 
-`LocalOperationOutcome` stores the top-level `RollbackAction`. Each concrete CRDT wraps its own action when it creates the outcome, but it never matches actions owned by other CRDTs. The `Crdt` wrapper is the only place that matches a CRDT instance with its action family during rollback. Adding a Variable or Map action therefore does not require changing Counter rollback code.
+`LocalOperationOutcome` stores the top-level `RollbackAction`. Each concrete CRDT wraps its own action when it creates the outcome, but it never matches actions owned by other CRDTs. The `Crdt` wrapper is the only place that matches a CRDT instance with its action family during rollback. Adding a new CRDT's action therefore does not require changing existing rollback code.
 
 ```rust
 // MutableDatatype::do_rollback

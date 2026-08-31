@@ -97,6 +97,11 @@ An `Operation` stores Lamport time, while the originating CUID is stored in the 
 the local operation ID's CUID, and remote execution uses the transaction's CUID. The
 context is ephemeral; it does not change the persisted operation or transaction format.
 
+The LWW `Variable` datatype is the concrete consumer of this ordering: it retains the
+winning write's `Timestamp` in its CRDT state and resolves every competing `Set` with
+the "greater timestamp wins" rule, reserving Lamport `0` for its synthetic initial
+state (see [`docs/variable.md`](variable.md)).
+
 ### Exact element identity: ElementId
 
 One logical operation can create more than one element. Those elements share a
