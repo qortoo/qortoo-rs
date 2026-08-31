@@ -299,7 +299,7 @@ Counter incremented for every push/pull sync cycle.
 | Label | Values |
 |-------|--------|
 | `collection` | Collection name |
-| `type` | CRDT type, currently `Counter` |
+| `type` | CRDT type: `Counter` or `Variable` |
 | `result` | `success` or `failure` |
 
 #### `qortoo_sync_duration_seconds`

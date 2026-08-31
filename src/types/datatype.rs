@@ -20,7 +20,7 @@ pub enum DataType {
     /// CRDT counter supporting increment/decrement operations
     #[display("Counter")]
     Counter = 0,
-    /// CRDT variable (planned)
+    /// CRDT variable storing a single JSON value with last-writer-wins semantics
     #[display("Variable")]
     Variable = 1,
     /// CRDT map (planned)

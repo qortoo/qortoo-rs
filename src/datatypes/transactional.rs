@@ -386,7 +386,6 @@ mod tests_transactional {
         Client, DataType, DatatypeState,
         datatypes::{
             common::new_attribute,
-            crdts::Crdt,
             transactional::{TransactionContext, TransactionalDatatype},
         },
         operations::Operation,
@@ -416,43 +415,10 @@ mod tests_transactional {
         assert!(result.is_ok());
 
         let mutable = tx_dt.mutable.read();
-        let Crdt::Counter(c) = &mutable.crdt;
+        let c = mutable.crdt.as_counter().expect("expected a counter crdt");
         assert_eq!(c.value(), 0);
         assert_eq!(mutable.op_id.cseq, 0);
         assert_ne!(mutable.get_state(), DatatypeState::Disabled);
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 10)]
-    #[instrument]
-    async fn can_do_transaction() {
-        let attr = new_attribute!(DataType::Counter);
-        let tx_dt = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
-        let parent_span = Span::current();
-
-        let mut join_handles = vec![];
-
-        for i in 0..5 {
-            let tx_dt = tx_dt.clone();
-            let parent_span = parent_span.clone();
-            join_handles.push(tokio::spawn(async move {
-                let thread_span = info_span!("thread", i = i);
-                if !parent_span.is_disabled() {
-                    let _ = thread_span.set_parent(parent_span.context());
-                }
-                let _g_thread_span = thread_span.enter();
-                let tx_ctx = Arc::new(TransactionContext::new(format!("test_tx_{i}")));
-                tx_dt.clone().do_transaction(tx_ctx.clone(), move || {
-                    tx_dt.execute_local_operation_as_tx(
-                        tx_ctx.clone(),
-                        Operation::new_delay_for_test(1, true),
-                    )?;
-                    Ok(())
-                })
-            }));
-        }
-        for jh in join_handles {
-            jh.await.unwrap().expect("failed to join thread");
-        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 10)]

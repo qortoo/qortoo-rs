@@ -14,7 +14,7 @@ flowchart TD
     TX["<b>Transactional Layer</b> — TransactionalDatatype<br/>← Transaction scope, DeferGuard commit/rollback"]
     MU["<b>Mutable Layer</b> — MutableDatatype<br/>← Local state: CRDT, op_id, push_buffer, tx_record"]
     WI["<b>Wired Layer</b> — WiredDatatype<br/>← Push/pull sync with connectivity backend"]
-    CR["<b>CRDT Layer</b> (e.g., CounterCrdt) — Crdt enum<br/>← Pure CRDT: execute_local_operation,<br/>execute_remote_operation, execute_inverse_operation"]
+    CR["<b>CRDT Layer</b> (e.g., CounterCrdt) — Crdt enum<br/>← Pure CRDT: local execution returns its rollback action,<br/>remote execution applies without rollback metadata"]
 
     API --> TX --> MU --> WI --> CR
 ```
@@ -28,11 +28,11 @@ flowchart TD
 
 | Layer | Struct | Key Responsibility |
 |-------|--------|--------------------|
-| Public API | `Counter`, etc. | User-facing methods; implements `DatatypeBlanket` |
+| Public API | `Counter`, `Variable` | User-facing methods; implements `DatatypeBlanket` |
 | Transactional | `TransactionalDatatype` | Transaction scope via `TransactionContext` and `DeferGuard`; serializes concurrent ops via `op_mutex` / `tx_mutex` |
 | Mutable | `MutableDatatype` | Owns `Crdt`, `OperationId`, `PushBuffer`, `TxRecord`; executes and records operations |
 | Wired | `WiredDatatype` | Assembles `PushPullPack` and calls `Connectivity::push_pull`; drives the event loop |
-| CRDT | `CounterCrdt`, … | Pure state machine; no I/O, no locking |
+| CRDT | `CounterCrdt`, `VariableCrdt` | Pure state machine; no I/O, no locking; see [`docs/variable.md`](variable.md) for the LWW Variable |
 
 ## Shared State Model
 
@@ -44,7 +44,7 @@ flowchart TD
     CRDT["crdt: Crdt — CRDT state"]
     OPID["op_id: OperationId — lamport + cseq counter"]
     PB["push_buffer — committed-but-not-acked transactions"]
-    TXR["tx_record: TxRecord — pending transaction + rollback save point"]
+    TXR["tx_record: TxRecord — pending wire transaction + local rollback actions + save point"]
     STATE["state: DatatypeState — lifecycle state"]
     WD["WiredDatatype\n(shares the same Arc&lt;RwLock&lt;MutableDatatype&gt;&gt;)"]
 
@@ -68,8 +68,8 @@ flowchart TD
 flowchart TD
     User["User calls counter.increase(1)"]
     TX["TransactionalDatatype::execute_local_operation_as_tx()\n──────────────────────────────────────\nacquire op_mutex\nbegin_transaction_if_needed()\n→ creates TransactionContext + DeferGuard"]
-    MU["MutableDatatype::execute_local_operation()\n──────────────────────────────────────\nop.set_lamport(op_id.lamport + 1)\ncrdt.execute_local_operation(&op)"]
-    Ok["YES: succeeds\ntx_record.record_operation() ← append op + update rollback save point\nop_id.next(is_new_tx) ← advance lamport (and cseq if new tx)"]
+    MU["MutableDatatype::execute_local_operation()\n──────────────────────────────────────\nop.set_lamport(op_id.lamport + 1)\ncontext = OperationContext::try_new(&op, &op_id.cuid)?\n→ rejects modification Lamport 0\noutcome = crdt.execute_local_operation(&context)\n→ return value + rollback action"]
+    Ok["YES: succeeds\ntx_record.record_operation() ← append wire op + local rollback action\nop_id.next(is_new_tx) ← advance lamport (and cseq if new tx)"]
     Err["NO: fails\nreturn Err (op_id unchanged)"]
     Defer["DeferGuard drop → end_transaction(committed=true)\npush_buffer.enqueue(tx) ← ready to sync"]
 
@@ -84,7 +84,7 @@ flowchart TD
 flowchart TD
     EL["EventLoop fires PushTransaction event"]
     PP["WiredDatatype::push_pull()\n──────────────────────────────────────\nmutable.read() → assemble PushPullPack (push_buffer contents)\nconnectivity.push_pull(&pack)"]
-    Apply["mutable.write() → apply pulled transactions\n──────────────────────────────────────\nexecute_remote_transaction() for each remote tx\npush_buffer.deque(acked_cseq)"]
+    Apply["mutable.write() → apply pulled transactions\n──────────────────────────────────────\nOperationContext::try_new(op, &tx.cuid)?\n→ rejects modification Lamport 0\nexecute_remote_transaction() for each remote tx\npush_buffer.deque(acked_cseq)"]
     State["set_state(pulled.state)"]
 
     EL --> PP --> Apply --> State
@@ -103,11 +103,14 @@ flowchart TD
 |------|----------|---------|
 | `Uid` / `Cuid` / `Duid` | `src/types/uid.rs` | Immutable identities for clients and logical datatypes; see [`docs/core-types.md`](core-types.md) |
 | `Timestamp` / `ElementId` | `src/types/timestamp.rs`, `src/types/element_id.rs` | CRDT precedence and exact element identity; see [`docs/core-types.md`](core-types.md) |
+| `OperationContext` | `src/types/operation_context.rs` | Validated execution-only combination of a positive-Lamport modification operation and its origin-derived `Timestamp`; snapshot application bypasses it |
+| `LocalOperationOutcome` | `src/datatypes/crdts/execution.rs` | Local execution result containing the caller value and local-only rollback action |
+| `RollbackAction` | `src/datatypes/crdts/execution.rs` | Top-level wrapper that dispatches a CRDT-specific rollback action to the matching CRDT |
 | `OperationId` | `src/types/operation_id.rs` | Mutable local Lamport/cseq progress; see [`docs/core-types.md`](core-types.md) |
 | `CheckPoint` | `src/types/checkpoint.rs` | Carries server-side and client-side transaction sequences; see [`docs/core-types.md`](core-types.md) |
-| `Operation` | `src/operations/mod.rs` | Single CRDT operation with `OperationBody` and `lamport` |
+| `Operation` | `src/operations/operation.rs` | Single CRDT operation with `OperationBody` and `lamport` |
 | `Transaction` | `src/operations/transaction.rs` | Ordered group of operations sharing `cuid`/`cseq` |
-| `TxRecord` | `src/datatypes/tx_record.rs` | Pending transaction buffer + rollback save point |
+| `TxRecord` | `src/datatypes/tx_record.rs` | Pending wire transaction + local rollback actions + rollback save point |
 | `PushPullPack` | `src/types/push_pull_pack.rs` | Wire format for push/pull exchange |
 | `Attribute` | `src/datatypes/common.rs` | Immutable per-datatype config shared across layers |
 | `DatatypeState` | `src/types/datatype.rs` | Lifecycle state machine; see [`docs/datatype-state.md`](datatype-state.md) |

@@ -6,7 +6,7 @@ use std::{
 use parking_lot::RwLock;
 
 use crate::{
-    Counter, DataType,
+    Counter, DataType, Variable,
     clients::common::ClientCommon,
     datatypes::{
         datatype_set::DatatypeSet, option::DatatypeOption, transactional::TransactionalDatatype,
@@ -146,10 +146,11 @@ impl Attribute {
 
     pub fn get_datatype_set(&self) -> Option<DatatypeSet> {
         let transactional = self.weak_transactional.read().as_ref()?.upgrade()?;
-        Some(match self.r#type {
-            DataType::Counter => DatatypeSet::Counter(Counter::new(transactional)),
-            _ => return None,
-        })
+        match self.r#type {
+            DataType::Counter => Some(DatatypeSet::Counter(Counter::new(transactional))),
+            DataType::Variable => Some(DatatypeSet::Variable(Variable::new(transactional))),
+            DataType::Map => None,
+        }
     }
 
     pub(crate) fn detach_datatype_if_same_instance(&self) {
@@ -181,6 +182,7 @@ pub(crate) use new_attribute;
 pub enum ReturnType {
     None,
     Counter(i64),
+    Variable(Arc<[u8]>),
 }
 
 impl Debug for ReturnType {
@@ -188,12 +190,17 @@ impl Debug for ReturnType {
         match self {
             ReturnType::None => f.write_str("None"),
             ReturnType::Counter(value) => f.debug_tuple("Counter").field(value).finish(),
+            ReturnType::Variable(value) => f
+                .debug_struct("Variable")
+                .field("value_size", &value.len())
+                .finish(),
         }
     }
 }
 
 #[cfg(test)]
 mod tests_attribute {
+    use std::sync::Arc;
 
     use tracing::info;
 
@@ -239,5 +246,9 @@ mod tests_attribute {
             format!("{:?}", super::ReturnType::Counter(42)),
             "Counter(42)"
         );
+        let value: Arc<[u8]> = Arc::from(b"do-not-log".as_slice());
+        let debug = format!("{:?}", super::ReturnType::Variable(value));
+        assert_eq!(debug, "Variable { value_size: 10 }");
+        assert!(!debug.contains("do-not-log"));
     }
 }

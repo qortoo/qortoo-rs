@@ -12,6 +12,8 @@ pub mod pull_handler;
 pub mod push_buffer;
 mod transactional;
 mod tx_record;
+mod value;
+pub mod variable;
 pub mod wired;
 #[cfg(test)]
 pub mod wired_interceptor;

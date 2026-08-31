@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use dyn_fmt::AsStrFormatExt;
 
 use crate::{
-    Client, ClientError, Counter, DataType, DatatypeHandler, DatatypeState,
-    datatypes::{datatype_set::DatatypeSet, option::DatatypeOption},
+    Client, ClientError, Counter, DataType, DatatypeHandler, DatatypeState, Variable,
+    datatypes::option::DatatypeOption,
     errors::{clients::CLIENT_ERROR_MSG_DATATYPE_KEY, with_err_out},
     utils::name_validator::is_valid_datatype_key,
 };
@@ -100,8 +100,48 @@ impl<'c> DatatypeBuilder<'c> {
             self.is_readonly,
             self.handlers,
         )?;
-        let DatatypeSet::Counter(c) = ds;
-        Ok(c)
+        Ok(ds
+            .into_counter()
+            .expect("DatatypeSet::new must return DatatypeSet::Counter for DataType::Counter"))
+    }
+
+    /// Finalizes the builder and constructs a [`Variable`].
+    ///
+    /// Uses the builder's lifecycle state (subscribe/create/subscribe-or-create)
+    /// to return a ready-to-use variable.
+    ///
+    /// # Errors
+    /// Returns [`ClientError`] if the underlying creation/subscription fails.
+    ///
+    /// # Examples
+    /// ```
+    /// use qortoo::Client;
+    /// let client = Client::builder("doc-example", "build_variable-test").build().unwrap();
+    /// let variable = client
+    ///     .create_datatype("profile-1")
+    ///     .build_variable()
+    ///     .unwrap();
+    /// assert_eq!(variable.get::<serde_json::Value>().unwrap(), serde_json::Value::Null);
+    /// ```
+    pub fn build_variable(self) -> Result<Variable, ClientError> {
+        if !is_valid_datatype_key(&self.key) {
+            return Err(with_err_out!(
+                ClientError::FailedToSubscribeOrCreateDatatype(
+                    CLIENT_ERROR_MSG_DATATYPE_KEY.format(&[self.key])
+                )
+            ));
+        }
+        let ds = self.client.do_subscribe_or_create_datatype(
+            self.key,
+            DataType::Variable,
+            self.state,
+            self.option,
+            self.is_readonly,
+            self.handlers,
+        )?;
+        Ok(ds
+            .into_variable()
+            .expect("DatatypeSet::new must return DatatypeSet::Variable for DataType::Variable"))
     }
 
     /// Configures the maximum memory size for the push buffer.
@@ -281,5 +321,22 @@ mod tests_datatype_builder {
                 ClientError::FailedToSubscribeOrCreateDatatype("".to_string())
             );
         }
+    }
+
+    #[test]
+    #[instrument]
+    fn can_build_a_variable_via_datatype_builder() {
+        let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .build()
+            .unwrap();
+        let variable = client
+            .create_datatype(get_test_func_name!())
+            .build_variable()
+            .unwrap();
+        assert_eq!(variable.get_type(), crate::DataType::Variable);
+        assert_eq!(
+            variable.get::<serde_json::Value>().unwrap(),
+            serde_json::Value::Null
+        );
     }
 }

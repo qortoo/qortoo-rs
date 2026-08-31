@@ -37,6 +37,7 @@ Each datatype is composed of five layers stacked vertically. A user operation pa
 | [Client and DatatypeBuilder](client-and-datatype-builder.md) | `Client` builder pattern, collection/key naming validation, and the `DatatypeBuilder` chain |
 | [Datatype State](datatype-state.md) | `DatatypeState` lifecycle, write access, sync intent states, and unsubscribe cleanup |
 | [Transaction and Rollback](transaction-and-rollback.md) | `TxRecord` structure, transaction lifecycle, and inverse-operation rollback |
+| [Variable](variable.md) | LWW `Variable` datatype: JSON value contract, timestamp precedence, exact-restore rollback, and snapshot format |
 | [Connectivity](connectivity.md) | `Connectivity` trait, `NullConnectivity`, `LocalConnectivity`/`LocalDatatypeServer`, and `WiredInterceptor` |
 | [Handler System](handler-system.md) | `DatatypeHandler`, `HandlersManager`, priority-based async dispatch |
 | [Event Loop](event-loop.md) | Priority-based event processing, channel types, and exponential backoff behavior |
@@ -50,7 +51,7 @@ Each datatype is composed of five layers stacked vertically. A user operation pa
 | Document | Description |
 |----------|-------------|
 | Getting Started | TBD — Installation, basic setup, and first datatype |
-| Datatypes Reference | TBD — Counter API; planned `Variable` and `Map` types |
+| Datatypes Reference | TBD — Counter and [Variable](variable.md) APIs; planned `Map` type |
 | Testing Guide | TBD — Test macros, `LocalConnectivity` realtime pitfall, and async test patterns |
 
 ## Maintaining This Documentation
