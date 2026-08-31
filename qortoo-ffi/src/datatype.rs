@@ -1,10 +1,12 @@
 //! Datatype-agnostic FFI plumbing shared by every concrete datatype handle.
 //!
-//! Exported symbols stay per-type (e.g. `qortoo_counter_*`) so the C ABI and its
-//! ownership rules remain explicit and reviewable; this module only factors out the
-//! bodies that are identical across datatypes: build options, the construction flow
-//! with its handler-userdata lifetime, the foreign transaction callback bridge, and
-//! error reporting.
+//! Every exported symbol stays per-type (e.g. `qortoo_counter_sync`,
+//! `qortoo_variable_sync`) so the C ABI and its ownership rules remain explicit and
+//! individually reviewable. What those symbols have in common — argument validation,
+//! the construction flow with its handler-userdata lifetime, the transaction callback
+//! bridge, trace-context propagation, and error reporting — lives here as generic
+//! bodies over [`DatatypeHandle`], so each `#[no_mangle]` wrapper is a one-line
+//! forward and a new datatype only writes the wrappers plus its own operations.
 
 use std::{ffi::c_char, ptr};
 
@@ -20,7 +22,8 @@ use crate::{
         ForeignHandlerCtx, QortooOnErrorCallback, QortooOnStateChangeCallback,
         QortooUserdataDropCallback, make_foreign_handler,
     },
-    util::{cstr_arg, ffi_guard},
+    observability::with_remote_parent,
+    util::{cstr_arg, ffi_guard, to_owned_c_string},
 };
 
 /// Options applied when building a datatype. A zeroed struct (or a null pointer where
@@ -52,20 +55,47 @@ pub(crate) enum BuildMode {
     SubscribeOrCreate,
 }
 
+/// An opaque `qortoo_<type>_*` handle: the FFI-owned newtype around a concrete
+/// `qortoo` datatype. One `impl` per handle type is all the per-datatype glue the
+/// generic entry-point bodies in this module need.
+pub(crate) trait DatatypeHandle: Sized + 'static {
+    /// The concrete `qortoo` datatype this handle wraps.
+    type Inner: Datatype + 'static;
+
+    /// Name used in the `"<name> is null"` boundary error.
+    const NAME: &'static str;
+
+    /// Wraps a datatype in a handle — a freshly built one, or the transaction-scoped
+    /// one handed to a foreign transaction callback.
+    fn from_inner(inner: Self::Inner) -> Self;
+
+    /// Borrows the wrapped datatype.
+    fn inner(&self) -> &Self::Inner;
+
+    /// Finalizes a prepared builder into the concrete datatype.
+    fn build(builder: DatatypeBuilder<'_>) -> Result<Self::Inner, ClientError>;
+
+    /// Runs `body` inside the datatype's transaction, rolling back on `Err`.
+    fn run_transaction<F>(inner: &Self::Inner, tag: String, body: F) -> Result<(), DatatypeError>
+    where
+        F: FnOnce(Self::Inner) -> Result<(), BoxedError> + Send + Sync + 'static;
+}
+
+// ---------------------------------------------------------------------------
+// Construction
+// ---------------------------------------------------------------------------
+
 /// Shared construction body of every datatype build entry point.
 ///
 /// Validates the client/key arguments, applies `options` (including the foreign
 /// handler whose `userdata_drop` must fire exactly once on every path — early
-/// failures and panics included), and boxes the handle produced by `build` on
-/// success. `build` finalizes the prepared builder into a concrete handle, e.g.
-/// `|b| b.build_counter().map(|inner| QortooCounter { inner })`.
-pub(crate) unsafe fn build_datatype<H>(
+/// failures and panics included), and boxes the handle on success.
+pub(crate) unsafe fn build_datatype<H: DatatypeHandle>(
     client: *const QortooClient,
     key: *const c_char,
     options: *const QortooDatatypeOptions,
     err_out: *mut QortooError,
     mode: BuildMode,
-    build: impl FnOnce(DatatypeBuilder<'_>) -> Result<H, ClientError>,
 ) -> *mut H {
     unsafe {
         clear_err(err_out);
@@ -110,8 +140,8 @@ pub(crate) unsafe fn build_datatype<H>(
                     // since Rust retains nothing that could fire it later.
                 }
             }
-            match build(builder) {
-                Ok(handle) => Box::into_raw(Box::new(handle)),
+            match H::build(builder) {
+                Ok(inner) => Box::into_raw(Box::new(H::from_inner(inner))),
                 Err(e) => {
                     set_err(err_out, client_error_code(&e), &e.to_string());
                     ptr::null_mut()
@@ -121,20 +151,32 @@ pub(crate) unsafe fn build_datatype<H>(
     }
 }
 
-/// Null-checks a datatype handle argument, reporting `"<name> is null"` on failure.
-pub(crate) unsafe fn handle_ref<'a, H>(
+/// Releases a handle; the underlying datatype lives on inside the client.
+pub(crate) unsafe fn free<H>(handle: *mut H) {
+    if !handle.is_null() {
+        drop(unsafe { Box::from_raw(handle) });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Argument helpers
+// ---------------------------------------------------------------------------
+
+/// Null-checks a handle argument, reporting `"<H::NAME> is null"` and returning the
+/// wrapped datatype on success. Datatype-specific operations that need `err_out`
+/// semantics (e.g. `qortoo_counter_increase_by`) use this too.
+pub(crate) unsafe fn datatype_ref<'a, H: DatatypeHandle>(
     handle: *const H,
-    name: &str,
     err_out: *mut QortooError,
-) -> Option<&'a H> {
+) -> Option<&'a H::Inner> {
     match unsafe { handle.as_ref() } {
-        Some(h) => Some(h),
+        Some(h) => Some(h.inner()),
         None => {
             unsafe {
                 set_err(
                     err_out,
                     QORTOO_ERR_INVALID_ARGUMENT,
-                    &format!("{name} is null"),
+                    &format!("{} is null", H::NAME),
                 )
             };
             None
@@ -143,39 +185,198 @@ pub(crate) unsafe fn handle_ref<'a, H>(
 }
 
 /// Reports a `DatatypeError` through `err_out`; success leaves `err_out` cleared.
-pub(crate) unsafe fn report_datatype_result(
-    result: Result<(), DatatypeError>,
-    err_out: *mut QortooError,
-) {
+fn report_datatype_result(result: Result<(), DatatypeError>, err_out: *mut QortooError) {
     if let Err(e) = result {
         unsafe { set_err(err_out, datatype_error_code(&e), &e.to_string()) };
     }
 }
 
-/// Bridges a foreign transaction callback into the closure a datatype `transaction`
-/// method expects. The transaction-scoped `handle` is boxed for the duration of the
-/// call and reclaimed here — the callback must not free it or keep it afterwards.
-/// A zero return commits; non-zero rolls back.
-pub(crate) fn run_foreign_tx_callback<H>(
-    handle: H,
-    callback: extern "C" fn(*mut H, usize) -> i32,
-    userdata: usize,
-) -> Result<(), BoxedError> {
-    let tx_handle = Box::into_raw(Box::new(handle));
-    let code = callback(tx_handle, userdata);
-    drop(unsafe { Box::from_raw(tx_handle) });
-    if code == 0 {
-        Ok(())
-    } else {
-        Err(format!("aborted by foreign callback (code {code})").into())
+// ---------------------------------------------------------------------------
+// Metadata getters (no `err_out`: a null handle returns the documented default)
+// ---------------------------------------------------------------------------
+
+/// The `DatatypeState` discriminant, or -1 if `handle` is null.
+pub(crate) unsafe fn get_state<H: DatatypeHandle>(handle: *const H) -> i32 {
+    unsafe { handle.as_ref() }
+        .map(|h| h.inner().get_state() as i32)
+        .unwrap_or(-1)
+}
+
+/// The `DataType` discriminant, or -1 if `handle` is null.
+pub(crate) unsafe fn get_type<H: DatatypeHandle>(handle: *const H) -> i32 {
+    unsafe { handle.as_ref() }
+        .map(|h| h.inner().get_type() as i32)
+        .unwrap_or(-1)
+}
+
+/// The datatype key (release with `qortoo_string_free`), or null if `handle` is null.
+pub(crate) unsafe fn get_key<H: DatatypeHandle>(handle: *const H) -> *mut c_char {
+    match unsafe { handle.as_ref() } {
+        Some(h) => to_owned_c_string(h.inner().get_key()),
+        None => ptr::null_mut(),
     }
 }
 
-/// Shared body of `qortoo_<datatype>_set_handler`: registers (or replaces) a foreign
-/// handler at `priority`, or — when the handle was null and `datatype` is `None` —
-/// releases the foreign userdata immediately so it is still dropped exactly once.
-pub(crate) fn set_foreign_handler<D: Datatype>(
-    datatype: Option<&D>,
+/// The server-side version (0 before the first sync or if `handle` is null).
+pub(crate) unsafe fn get_server_version<H: DatatypeHandle>(handle: *const H) -> u64 {
+    unsafe { handle.as_ref() }
+        .map(|h| h.inner().get_server_version())
+        .unwrap_or(0)
+}
+
+/// The client-side version (number of local operations).
+pub(crate) unsafe fn get_client_version<H: DatatypeHandle>(handle: *const H) -> u64 {
+    unsafe { handle.as_ref() }
+        .map(|h| h.inner().get_client_version())
+        .unwrap_or(0)
+}
+
+/// The last synchronized client version.
+pub(crate) unsafe fn get_synced_client_version<H: DatatypeHandle>(handle: *const H) -> u64 {
+    unsafe { handle.as_ref() }
+        .map(|h| h.inner().get_synced_client_version())
+        .unwrap_or(0)
+}
+
+// ---------------------------------------------------------------------------
+// Synchronization and lifecycle
+// ---------------------------------------------------------------------------
+
+/// Blocking push/pull synchronization with the connectivity backend.
+pub(crate) unsafe fn sync<H: DatatypeHandle>(handle: *const H, err_out: *mut QortooError) {
+    unsafe {
+        clear_err(err_out);
+        ffi_guard(err_out, (), || {
+            let Some(inner) = datatype_ref(handle, err_out) else {
+                return;
+            };
+            report_datatype_result(inner.sync(), err_out);
+        })
+    }
+}
+
+/// [`sync`] continuing the caller's trace via the W3C `traceparent`/`tracestate`
+/// headers (both nullable; absent or malformed headers fall back to no parent).
+pub(crate) unsafe fn sync_with_context<H: DatatypeHandle>(
+    handle: *const H,
+    traceparent: *const c_char,
+    tracestate: *const c_char,
+    err_out: *mut QortooError,
+) {
+    unsafe {
+        clear_err(err_out);
+        ffi_guard(err_out, (), || {
+            let Some(inner) = datatype_ref(handle, err_out) else {
+                return;
+            };
+            with_remote_parent!("qortoo.sync", traceparent, tracestate, || {
+                report_datatype_result(inner.sync(), err_out)
+            })
+        })
+    }
+}
+
+/// Marks this datatype as unsubscribing (see `qortoo_client_unsubscribe_datatype`).
+pub(crate) unsafe fn unsubscribe<H: DatatypeHandle>(handle: *const H, err_out: *mut QortooError) {
+    unsafe {
+        clear_err(err_out);
+        ffi_guard(err_out, (), || {
+            let Some(inner) = datatype_ref(handle, err_out) else {
+                return;
+            };
+            report_datatype_result(inner.unsubscribe(), err_out);
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Transactions
+// ---------------------------------------------------------------------------
+
+/// Runs `callback` atomically. It executes inline on the calling thread with a
+/// transaction-scoped handle owned by Rust (the callback must not free it or keep it);
+/// a non-zero return rolls back every operation performed inside.
+pub(crate) unsafe fn transaction<H: DatatypeHandle>(
+    handle: *const H,
+    tag: *const c_char,
+    callback: extern "C" fn(*mut H, usize) -> i32,
+    userdata: usize,
+    err_out: *mut QortooError,
+) {
+    unsafe {
+        clear_err(err_out);
+        ffi_guard(err_out, (), || {
+            let Some(inner) = datatype_ref(handle, err_out) else {
+                return;
+            };
+            let Some(tag) = cstr_arg(tag, "tag", err_out) else {
+                return;
+            };
+            run_transaction(inner, tag, callback, userdata, err_out);
+        })
+    }
+}
+
+/// [`transaction`] continuing the caller's trace via the W3C `traceparent`/`tracestate`
+/// headers (both nullable).
+pub(crate) unsafe fn transaction_with_context<H: DatatypeHandle>(
+    handle: *const H,
+    tag: *const c_char,
+    traceparent: *const c_char,
+    tracestate: *const c_char,
+    callback: extern "C" fn(*mut H, usize) -> i32,
+    userdata: usize,
+    err_out: *mut QortooError,
+) {
+    unsafe {
+        clear_err(err_out);
+        ffi_guard(err_out, (), || {
+            let Some(inner) = datatype_ref(handle, err_out) else {
+                return;
+            };
+            let Some(tag) = cstr_arg(tag, "tag", err_out) else {
+                return;
+            };
+            with_remote_parent!("qortoo.transaction", traceparent, tracestate, || {
+                run_transaction(inner, tag, callback, userdata, err_out)
+            })
+        })
+    }
+}
+
+/// Shared body of the two transaction entry points: bridges the foreign callback into
+/// the closure the datatype's `transaction` expects and reports the outcome.
+fn run_transaction<H: DatatypeHandle>(
+    inner: &H::Inner,
+    tag: String,
+    callback: extern "C" fn(*mut H, usize) -> i32,
+    userdata: usize,
+    err_out: *mut QortooError,
+) {
+    let result = H::run_transaction(inner, tag, move |tx_inner| {
+        // The transaction-scoped handle is boxed for the duration of the call and
+        // reclaimed here; the callback must not free it or keep it afterwards.
+        let tx_handle = Box::into_raw(Box::new(H::from_inner(tx_inner)));
+        let code = callback(tx_handle, userdata);
+        drop(unsafe { Box::from_raw(tx_handle) });
+        if code == 0 {
+            Ok(())
+        } else {
+            Err(format!("aborted by foreign callback (code {code})").into())
+        }
+    });
+    report_datatype_result(result, err_out);
+}
+
+// ---------------------------------------------------------------------------
+// Handlers
+// ---------------------------------------------------------------------------
+
+/// Registers (or replaces) a handler at `priority`. When `handle` is null the handler
+/// cannot be registered, so the foreign `userdata_drop` fires immediately instead —
+/// still exactly once.
+pub(crate) unsafe fn set_handler<H: DatatypeHandle>(
+    handle: *const H,
     priority: usize,
     on_state_change: QortooOnStateChangeCallback,
     on_error: QortooOnErrorCallback,
@@ -190,8 +391,16 @@ pub(crate) fn set_foreign_handler<D: Datatype>(
         userdata,
         userdata_drop,
     };
-    match datatype {
-        Some(d) => d.set_handler(priority, make_foreign_handler(ctx)),
+    match unsafe { handle.as_ref() } {
+        Some(h) => h.inner().set_handler(priority, make_foreign_handler(ctx)),
         None => drop(ctx),
+    }
+}
+
+/// Removes the handler at `priority`. Returns true if one was removed.
+pub(crate) unsafe fn unset_handler<H: DatatypeHandle>(handle: *const H, priority: usize) -> bool {
+    match unsafe { handle.as_ref() } {
+        Some(h) => h.inner().unset_handler(priority).is_some(),
+        None => false,
     }
 }

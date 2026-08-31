@@ -1,28 +1,49 @@
 //! `Counter` handle: construction with options, operations, transactions, and handlers.
 //!
-//! Datatype-agnostic bodies live in the `datatype` module; this module keeps the
-//! per-type exported symbols and everything Counter-specific (`increase*`, values).
+//! Every datatype-agnostic body lives in the `datatype` module behind
+//! [`DatatypeHandle`]; this module keeps the per-type exported symbols and the
+//! Counter-specific operations (`increase*`, `get_value`).
 
-use std::{ffi::c_char, ptr};
+use std::ffi::c_char;
 
-use qortoo::{Counter, Datatype};
+use qortoo::{BoxedError, ClientError, Counter, DatatypeBuilder, DatatypeError};
 
 use crate::{
     client::QortooClient,
-    datatype::{
-        BuildMode, QortooDatatypeOptions, build_datatype, handle_ref, report_datatype_result,
-        run_foreign_tx_callback, set_foreign_handler,
-    },
+    datatype::{self, BuildMode, DatatypeHandle, QortooDatatypeOptions},
     error::{QortooError, clear_err, datatype_error_code, set_err},
     handler::{QortooOnErrorCallback, QortooOnStateChangeCallback, QortooUserdataDropCallback},
-    observability::with_remote_parent,
-    util::{cstr_arg, ffi_guard, to_owned_c_string},
+    util::ffi_guard,
 };
 
 /// Opaque handle to a `qortoo::Counter`. Cheap to clone on the Rust side; every handle
 /// shares the same underlying datatype.
 pub struct QortooCounter {
     pub(crate) inner: Counter,
+}
+
+impl DatatypeHandle for QortooCounter {
+    type Inner = Counter;
+    const NAME: &'static str = "counter";
+
+    fn from_inner(inner: Counter) -> Self {
+        Self { inner }
+    }
+
+    fn inner(&self) -> &Counter {
+        &self.inner
+    }
+
+    fn build(builder: DatatypeBuilder<'_>) -> Result<Counter, ClientError> {
+        builder.build_counter()
+    }
+
+    fn run_transaction<F>(inner: &Counter, tag: String, body: F) -> Result<(), DatatypeError>
+    where
+        F: FnOnce(Counter) -> Result<(), BoxedError> + Send + Sync + 'static,
+    {
+        inner.transaction(tag, body)
+    }
 }
 
 /// Transaction body. Receives a transaction-scoped counter (owned by Rust — do NOT free)
@@ -34,20 +55,6 @@ pub type QortooTxCallback = extern "C" fn(tx_counter: *mut QortooCounter, userda
 // Construction
 // ---------------------------------------------------------------------------
 
-unsafe fn build_counter(
-    client: *const QortooClient,
-    key: *const c_char,
-    options: *const QortooDatatypeOptions,
-    err_out: *mut QortooError,
-    mode: BuildMode,
-) -> *mut QortooCounter {
-    unsafe {
-        build_datatype(client, key, options, err_out, mode, |builder| {
-            builder.build_counter().map(|inner| QortooCounter { inner })
-        })
-    }
-}
-
 /// Builds a counter in `Creating` state (writable). `options` may be null.
 /// The handler `userdata_drop` (if provided) fires exactly once even on failure.
 #[unsafe(no_mangle)]
@@ -57,7 +64,7 @@ pub unsafe extern "C" fn qortoo_counter_create(
     options: *const QortooDatatypeOptions,
     err_out: *mut QortooError,
 ) -> *mut QortooCounter {
-    unsafe { build_counter(client, key, options, err_out, BuildMode::Create) }
+    unsafe { datatype::build_datatype(client, key, options, err_out, BuildMode::Create) }
 }
 
 /// Builds a counter in `Subscribing` state (read-only until synced). `options` may be null.
@@ -69,7 +76,7 @@ pub unsafe extern "C" fn qortoo_counter_subscribe(
     options: *const QortooDatatypeOptions,
     err_out: *mut QortooError,
 ) -> *mut QortooCounter {
-    unsafe { build_counter(client, key, options, err_out, BuildMode::Subscribe) }
+    unsafe { datatype::build_datatype(client, key, options, err_out, BuildMode::Subscribe) }
 }
 
 /// Builds a counter in `SubscribingOrCreating` state (writable). `options` may be null.
@@ -81,27 +88,18 @@ pub unsafe extern "C" fn qortoo_counter_subscribe_or_create(
     options: *const QortooDatatypeOptions,
     err_out: *mut QortooError,
 ) -> *mut QortooCounter {
-    unsafe { build_counter(client, key, options, err_out, BuildMode::SubscribeOrCreate) }
+    unsafe { datatype::build_datatype(client, key, options, err_out, BuildMode::SubscribeOrCreate) }
 }
-
-// ---------------------------------------------------------------------------
-// Operations
-// ---------------------------------------------------------------------------
 
 /// Releases this counter handle; the underlying datatype lives on inside the client.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn qortoo_counter_free(counter: *mut QortooCounter) {
-    if !counter.is_null() {
-        drop(unsafe { Box::from_raw(counter) });
-    }
+    unsafe { datatype::free(counter) }
 }
 
-unsafe fn counter_ref<'a>(
-    counter: *const QortooCounter,
-    err_out: *mut QortooError,
-) -> Option<&'a Counter> {
-    unsafe { handle_ref(counter, "counter", err_out) }.map(|c| &c.inner)
-}
+// ---------------------------------------------------------------------------
+// Counter operations
+// ---------------------------------------------------------------------------
 
 /// Increases the counter by `delta` (may be negative). Returns the new value, or 0 on error.
 #[unsafe(no_mangle)]
@@ -113,7 +111,7 @@ pub unsafe extern "C" fn qortoo_counter_increase_by(
     unsafe {
         clear_err(err_out);
         ffi_guard(err_out, 0, || {
-            let Some(c) = counter_ref(counter, err_out) else {
+            let Some(c) = datatype::datatype_ref(counter, err_out) else {
                 return 0;
             };
             match c.increase_by(delta) {
@@ -144,21 +142,17 @@ pub unsafe extern "C" fn qortoo_counter_get_value(counter: *const QortooCounter)
         .unwrap_or(0)
 }
 
+// ---------------------------------------------------------------------------
+// Synchronization and lifecycle
+// ---------------------------------------------------------------------------
+
 /// Blocking push/pull synchronization with the connectivity backend.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn qortoo_counter_sync(
     counter: *const QortooCounter,
     err_out: *mut QortooError,
 ) {
-    unsafe {
-        clear_err(err_out);
-        ffi_guard(err_out, (), || {
-            let Some(c) = counter_ref(counter, err_out) else {
-                return;
-            };
-            report_datatype_result(c.sync(), err_out);
-        })
-    }
+    unsafe { datatype::sync(counter, err_out) }
 }
 
 /// `qortoo_counter_sync` continuing the caller's trace.
@@ -177,17 +171,7 @@ pub unsafe extern "C" fn qortoo_counter_sync_with_context(
     tracestate: *const c_char,
     err_out: *mut QortooError,
 ) {
-    unsafe {
-        clear_err(err_out);
-        ffi_guard(err_out, (), || {
-            let Some(c) = counter_ref(counter, err_out) else {
-                return;
-            };
-            with_remote_parent!("qortoo.sync", traceparent, tracestate, || {
-                report_datatype_result(c.sync(), err_out)
-            })
-        })
-    }
+    unsafe { datatype::sync_with_context(counter, traceparent, tracestate, err_out) }
 }
 
 /// Marks this datatype as unsubscribing (see `qortoo_client_unsubscribe_datatype`).
@@ -196,56 +180,37 @@ pub unsafe extern "C" fn qortoo_counter_unsubscribe(
     counter: *const QortooCounter,
     err_out: *mut QortooError,
 ) {
-    unsafe {
-        clear_err(err_out);
-        ffi_guard(err_out, (), || {
-            let Some(c) = counter_ref(counter, err_out) else {
-                return;
-            };
-            report_datatype_result(c.unsubscribe(), err_out);
-        })
-    }
+    unsafe { datatype::unsubscribe(counter, err_out) }
 }
 
 /// Returns the `DatatypeState` discriminant, or -1 if `counter` is null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn qortoo_counter_get_state(counter: *const QortooCounter) -> i32 {
-    unsafe { counter.as_ref() }
-        .map(|c| c.inner.get_state() as i32)
-        .unwrap_or(-1)
+    unsafe { datatype::get_state(counter) }
 }
 
 /// Returns the `DataType` discriminant, or -1 if `counter` is null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn qortoo_counter_get_type(counter: *const QortooCounter) -> i32 {
-    unsafe { counter.as_ref() }
-        .map(|c| c.inner.get_type() as i32)
-        .unwrap_or(-1)
+    unsafe { datatype::get_type(counter) }
 }
 
 /// Returns the datatype key (release with `qortoo_string_free`).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn qortoo_counter_get_key(counter: *const QortooCounter) -> *mut c_char {
-    match unsafe { counter.as_ref() } {
-        Some(c) => to_owned_c_string(c.inner.get_key()),
-        None => ptr::null_mut(),
-    }
+    unsafe { datatype::get_key(counter) }
 }
 
 /// Returns the server-side version (0 before the first sync or if `counter` is null).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn qortoo_counter_get_server_version(counter: *const QortooCounter) -> u64 {
-    unsafe { counter.as_ref() }
-        .map(|c| c.inner.get_server_version())
-        .unwrap_or(0)
+    unsafe { datatype::get_server_version(counter) }
 }
 
 /// Returns the client-side version (number of local operations).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn qortoo_counter_get_client_version(counter: *const QortooCounter) -> u64 {
-    unsafe { counter.as_ref() }
-        .map(|c| c.inner.get_client_version())
-        .unwrap_or(0)
+    unsafe { datatype::get_client_version(counter) }
 }
 
 /// Returns the last synchronized client version.
@@ -253,10 +218,12 @@ pub unsafe extern "C" fn qortoo_counter_get_client_version(counter: *const Qorto
 pub unsafe extern "C" fn qortoo_counter_get_synced_client_version(
     counter: *const QortooCounter,
 ) -> u64 {
-    unsafe { counter.as_ref() }
-        .map(|c| c.inner.get_synced_client_version())
-        .unwrap_or(0)
+    unsafe { datatype::get_synced_client_version(counter) }
 }
+
+// ---------------------------------------------------------------------------
+// Transactions
+// ---------------------------------------------------------------------------
 
 /// Executes `callback` atomically. The callback runs inline on the calling thread with a
 /// transaction-scoped counter handle owned by Rust (do NOT free it, do NOT keep it after
@@ -269,18 +236,7 @@ pub unsafe extern "C" fn qortoo_counter_transaction(
     userdata: usize,
     err_out: *mut QortooError,
 ) {
-    unsafe {
-        clear_err(err_out);
-        ffi_guard(err_out, (), || {
-            let Some(c) = counter_ref(counter, err_out) else {
-                return;
-            };
-            let Some(tag) = cstr_arg(tag, "tag", err_out) else {
-                return;
-            };
-            transaction(c, tag, callback, userdata, err_out);
-        })
-    }
+    unsafe { datatype::transaction(counter, tag, callback, userdata, err_out) }
 }
 
 /// `qortoo_counter_transaction` continuing the caller's trace.
@@ -302,34 +258,21 @@ pub unsafe extern "C" fn qortoo_counter_transaction_with_context(
     err_out: *mut QortooError,
 ) {
     unsafe {
-        clear_err(err_out);
-        ffi_guard(err_out, (), || {
-            let Some(c) = counter_ref(counter, err_out) else {
-                return;
-            };
-            let Some(tag) = cstr_arg(tag, "tag", err_out) else {
-                return;
-            };
-            with_remote_parent!("qortoo.transaction", traceparent, tracestate, || {
-                transaction(c, tag, callback, userdata, err_out)
-            })
-        })
+        datatype::transaction_with_context(
+            counter,
+            tag,
+            traceparent,
+            tracestate,
+            callback,
+            userdata,
+            err_out,
+        )
     }
 }
 
-/// Shared body of the two transaction entry points.
-unsafe fn transaction(
-    counter: &Counter,
-    tag: String,
-    callback: QortooTxCallback,
-    userdata: usize,
-    err_out: *mut QortooError,
-) {
-    let result = counter.transaction(tag, move |tx_counter| {
-        run_foreign_tx_callback(QortooCounter { inner: tx_counter }, callback, userdata)
-    });
-    unsafe { report_datatype_result(result, err_out) };
-}
+// ---------------------------------------------------------------------------
+// Handlers
+// ---------------------------------------------------------------------------
 
 /// Registers (or replaces) a handler at `priority`. Callbacks arrive on Qortoo tokio
 /// worker threads; `userdata_drop` fires exactly once when the handler is replaced or
@@ -343,14 +286,16 @@ pub unsafe extern "C" fn qortoo_counter_set_handler(
     userdata: usize,
     userdata_drop: QortooUserdataDropCallback,
 ) {
-    set_foreign_handler(
-        unsafe { counter.as_ref() }.map(|c| &c.inner),
-        priority,
-        on_state_change,
-        on_error,
-        userdata,
-        userdata_drop,
-    );
+    unsafe {
+        datatype::set_handler(
+            counter,
+            priority,
+            on_state_change,
+            on_error,
+            userdata,
+            userdata_drop,
+        )
+    }
 }
 
 /// Removes the handler at `priority`. Returns true if one was removed.
@@ -359,8 +304,5 @@ pub unsafe extern "C" fn qortoo_counter_unset_handler(
     counter: *const QortooCounter,
     priority: usize,
 ) -> bool {
-    match unsafe { counter.as_ref() } {
-        Some(c) => c.inner.unset_handler(priority).is_some(),
-        None => false,
-    }
+    unsafe { datatype::unset_handler(counter, priority) }
 }

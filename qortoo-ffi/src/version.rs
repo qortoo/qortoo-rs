@@ -16,7 +16,7 @@ pub const QORTOO_ABI_VERSION_MAJOR: u32 = 0;
 /// breaking existing ones; reset to 0 when the major version bumps.
 ///
 /// - 1: initial `Client`/`Counter`/observability surface.
-/// - 2: `QortooOwnedBytes` and `qortoo_owned_bytes_free` for owned byte buffers.
+/// - 2: owned byte buffers (`QortooOwnedBytes`) and the `QortooVariable` handle.
 pub const QORTOO_ABI_VERSION_MINOR: u32 = 2;
 
 /// Returns the ABI major version this library implements. Compare against the value
