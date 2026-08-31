@@ -47,6 +47,7 @@ pub(crate) fn datatype_error_code(e: &qortoo::DatatypeError) -> i32 {
         E::SyncFailed(_) => 210,
         E::PushBufferExceededMaxMemSize => 211,
         E::ServerRejected(_) => 213,
+        E::ValueConversion(_) => 214,
         _ => QORTOO_ERR_INTERNAL_FFI,
     }
 }
@@ -166,6 +167,10 @@ mod tests_error {
                 ServerRejectReason::CreateFailed(String::new())
             )),
             213
+        );
+        assert_eq!(
+            datatype_error_code(&DatatypeError::ValueConversion(String::new())),
+            214
         );
     }
 

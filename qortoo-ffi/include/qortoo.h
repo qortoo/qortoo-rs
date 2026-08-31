@@ -562,6 +562,36 @@ uint64_t qortoo_variable_get_client_version(const struct QortooVariable *variabl
 uint64_t qortoo_variable_get_synced_client_version(const struct QortooVariable *variable);
 
 /**
+ * Sets the variable to the JSON value in `len` bytes at `data` — exactly one UTF-8
+ * JSON value, stored verbatim (never reparsed or reordered; see
+ * `qortoo_variable_get_raw`).
+ *
+ * On success `previous_out` receives the value the variable held just before this set
+ * as a caller-owned buffer (`"null"` for the first set), to be released once with
+ * `qortoo_owned_bytes_free`. On any error the variable is left unchanged and
+ * `previous_out` stays `{NULL, 0}`.
+ *
+ * Rejects a null `variable`/`data`/`previous_out` (`QORTOO_ERR_INVALID_ARGUMENT`) and
+ * input that is not exactly one UTF-8 JSON value (code 214).
+ */
+void qortoo_variable_set_raw(const struct QortooVariable *variable,
+                             const uint8_t *data,
+                             uintptr_t len,
+                             struct QortooOwnedBytes *previous_out,
+                             struct QortooError *err_out);
+
+/**
+ * Writes the current value to `value_out` as a caller-owned buffer holding the stored
+ * JSON bytes verbatim (`"null"` for the initial value); release it once with
+ * `qortoo_owned_bytes_free`. On any error `value_out` stays `{NULL, 0}`.
+ *
+ * Rejects a null `variable` or `value_out` (`QORTOO_ERR_INVALID_ARGUMENT`).
+ */
+void qortoo_variable_get_raw(const struct QortooVariable *variable,
+                             struct QortooOwnedBytes *value_out,
+                             struct QortooError *err_out);
+
+/**
  * Executes `callback` atomically. The callback runs inline on the calling thread with a
  * transaction-scoped variable handle owned by Rust (do NOT free it, do NOT keep it
  * after returning). A non-zero return rolls back every operation performed inside.

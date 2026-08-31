@@ -25,8 +25,6 @@ pub struct QortooOwnedBytes {
 
 impl QortooOwnedBytes {
     /// The `{null, 0}` sentinel an output parameter is initialized to before a call runs.
-    // Consumed by the datatype `*_json` entry points added in the next change.
-    #[allow(dead_code)]
     pub(crate) const EMPTY: Self = Self {
         data: ptr::null_mut(),
         len: 0,
@@ -35,8 +33,6 @@ impl QortooOwnedBytes {
 
 /// Moves `bytes` into a caller-owned [`QortooOwnedBytes`]. The buffer must be returned
 /// through `qortoo_owned_bytes_free` exactly once.
-// Consumed by the datatype `*_json` entry points added in the next change.
-#[allow(dead_code)]
 pub(crate) fn into_owned_bytes(bytes: impl Into<Box<[u8]>>) -> QortooOwnedBytes {
     let boxed = bytes.into();
     let len = boxed.len();

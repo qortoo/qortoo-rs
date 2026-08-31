@@ -1,8 +1,9 @@
-//! `Variable` handle: construction with options, lifecycle, transactions, and handlers.
+//! `Variable` handle: construction with options, lifecycle, raw JSON value access,
+//! transactions, and handlers.
 //!
 //! Every datatype-agnostic body lives in the `datatype` module behind
-//! [`DatatypeHandle`]; this module keeps the per-type exported symbols. The JSON
-//! `set`/`get` entry points are added separately.
+//! [`DatatypeHandle`]; this module keeps the per-type exported symbols plus the
+//! Variable-specific `set_raw`/`get_raw` entry points.
 
 use std::ffi::c_char;
 
@@ -11,8 +12,9 @@ use qortoo::{BoxedError, ClientError, DatatypeBuilder, DatatypeError, Variable};
 use crate::{
     client::QortooClient,
     datatype::{self, BuildMode, DatatypeHandle, QortooDatatypeOptions},
-    error::QortooError,
+    error::{QORTOO_ERR_INVALID_ARGUMENT, QortooError, clear_err, datatype_error_code, set_err},
     handler::{QortooOnErrorCallback, QortooOnStateChangeCallback, QortooUserdataDropCallback},
+    util::{QortooOwnedBytes, ffi_guard, into_owned_bytes},
 };
 
 /// Opaque handle to a `qortoo::Variable`. Cheap to clone on the Rust side; every handle
@@ -178,6 +180,118 @@ pub unsafe extern "C" fn qortoo_variable_get_synced_client_version(
     variable: *const QortooVariable,
 ) -> u64 {
     unsafe { datatype::get_synced_client_version(variable) }
+}
+
+// ---------------------------------------------------------------------------
+// Raw JSON value
+// ---------------------------------------------------------------------------
+
+/// Sets the variable to the JSON value in `len` bytes at `data` — exactly one UTF-8
+/// JSON value, stored verbatim (never reparsed or reordered; see
+/// `qortoo_variable_get_raw`).
+///
+/// On success `previous_out` receives the value the variable held just before this set
+/// as a caller-owned buffer (`"null"` for the first set), to be released once with
+/// `qortoo_owned_bytes_free`. On any error the variable is left unchanged and
+/// `previous_out` stays `{NULL, 0}`.
+///
+/// Rejects a null `variable`/`data`/`previous_out` (`QORTOO_ERR_INVALID_ARGUMENT`) and
+/// input that is not exactly one UTF-8 JSON value (code 214).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn qortoo_variable_set_raw(
+    variable: *const QortooVariable,
+    data: *const u8,
+    len: usize,
+    previous_out: *mut QortooOwnedBytes,
+    err_out: *mut QortooError,
+) {
+    unsafe {
+        clear_err(err_out);
+        init_owned_out(previous_out);
+        ffi_guard(err_out, (), || {
+            let Some(inner) = datatype::datatype_ref(variable, err_out) else {
+                return;
+            };
+            let Some(previous_out) = require_owned_out(previous_out, "previous_out", err_out)
+            else {
+                return;
+            };
+            let Some(json) = json_bytes_arg(data, len, err_out) else {
+                return;
+            };
+            match inner.set_raw(json) {
+                Ok(previous) => *previous_out = into_owned_bytes(previous),
+                Err(e) => set_err(err_out, datatype_error_code(&e), &e.to_string()),
+            }
+        })
+    }
+}
+
+/// Writes the current value to `value_out` as a caller-owned buffer holding the stored
+/// JSON bytes verbatim (`"null"` for the initial value); release it once with
+/// `qortoo_owned_bytes_free`. On any error `value_out` stays `{NULL, 0}`.
+///
+/// Rejects a null `variable` or `value_out` (`QORTOO_ERR_INVALID_ARGUMENT`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn qortoo_variable_get_raw(
+    variable: *const QortooVariable,
+    value_out: *mut QortooOwnedBytes,
+    err_out: *mut QortooError,
+) {
+    unsafe {
+        clear_err(err_out);
+        init_owned_out(value_out);
+        ffi_guard(err_out, (), || {
+            let Some(inner) = datatype::datatype_ref(variable, err_out) else {
+                return;
+            };
+            let Some(value_out) = require_owned_out(value_out, "value_out", err_out) else {
+                return;
+            };
+            *value_out = into_owned_bytes(inner.get_raw());
+        })
+    }
+}
+
+/// Initializes an owned-bytes out-parameter to the `{NULL, 0}` sentinel, if non-null.
+unsafe fn init_owned_out(out: *mut QortooOwnedBytes) {
+    if !out.is_null() {
+        unsafe { out.write(QortooOwnedBytes::EMPTY) };
+    }
+}
+
+/// Null-checks an owned-bytes out-parameter.
+unsafe fn require_owned_out<'a>(
+    out: *mut QortooOwnedBytes,
+    name: &str,
+    err_out: *mut QortooError,
+) -> Option<&'a mut QortooOwnedBytes> {
+    match unsafe { out.as_mut() } {
+        Some(out) => Some(out),
+        None => {
+            unsafe {
+                set_err(
+                    err_out,
+                    QORTOO_ERR_INVALID_ARGUMENT,
+                    &format!("{name} is null"),
+                )
+            };
+            None
+        }
+    }
+}
+
+/// Reads the caller's JSON bytes, rejecting a null `data` pointer.
+unsafe fn json_bytes_arg<'a>(
+    data: *const u8,
+    len: usize,
+    err_out: *mut QortooError,
+) -> Option<&'a [u8]> {
+    if data.is_null() {
+        unsafe { set_err(err_out, QORTOO_ERR_INVALID_ARGUMENT, "data is null") };
+        return None;
+    }
+    Some(unsafe { std::slice::from_raw_parts(data, len) })
 }
 
 // ---------------------------------------------------------------------------
