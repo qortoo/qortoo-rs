@@ -1,17 +1,21 @@
 //! JSON value conversion at the public datatype boundary.
 //!
 //! Datatypes that store JSON payloads (e.g., `Variable`) exchange values with user code
-//! through these helpers: a value is encoded once into compact JSON bytes on write, and
-//! stored JSON bytes are decoded once into the caller's requested type on read. The
-//! encoded bytes are exactly one valid UTF-8 JSON value and are preserved end-to-end as
-//! the language-neutral storage representation.
+//! through these helpers. On write a typed value is encoded into compact JSON bytes, or
+//! raw JSON bytes are validated and kept as-is; on read the stored bytes are decoded
+//! into the caller's requested type. The stored bytes are always exactly one valid
+//! UTF-8 JSON value, preserved end-to-end as the language-neutral storage
+//! representation.
 //!
 //! Failures surface as [`DatatypeError::ValueConversion`], returned directly to the API
 //! caller without changing the datatype state or reaching the event loop.
 
 use std::fmt::Display;
 
-use serde::{Serialize, de::DeserializeOwned};
+use serde::{
+    Serialize,
+    de::{DeserializeOwned, IgnoredAny},
+};
 
 use crate::errors::datatypes::DatatypeError;
 
@@ -22,6 +26,23 @@ pub(crate) fn encode_json_value<T: Serialize + ?Sized>(
     serde_json::to_vec(value)
         .map(Vec::into_boxed_slice)
         .map_err(|error| value_conversion_error("encode", error))
+}
+
+/// Validates that `bytes` is exactly one UTF-8 JSON value and returns it unchanged.
+///
+/// Unlike [`encode_json_value`], the bytes are never reparsed into a value and
+/// reserialized, so property order, number formatting, and string escapes are
+/// preserved exactly. Used when the caller already holds JSON, such as a language
+/// binding forwarding `encoding/json` or `serde_json` output.
+pub(crate) fn validate_json_value(bytes: &[u8]) -> Result<Box<[u8]>, DatatypeError> {
+    // `serde_json` skips UTF-8 validation of string contents when the value is ignored,
+    // so the whole input is checked here first; `from_str` then rejects anything that
+    // is not exactly one value, trailing content included.
+    let json =
+        std::str::from_utf8(bytes).map_err(|error| value_conversion_error("decode", error))?;
+    serde_json::from_str::<IgnoredAny>(json)
+        .map_err(|error| value_conversion_error("decode", error))?;
+    Ok(Box::from(bytes))
 }
 
 /// Decodes stored JSON bytes into the caller's requested type.
@@ -123,7 +144,16 @@ mod tests {
         ] {
             let error = decode_json_value::<Value>(bytes).unwrap_err();
             assert_eq!(error, DatatypeError::ValueConversion(String::new()));
+
+            let error = validate_json_value(bytes).unwrap_err();
+            assert_eq!(error, DatatypeError::ValueConversion(String::new()));
         }
+    }
+
+    #[test]
+    fn can_return_valid_json_bytes_unchanged() {
+        let input = br#"{ "b": 2, "a": 1 }"#;
+        assert_eq!(&*validate_json_value(input).unwrap(), input);
     }
 
     #[test]
