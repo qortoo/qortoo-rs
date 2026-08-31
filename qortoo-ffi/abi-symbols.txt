@@ -30,5 +30,6 @@ qortoo_local_connectivity_new
 qortoo_local_connectivity_set_realtime
 qortoo_observability_init
 qortoo_observability_shutdown
+qortoo_owned_bytes_free
 qortoo_sdk_version
 qortoo_string_free

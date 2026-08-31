@@ -1,4 +1,5 @@
-//! Boundary helpers: string arguments, panic containment, and owned C strings.
+//! Boundary helpers: string arguments, panic containment, owned C strings, and
+//! owned byte buffers.
 
 use std::{
     ffi::{CStr, CString, c_char},
@@ -7,6 +8,53 @@ use std::{
 };
 
 use crate::error::{QORTOO_ERR_INTERNAL_FFI, QORTOO_ERR_INVALID_ARGUMENT, QortooError, set_err};
+
+/// Caller-owned byte buffer returned by this library (e.g. a JSON payload). Release it
+/// exactly once with `qortoo_owned_bytes_free`.
+///
+/// `{data: null, len: 0}` is the "no buffer" sentinel that an output parameter holds
+/// until the call succeeds; freeing it is a no-op. A successful call replaces it with a
+/// non-empty buffer.
+#[repr(C)]
+pub struct QortooOwnedBytes {
+    /// Start of the buffer, or null for the empty sentinel.
+    pub data: *mut u8,
+    /// Length of the buffer in bytes.
+    pub len: usize,
+}
+
+impl QortooOwnedBytes {
+    /// The `{null, 0}` sentinel an output parameter is initialized to before a call runs.
+    // Consumed by the datatype `*_json` entry points added in the next change.
+    #[allow(dead_code)]
+    pub(crate) const EMPTY: Self = Self {
+        data: ptr::null_mut(),
+        len: 0,
+    };
+}
+
+/// Moves `bytes` into a caller-owned [`QortooOwnedBytes`]. The buffer must be returned
+/// through `qortoo_owned_bytes_free` exactly once.
+// Consumed by the datatype `*_json` entry points added in the next change.
+#[allow(dead_code)]
+pub(crate) fn into_owned_bytes(bytes: impl Into<Box<[u8]>>) -> QortooOwnedBytes {
+    let boxed = bytes.into();
+    let len = boxed.len();
+    let data = Box::into_raw(boxed) as *mut u8;
+    QortooOwnedBytes { data, len }
+}
+
+/// Releases a byte buffer produced by this library. Passing the `{null, 0}` sentinel is
+/// a no-op; every other value must have come from this library and must not be freed
+/// twice.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn qortoo_owned_bytes_free(value: QortooOwnedBytes) {
+    if value.data.is_null() {
+        return;
+    }
+    let slice = ptr::slice_from_raw_parts_mut(value.data, value.len);
+    drop(unsafe { Box::from_raw(slice) });
+}
 
 pub(crate) unsafe fn cstr_arg(
     p: *const c_char,
@@ -150,5 +198,27 @@ mod tests_util {
     #[test]
     fn can_accept_a_null_pointer_in_qortoo_string_free() {
         unsafe { qortoo_string_free(ptr::null_mut()) };
+    }
+
+    #[test]
+    fn can_round_trip_a_payload_through_owned_bytes() {
+        let owned = into_owned_bytes(b"null".to_vec());
+        assert!(!owned.data.is_null());
+        assert_eq!(owned.len, 4);
+        let seen = unsafe { std::slice::from_raw_parts(owned.data, owned.len) };
+        assert_eq!(seen, b"null");
+        unsafe { qortoo_owned_bytes_free(owned) };
+    }
+
+    #[test]
+    fn can_free_an_empty_owned_buffer() {
+        let owned = into_owned_bytes(Vec::new());
+        assert_eq!(owned.len, 0);
+        unsafe { qortoo_owned_bytes_free(owned) };
+    }
+
+    #[test]
+    fn can_free_the_owned_bytes_sentinel() {
+        unsafe { qortoo_owned_bytes_free(QortooOwnedBytes::EMPTY) };
     }
 }

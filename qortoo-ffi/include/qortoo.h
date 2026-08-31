@@ -62,8 +62,11 @@
 /**
  * ABI minor version this build implements. Bump when symbols are added without
  * breaking existing ones; reset to 0 when the major version bumps.
+ *
+ * - 1: initial `Client`/`Counter`/observability surface.
+ * - 2: `QortooOwnedBytes` and `qortoo_owned_bytes_free` for owned byte buffers.
  */
-#define QORTOO_ABI_VERSION_MINOR 1
+#define QORTOO_ABI_VERSION_MINOR 2
 
 /**
  * Opaque handle to a `qortoo::Client`.
@@ -199,6 +202,25 @@ typedef struct QortooObservabilityOptions {
    */
   const char *metrics_listen_addr;
 } QortooObservabilityOptions;
+
+/**
+ * Caller-owned byte buffer returned by this library (e.g. a JSON payload). Release it
+ * exactly once with `qortoo_owned_bytes_free`.
+ *
+ * `{data: null, len: 0}` is the "no buffer" sentinel that an output parameter holds
+ * until the call succeeds; freeing it is a no-op. A successful call replaces it with a
+ * non-empty buffer.
+ */
+typedef struct QortooOwnedBytes {
+  /**
+   * Start of the buffer, or null for the empty sentinel.
+   */
+  uint8_t *data;
+  /**
+   * Length of the buffer in bytes.
+   */
+  uintptr_t len;
+} QortooOwnedBytes;
 
 #ifdef __cplusplus
 extern "C" {
@@ -424,6 +446,13 @@ void qortoo_observability_init(const struct QortooObservabilityOptions *options,
  * telemetry down.
  */
 void qortoo_observability_shutdown(uint64_t timeout_ms, struct QortooError *err_out);
+
+/**
+ * Releases a byte buffer produced by this library. Passing the `{null, 0}` sentinel is
+ * a no-op; every other value must have come from this library and must not be freed
+ * twice.
+ */
+void qortoo_owned_bytes_free(struct QortooOwnedBytes value);
 
 /**
  * Releases a string returned by this library (or set into a `QortooError`).

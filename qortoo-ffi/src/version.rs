@@ -14,7 +14,10 @@ use crate::util::to_owned_c_string;
 pub const QORTOO_ABI_VERSION_MAJOR: u32 = 0;
 /// ABI minor version this build implements. Bump when symbols are added without
 /// breaking existing ones; reset to 0 when the major version bumps.
-pub const QORTOO_ABI_VERSION_MINOR: u32 = 1;
+///
+/// - 1: initial `Client`/`Counter`/observability surface.
+/// - 2: `QortooOwnedBytes` and `qortoo_owned_bytes_free` for owned byte buffers.
+pub const QORTOO_ABI_VERSION_MINOR: u32 = 2;
 
 /// Returns the ABI major version this library implements. Compare against the value
 /// the binding was generated for before making any other call into this library.
