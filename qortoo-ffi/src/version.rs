@@ -11,13 +11,15 @@ use crate::util::to_owned_c_string;
 
 /// ABI major version this build implements. Bump on any breaking change to exported
 /// symbols, struct layout, or calling convention.
-pub const QORTOO_ABI_VERSION_MAJOR: u32 = 0;
+pub const QORTOO_ABI_VERSION_MAJOR: u32 = 1;
 /// ABI minor version this build implements. Bump when symbols are added without
 /// breaking existing ones; reset to 0 when the major version bumps.
 ///
-/// - 1: initial `Client`/`Counter`/observability surface.
-/// - 2: owned byte buffers (`QortooOwnedBytes`) and the `QortooVariable` handle.
-pub const QORTOO_ABI_VERSION_MINOR: u32 = 2;
+/// - 0: the shared `QortooDatatype` handle. Operations whose signature does not name
+///   a datatype — synchronization, metadata, handlers — are exported once as
+///   `qortoo_datatype_*` and reached through `qortoo_<type>_as_datatype`, replacing
+///   the per-type copy of each.
+pub const QORTOO_ABI_VERSION_MINOR: u32 = 0;
 
 /// Returns the ABI major version this library implements. Compare against the value
 /// the binding was generated for before making any other call into this library.

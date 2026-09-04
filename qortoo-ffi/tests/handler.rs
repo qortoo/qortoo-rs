@@ -17,9 +17,10 @@ use std::{
 };
 
 use qortoo_ffi::{
-    QortooDatatypeOptions, qortoo_client_new, qortoo_counter_create, qortoo_counter_increase,
-    qortoo_counter_set_handler, qortoo_counter_sync, qortoo_counter_unset_handler,
-    qortoo_local_connectivity_new, qortoo_local_connectivity_set_realtime,
+    QortooDatatypeOptions, qortoo_client_new, qortoo_counter_as_datatype, qortoo_counter_create,
+    qortoo_counter_increase, qortoo_datatype_set_handler, qortoo_datatype_sync,
+    qortoo_datatype_unset_handler, qortoo_local_connectivity_new,
+    qortoo_local_connectivity_set_realtime,
 };
 use support::*;
 
@@ -139,7 +140,7 @@ fn can_receive_a_state_transition_via_an_options_registered_handler() {
     assert_ok(&mut err, "create with a state-change handler");
     let counter = CounterGuard(counter);
 
-    unsafe { qortoo_counter_sync(counter.0, &mut err) };
+    unsafe { qortoo_datatype_sync(qortoo_counter_as_datatype(counter.0), &mut err) };
     assert_ok(&mut err, "sync (Creating -> Subscribed)");
 
     await_event(userdata, |e| {
@@ -165,10 +166,17 @@ fn can_receive_a_state_transition_via_set_handler() {
 
     let userdata = unique_userdata();
     unsafe {
-        qortoo_counter_set_handler(counter.0, 0, Some(on_state_change_cb), None, userdata, None)
+        qortoo_datatype_set_handler(
+            qortoo_counter_as_datatype(counter.0),
+            0,
+            Some(on_state_change_cb),
+            None,
+            userdata,
+            None,
+        )
     };
 
-    unsafe { qortoo_counter_sync(counter.0, &mut err) };
+    unsafe { qortoo_datatype_sync(qortoo_counter_as_datatype(counter.0), &mut err) };
     assert_ok(&mut err, "sync (Creating -> Subscribed)");
 
     await_event(userdata, |e| *e == Event::StateChange { old: 0, new: 3 });
@@ -257,8 +265,8 @@ fn can_release_the_old_userdata_exactly_once_when_replacing_a_handler() {
     let old_userdata = unique_userdata();
     let new_userdata = unique_userdata();
     unsafe {
-        qortoo_counter_set_handler(
-            counter.0,
+        qortoo_datatype_set_handler(
+            qortoo_counter_as_datatype(counter.0),
             0,
             Some(on_state_change_cb),
             None,
@@ -267,8 +275,8 @@ fn can_release_the_old_userdata_exactly_once_when_replacing_a_handler() {
         )
     };
     unsafe {
-        qortoo_counter_set_handler(
-            counter.0,
+        qortoo_datatype_set_handler(
+            qortoo_counter_as_datatype(counter.0),
             0,
             Some(on_state_change_cb),
             None,
@@ -311,8 +319,8 @@ fn can_unset_a_handler_and_release_its_userdata_exactly_once() {
     // a non-null callback is required so the userdata survives until this `unset` call.
     let userdata = unique_userdata();
     unsafe {
-        qortoo_counter_set_handler(
-            counter.0,
+        qortoo_datatype_set_handler(
+            qortoo_counter_as_datatype(counter.0),
             3,
             Some(on_state_change_cb),
             None,
@@ -321,7 +329,8 @@ fn can_unset_a_handler_and_release_its_userdata_exactly_once() {
         )
     };
 
-    let removed = unsafe { qortoo_counter_unset_handler(counter.0, 3) };
+    let removed =
+        unsafe { qortoo_datatype_unset_handler(qortoo_counter_as_datatype(counter.0), 3) };
     assert!(removed, "unsetting a registered priority must return true");
     await_event(userdata, |e| *e == Event::Drop);
     assert_eq!(
@@ -332,7 +341,8 @@ fn can_unset_a_handler_and_release_its_userdata_exactly_once() {
         1
     );
 
-    let removed_again = unsafe { qortoo_counter_unset_handler(counter.0, 3) };
+    let removed_again =
+        unsafe { qortoo_datatype_unset_handler(qortoo_counter_as_datatype(counter.0), 3) };
     assert!(
         !removed_again,
         "unsetting an already-removed priority must return false"
@@ -421,7 +431,16 @@ fn can_release_userdata_after_a_late_duplicate_key_construction_failure() {
 #[test]
 fn can_release_userdata_immediately_when_setting_a_handler_on_a_null_counter() {
     let userdata = unique_userdata();
-    unsafe { qortoo_counter_set_handler(ptr::null(), 0, None, None, userdata, Some(on_drop_cb)) };
+    unsafe {
+        qortoo_datatype_set_handler(
+            qortoo_counter_as_datatype(ptr::null_mut()),
+            0,
+            None,
+            None,
+            userdata,
+            Some(on_drop_cb),
+        )
+    };
     assert_eq!(events_for(userdata), vec![Event::Drop]);
 }
 
@@ -445,7 +464,25 @@ fn can_accept_null_callbacks_and_userdata_drop_safely() {
     let counter = CounterGuard(counter);
 
     // Fully null handler on a live counter: must not crash.
-    unsafe { qortoo_counter_set_handler(counter.0, 0, None, None, 0, None) };
+    unsafe {
+        qortoo_datatype_set_handler(
+            qortoo_counter_as_datatype(counter.0),
+            0,
+            None,
+            None,
+            0,
+            None,
+        )
+    };
     // Fully null handler on a null counter: must not crash.
-    unsafe { qortoo_counter_set_handler(ptr::null(), 0, None, None, 0, None) };
+    unsafe {
+        qortoo_datatype_set_handler(
+            qortoo_counter_as_datatype(ptr::null_mut()),
+            0,
+            None,
+            None,
+            0,
+            None,
+        )
+    };
 }

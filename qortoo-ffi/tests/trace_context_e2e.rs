@@ -16,10 +16,11 @@ use std::{env, ffi::CString, process::Command, ptr, time::Duration};
 use opentelemetry::trace::TracerProvider;
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
 use qortoo_ffi::{
-    QortooCounter, QortooError, qortoo_client_free, qortoo_client_new, qortoo_counter_create,
-    qortoo_counter_free, qortoo_counter_increase_by, qortoo_counter_sync_with_context,
-    qortoo_counter_transaction_with_context, qortoo_local_connectivity_free,
-    qortoo_local_connectivity_new, qortoo_local_connectivity_set_realtime,
+    QortooCounter, QortooError, qortoo_client_free, qortoo_client_new, qortoo_counter_as_datatype,
+    qortoo_counter_create, qortoo_counter_free, qortoo_counter_increase_by,
+    qortoo_counter_transaction_with_context, qortoo_datatype_sync_with_context,
+    qortoo_local_connectivity_free, qortoo_local_connectivity_new,
+    qortoo_local_connectivity_set_realtime,
 };
 use tracing_subscriber::{EnvFilter, Registry, layer::SubscriberExt};
 
@@ -118,7 +119,12 @@ fn exercise_sync() {
         qortoo_counter_increase_by(counter, 7, &mut err);
         assert_ok(&err, "increase_by");
 
-        qortoo_counter_sync_with_context(counter, traceparent.as_ptr(), ptr::null(), &mut err);
+        qortoo_datatype_sync_with_context(
+            qortoo_counter_as_datatype(counter),
+            traceparent.as_ptr(),
+            ptr::null(),
+            &mut err,
+        );
         assert_ok(&err, "sync with context");
 
         qortoo_counter_free(counter);

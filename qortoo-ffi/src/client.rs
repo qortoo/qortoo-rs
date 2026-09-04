@@ -78,7 +78,7 @@ pub unsafe extern "C" fn qortoo_client_get_alias(client: *const QortooClient) ->
 }
 
 /// Marks the datatype identified by `key` as unsubscribing. With manual connectivity a
-/// following `qortoo_counter_sync` drives it to Disabled.
+/// following `qortoo_datatype_sync` drives it to Disabled.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn qortoo_client_unsubscribe_datatype(
     client: *const QortooClient,
