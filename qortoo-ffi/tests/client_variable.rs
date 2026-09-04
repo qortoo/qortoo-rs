@@ -14,14 +14,15 @@ use std::ptr;
 
 use qortoo_ffi::{
     QORTOO_ERR_INVALID_ARGUMENT, QortooOwnedBytes, QortooVariable, qortoo_client_new,
-    qortoo_owned_bytes_free, qortoo_variable_create, qortoo_variable_free,
-    qortoo_variable_get_client_version, qortoo_variable_get_key, qortoo_variable_get_raw,
-    qortoo_variable_get_server_version, qortoo_variable_get_state,
-    qortoo_variable_get_synced_client_version, qortoo_variable_get_type,
-    qortoo_variable_set_handler, qortoo_variable_set_raw, qortoo_variable_subscribe,
-    qortoo_variable_subscribe_or_create, qortoo_variable_sync, qortoo_variable_sync_with_context,
-    qortoo_variable_transaction, qortoo_variable_transaction_with_context,
-    qortoo_variable_unset_handler, qortoo_variable_unsubscribe,
+    qortoo_datatype_get_client_version, qortoo_datatype_get_key,
+    qortoo_datatype_get_server_version, qortoo_datatype_get_state,
+    qortoo_datatype_get_synced_client_version, qortoo_datatype_get_type,
+    qortoo_datatype_set_handler, qortoo_datatype_sync, qortoo_datatype_sync_with_context,
+    qortoo_datatype_unset_handler, qortoo_datatype_unsubscribe, qortoo_owned_bytes_free,
+    qortoo_variable_as_datatype, qortoo_variable_create, qortoo_variable_free,
+    qortoo_variable_get_raw, qortoo_variable_set_raw, qortoo_variable_subscribe,
+    qortoo_variable_subscribe_or_create, qortoo_variable_transaction,
+    qortoo_variable_transaction_with_context,
 };
 use rstest::rstest;
 use support::*;
@@ -106,7 +107,7 @@ fn can_construct_variables_with_the_expected_initial_state_per_mode() {
     assert_ok(&mut err, "create");
     let created = VariableGuard(created);
     assert_eq!(
-        unsafe { qortoo_variable_get_state(created.0) },
+        unsafe { qortoo_datatype_get_state(qortoo_variable_as_datatype(created.0)) },
         0 /* Creating */
     );
 
@@ -121,7 +122,7 @@ fn can_construct_variables_with_the_expected_initial_state_per_mode() {
     assert_ok(&mut err, "subscribe");
     let subscribed = VariableGuard(subscribed);
     assert_eq!(
-        unsafe { qortoo_variable_get_state(subscribed.0) },
+        unsafe { qortoo_datatype_get_state(qortoo_variable_as_datatype(subscribed.0)) },
         1 /* Subscribing */
     );
 
@@ -136,7 +137,7 @@ fn can_construct_variables_with_the_expected_initial_state_per_mode() {
     assert_ok(&mut err, "subscribe_or_create");
     let sub_or_create = VariableGuard(sub_or_create);
     assert_eq!(
-        unsafe { qortoo_variable_get_state(sub_or_create.0) },
+        unsafe { qortoo_datatype_get_state(qortoo_variable_as_datatype(sub_or_create.0)) },
         2 /* SubscribingOrCreating */
     );
 }
@@ -150,16 +151,26 @@ fn can_report_the_key_and_variable_type_through_the_getters() {
     assert_ok(&mut err, "create");
     let variable = VariableGuard(variable);
 
-    let got_key = read_and_free_string(unsafe { qortoo_variable_get_key(variable.0) });
+    let got_key = read_and_free_string(unsafe {
+        qortoo_datatype_get_key(qortoo_variable_as_datatype(variable.0))
+    });
     assert_eq!(got_key.as_deref(), key.to_str().ok());
     assert_eq!(
-        unsafe { qortoo_variable_get_type(variable.0) },
+        unsafe { qortoo_datatype_get_type(qortoo_variable_as_datatype(variable.0)) },
         1, /* Variable */
     );
-    assert_eq!(unsafe { qortoo_variable_get_client_version(variable.0) }, 0);
-    assert_eq!(unsafe { qortoo_variable_get_server_version(variable.0) }, 0);
     assert_eq!(
-        unsafe { qortoo_variable_get_synced_client_version(variable.0) },
+        unsafe { qortoo_datatype_get_client_version(qortoo_variable_as_datatype(variable.0)) },
+        0
+    );
+    assert_eq!(
+        unsafe { qortoo_datatype_get_server_version(qortoo_variable_as_datatype(variable.0)) },
+        0
+    );
+    assert_eq!(
+        unsafe {
+            qortoo_datatype_get_synced_client_version(qortoo_variable_as_datatype(variable.0))
+        },
         0
     );
 }
@@ -211,36 +222,55 @@ fn can_register_and_unregister_a_variable_handler() {
     let variable = create_variable(&client, "key");
 
     unsafe {
-        qortoo_variable_set_handler(variable.0, 3, Some(noop_on_state_change), None, 0, None)
+        qortoo_datatype_set_handler(
+            qortoo_variable_as_datatype(variable.0),
+            3,
+            Some(noop_on_state_change),
+            None,
+            0,
+            None,
+        )
     };
     assert!(
-        unsafe { qortoo_variable_unset_handler(variable.0, 3) },
+        unsafe { qortoo_datatype_unset_handler(qortoo_variable_as_datatype(variable.0), 3) },
         "the handler registered at priority 3 must be removable"
     );
     assert!(
-        !unsafe { qortoo_variable_unset_handler(variable.0, 3) },
+        !unsafe { qortoo_datatype_unset_handler(qortoo_variable_as_datatype(variable.0), 3) },
         "a second unset at the same priority removes nothing"
     );
 }
 
 #[test]
 fn can_return_documented_defaults_for_null_variable_calls() {
-    assert_eq!(unsafe { qortoo_variable_get_state(ptr::null()) }, -1);
-    assert_eq!(unsafe { qortoo_variable_get_type(ptr::null()) }, -1);
-    assert!(unsafe { qortoo_variable_get_key(ptr::null()) }.is_null());
     assert_eq!(
-        unsafe { qortoo_variable_get_server_version(ptr::null()) },
+        unsafe { qortoo_datatype_get_state(qortoo_variable_as_datatype(ptr::null_mut())) },
+        -1
+    );
+    assert_eq!(
+        unsafe { qortoo_datatype_get_type(qortoo_variable_as_datatype(ptr::null_mut())) },
+        -1
+    );
+    assert!(
+        unsafe { qortoo_datatype_get_key(qortoo_variable_as_datatype(ptr::null_mut())) }.is_null()
+    );
+    assert_eq!(
+        unsafe { qortoo_datatype_get_server_version(qortoo_variable_as_datatype(ptr::null_mut())) },
         0
     );
     assert_eq!(
-        unsafe { qortoo_variable_get_client_version(ptr::null()) },
+        unsafe { qortoo_datatype_get_client_version(qortoo_variable_as_datatype(ptr::null_mut())) },
         0
     );
     assert_eq!(
-        unsafe { qortoo_variable_get_synced_client_version(ptr::null()) },
+        unsafe {
+            qortoo_datatype_get_synced_client_version(qortoo_variable_as_datatype(ptr::null_mut()))
+        },
         0
     );
-    assert!(!unsafe { qortoo_variable_unset_handler(ptr::null(), 0) });
+    assert!(!unsafe {
+        qortoo_datatype_unset_handler(qortoo_variable_as_datatype(ptr::null_mut()), 0)
+    });
 }
 
 #[test]
@@ -256,21 +286,28 @@ fn can_reject_null_variable_fallible_operations_with_invalid_argument() {
         "create on null client",
     );
 
-    unsafe { qortoo_variable_sync(ptr::null(), &mut err) };
+    unsafe { qortoo_datatype_sync(qortoo_variable_as_datatype(ptr::null_mut()), &mut err) };
     assert_err(
         &mut err,
         QORTOO_ERR_INVALID_ARGUMENT,
         "sync on null variable",
     );
 
-    unsafe { qortoo_variable_sync_with_context(ptr::null(), ptr::null(), ptr::null(), &mut err) };
+    unsafe {
+        qortoo_datatype_sync_with_context(
+            qortoo_variable_as_datatype(ptr::null_mut()),
+            ptr::null(),
+            ptr::null(),
+            &mut err,
+        )
+    };
     assert_err(
         &mut err,
         QORTOO_ERR_INVALID_ARGUMENT,
         "sync_with_context on null variable",
     );
 
-    unsafe { qortoo_variable_unsubscribe(ptr::null(), &mut err) };
+    unsafe { qortoo_datatype_unsubscribe(qortoo_variable_as_datatype(ptr::null_mut()), &mut err) };
     assert_err(
         &mut err,
         QORTOO_ERR_INVALID_ARGUMENT,

@@ -12,13 +12,14 @@ use std::ptr;
 use qortoo_ffi::{
     QORTOO_ERR_INVALID_ARGUMENT, QortooDatatypeOptions, qortoo_client_get_alias,
     qortoo_client_get_collection, qortoo_client_new, qortoo_client_unsubscribe_datatype,
-    qortoo_counter_create, qortoo_counter_free, qortoo_counter_get_client_version,
-    qortoo_counter_get_key, qortoo_counter_get_server_version, qortoo_counter_get_state,
-    qortoo_counter_get_synced_client_version, qortoo_counter_get_type, qortoo_counter_get_value,
-    qortoo_counter_increase, qortoo_counter_increase_by, qortoo_counter_subscribe,
-    qortoo_counter_subscribe_or_create, qortoo_counter_sync, qortoo_counter_sync_with_context,
-    qortoo_counter_unset_handler, qortoo_counter_unsubscribe, qortoo_local_connectivity_new,
-    qortoo_local_connectivity_set_realtime,
+    qortoo_counter_as_datatype, qortoo_counter_create, qortoo_counter_free,
+    qortoo_counter_get_value, qortoo_counter_increase, qortoo_counter_increase_by,
+    qortoo_counter_subscribe, qortoo_counter_subscribe_or_create,
+    qortoo_datatype_get_client_version, qortoo_datatype_get_key,
+    qortoo_datatype_get_server_version, qortoo_datatype_get_state,
+    qortoo_datatype_get_synced_client_version, qortoo_datatype_get_type, qortoo_datatype_sync,
+    qortoo_datatype_sync_with_context, qortoo_datatype_unset_handler, qortoo_datatype_unsubscribe,
+    qortoo_local_connectivity_new, qortoo_local_connectivity_set_realtime,
 };
 use rstest::rstest;
 use support::*;
@@ -203,7 +204,7 @@ fn can_construct_counters_with_the_expected_initial_state_per_mode() {
     assert_ok(&mut err, "create");
     let created = CounterGuard(created);
     assert_eq!(
-        unsafe { qortoo_counter_get_state(created.0) },
+        unsafe { qortoo_datatype_get_state(qortoo_counter_as_datatype(created.0)) },
         0 /* Creating */
     );
 
@@ -218,7 +219,7 @@ fn can_construct_counters_with_the_expected_initial_state_per_mode() {
     assert_ok(&mut err, "subscribe");
     let subscribed = CounterGuard(subscribed);
     assert_eq!(
-        unsafe { qortoo_counter_get_state(subscribed.0) },
+        unsafe { qortoo_datatype_get_state(qortoo_counter_as_datatype(subscribed.0)) },
         1 /* Subscribing */
     );
 
@@ -233,7 +234,7 @@ fn can_construct_counters_with_the_expected_initial_state_per_mode() {
     assert_ok(&mut err, "subscribe_or_create");
     let sub_or_create = CounterGuard(sub_or_create);
     assert_eq!(
-        unsafe { qortoo_counter_get_state(sub_or_create.0) },
+        unsafe { qortoo_datatype_get_state(qortoo_counter_as_datatype(sub_or_create.0)) },
         2 /* SubscribingOrCreating */
     );
 }
@@ -401,22 +402,33 @@ fn can_report_key_type_and_versions_via_the_getters() {
     assert_ok(&mut err, "create");
     let counter = CounterGuard(counter);
 
-    let got_key = read_and_free_string(unsafe { qortoo_counter_get_key(counter.0) });
+    let got_key = read_and_free_string(unsafe {
+        qortoo_datatype_get_key(qortoo_counter_as_datatype(counter.0))
+    });
     assert_eq!(got_key.as_deref(), key.to_str().ok());
     assert_eq!(
-        unsafe { qortoo_counter_get_type(counter.0) },
+        unsafe { qortoo_datatype_get_type(qortoo_counter_as_datatype(counter.0)) },
         0 /* Counter */
     );
-    assert_eq!(unsafe { qortoo_counter_get_client_version(counter.0) }, 0);
-    assert_eq!(unsafe { qortoo_counter_get_server_version(counter.0) }, 0);
     assert_eq!(
-        unsafe { qortoo_counter_get_synced_client_version(counter.0) },
+        unsafe { qortoo_datatype_get_client_version(qortoo_counter_as_datatype(counter.0)) },
+        0
+    );
+    assert_eq!(
+        unsafe { qortoo_datatype_get_server_version(qortoo_counter_as_datatype(counter.0)) },
+        0
+    );
+    assert_eq!(
+        unsafe { qortoo_datatype_get_synced_client_version(qortoo_counter_as_datatype(counter.0)) },
         0
     );
 
     unsafe { qortoo_counter_increase(counter.0, &mut err) };
     assert_ok(&mut err, "increase");
-    assert_eq!(unsafe { qortoo_counter_get_client_version(counter.0) }, 1);
+    assert_eq!(
+        unsafe { qortoo_datatype_get_client_version(qortoo_counter_as_datatype(counter.0)) },
+        1
+    );
 }
 
 // Two-client push/pull value transfer over `LocalConnectivity` is core CRDT/sync
@@ -442,12 +454,12 @@ fn can_transition_state_through_both_unsubscribe_paths() {
     };
     assert_ok(&mut err, "create (counter-driven)");
     let counter_side = CounterGuard(counter_side);
-    unsafe { qortoo_counter_sync(counter_side.0, &mut err) };
+    unsafe { qortoo_datatype_sync(qortoo_counter_as_datatype(counter_side.0), &mut err) };
     assert_ok(&mut err, "sync before counter.unsubscribe");
-    unsafe { qortoo_counter_unsubscribe(counter_side.0, &mut err) };
+    unsafe { qortoo_datatype_unsubscribe(qortoo_counter_as_datatype(counter_side.0), &mut err) };
     assert_ok(&mut err, "counter.unsubscribe");
     assert_eq!(
-        unsafe { qortoo_counter_get_state(counter_side.0) },
+        unsafe { qortoo_datatype_get_state(qortoo_counter_as_datatype(counter_side.0)) },
         4 /* Unsubscribing */
     );
 
@@ -457,12 +469,12 @@ fn can_transition_state_through_both_unsubscribe_paths() {
     };
     assert_ok(&mut err, "create (client-driven)");
     let counter_client_side = CounterGuard(counter_client_side);
-    unsafe { qortoo_counter_sync(counter_client_side.0, &mut err) };
+    unsafe { qortoo_datatype_sync(qortoo_counter_as_datatype(counter_client_side.0), &mut err) };
     assert_ok(&mut err, "sync before client.unsubscribe_datatype");
     unsafe { qortoo_client_unsubscribe_datatype(client.0, key_client_side.as_ptr(), &mut err) };
     assert_ok(&mut err, "client.unsubscribe_datatype");
     assert_eq!(
-        unsafe { qortoo_counter_get_state(counter_client_side.0) },
+        unsafe { qortoo_datatype_get_state(qortoo_counter_as_datatype(counter_client_side.0)) },
         4 /* Unsubscribing */
     );
 }
@@ -497,16 +509,34 @@ fn can_reject_a_write_on_a_subscribing_counter_with_code_206() {
 #[test]
 fn can_return_documented_defaults_for_null_counter_calls() {
     assert_eq!(unsafe { qortoo_counter_get_value(ptr::null()) }, 0);
-    assert_eq!(unsafe { qortoo_counter_get_state(ptr::null()) }, -1);
-    assert_eq!(unsafe { qortoo_counter_get_type(ptr::null()) }, -1);
-    assert!(unsafe { qortoo_counter_get_key(ptr::null()) }.is_null());
-    assert_eq!(unsafe { qortoo_counter_get_server_version(ptr::null()) }, 0);
-    assert_eq!(unsafe { qortoo_counter_get_client_version(ptr::null()) }, 0);
     assert_eq!(
-        unsafe { qortoo_counter_get_synced_client_version(ptr::null()) },
+        unsafe { qortoo_datatype_get_state(qortoo_counter_as_datatype(ptr::null_mut())) },
+        -1
+    );
+    assert_eq!(
+        unsafe { qortoo_datatype_get_type(qortoo_counter_as_datatype(ptr::null_mut())) },
+        -1
+    );
+    assert!(
+        unsafe { qortoo_datatype_get_key(qortoo_counter_as_datatype(ptr::null_mut())) }.is_null()
+    );
+    assert_eq!(
+        unsafe { qortoo_datatype_get_server_version(qortoo_counter_as_datatype(ptr::null_mut())) },
         0
     );
-    assert!(!unsafe { qortoo_counter_unset_handler(ptr::null(), 0) });
+    assert_eq!(
+        unsafe { qortoo_datatype_get_client_version(qortoo_counter_as_datatype(ptr::null_mut())) },
+        0
+    );
+    assert_eq!(
+        unsafe {
+            qortoo_datatype_get_synced_client_version(qortoo_counter_as_datatype(ptr::null_mut()))
+        },
+        0
+    );
+    assert!(!unsafe {
+        qortoo_datatype_unset_handler(qortoo_counter_as_datatype(ptr::null_mut()), 0)
+    });
 }
 
 #[test]
@@ -529,21 +559,28 @@ fn can_reject_null_counter_fallible_operations_with_invalid_argument() {
         "increase_by on null counter",
     );
 
-    unsafe { qortoo_counter_sync(ptr::null(), &mut err) };
+    unsafe { qortoo_datatype_sync(qortoo_counter_as_datatype(ptr::null_mut()), &mut err) };
     assert_err(
         &mut err,
         QORTOO_ERR_INVALID_ARGUMENT,
         "sync on null counter",
     );
 
-    unsafe { qortoo_counter_sync_with_context(ptr::null(), ptr::null(), ptr::null(), &mut err) };
+    unsafe {
+        qortoo_datatype_sync_with_context(
+            qortoo_counter_as_datatype(ptr::null_mut()),
+            ptr::null(),
+            ptr::null(),
+            &mut err,
+        )
+    };
     assert_err(
         &mut err,
         QORTOO_ERR_INVALID_ARGUMENT,
         "sync_with_context on null counter",
     );
 
-    unsafe { qortoo_counter_unsubscribe(ptr::null(), &mut err) };
+    unsafe { qortoo_datatype_unsubscribe(qortoo_counter_as_datatype(ptr::null_mut()), &mut err) };
     assert_err(
         &mut err,
         QORTOO_ERR_INVALID_ARGUMENT,
@@ -589,18 +626,18 @@ fn can_report_the_exact_error_from_both_unsubscribe_paths_once_disabled() {
         unsafe { qortoo_counter_create(client.0, key.as_ptr(), null_options(), &mut err) };
     assert_ok(&mut err, "create");
     let counter = CounterGuard(counter);
-    unsafe { qortoo_counter_sync(counter.0, &mut err) };
+    unsafe { qortoo_datatype_sync(qortoo_counter_as_datatype(counter.0), &mut err) };
     assert_ok(&mut err, "sync (Creating -> Subscribed)");
-    unsafe { qortoo_counter_unsubscribe(counter.0, &mut err) };
+    unsafe { qortoo_datatype_unsubscribe(qortoo_counter_as_datatype(counter.0), &mut err) };
     assert_ok(&mut err, "unsubscribe (Subscribed -> Unsubscribing)");
-    unsafe { qortoo_counter_sync(counter.0, &mut err) };
+    unsafe { qortoo_datatype_sync(qortoo_counter_as_datatype(counter.0), &mut err) };
     assert_ok(&mut err, "sync (Unsubscribing -> Disabled)");
 
     // The datatype is now Disabled and detached from the client's manager: the
     // counter-driven path still sees the state directly (`NotWritable`), while the
     // client-driven path can no longer find the key at all (`Disallowed`) — both must
     // report their exact code rather than silently no-op.
-    unsafe { qortoo_counter_unsubscribe(counter.0, &mut err) };
+    unsafe { qortoo_datatype_unsubscribe(qortoo_counter_as_datatype(counter.0), &mut err) };
     assert_err(
         &mut err,
         206, /* NotWritable */

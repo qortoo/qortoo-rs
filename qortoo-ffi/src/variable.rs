@@ -7,32 +7,40 @@
 
 use std::ffi::c_char;
 
-use qortoo::{BoxedError, ClientError, DatatypeBuilder, DatatypeError, Variable};
+use qortoo::{BoxedError, ClientError, DatatypeBuilder, DatatypeError, DatatypeSet, Variable};
 
 use crate::{
     client::QortooClient,
-    datatype::{self, BuildMode, DatatypeHandle, QortooDatatypeOptions},
+    datatype::{self, BuildMode, DatatypeHandle, QortooDatatype, QortooDatatypeOptions},
     error::{QORTOO_ERR_INVALID_ARGUMENT, QortooError, clear_err, datatype_error_code, set_err},
-    handler::{QortooOnErrorCallback, QortooOnStateChangeCallback, QortooUserdataDropCallback},
     util::{QortooOwnedBytes, ffi_guard, into_owned_bytes},
 };
 
 /// Opaque handle to a `qortoo::Variable`. Cheap to clone on the Rust side; every handle
 /// shares the same underlying datatype.
 pub struct QortooVariable {
-    pub(crate) inner: Variable,
+    shared: QortooDatatype,
 }
 
 impl DatatypeHandle for QortooVariable {
     type Inner = Variable;
     const NAME: &'static str = "variable";
 
-    fn from_inner(inner: Variable) -> Self {
-        Self { inner }
+    fn wrap(inner: Variable) -> Self {
+        Self {
+            shared: QortooDatatype::new(inner.into()),
+        }
     }
 
-    fn inner(&self) -> &Variable {
-        &self.inner
+    fn shared(&self) -> &QortooDatatype {
+        &self.shared
+    }
+
+    fn inner(&self) -> Option<&Variable> {
+        match self.shared.datatype_set() {
+            DatatypeSet::Variable(variable) => Some(variable),
+            _ => None,
+        }
     }
 
     fn build(builder: DatatypeBuilder<'_>) -> Result<Variable, ClientError> {
@@ -94,92 +102,24 @@ pub unsafe extern "C" fn qortoo_variable_subscribe_or_create(
 }
 
 /// Releases this variable handle; the underlying datatype lives on inside the client.
+/// Any shared handle obtained from `qortoo_variable_as_datatype` dies with it.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn qortoo_variable_free(variable: *mut QortooVariable) {
     unsafe { datatype::free(variable) }
 }
 
-// ---------------------------------------------------------------------------
-// Synchronization and lifecycle
-// ---------------------------------------------------------------------------
-
-/// Blocking push/pull synchronization with the connectivity backend.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn qortoo_variable_sync(
-    variable: *const QortooVariable,
-    err_out: *mut QortooError,
-) {
-    unsafe { datatype::sync(variable, err_out) }
-}
-
-/// `qortoo_variable_sync` continuing the caller's trace.
+/// Returns this variable as the shared handle the `qortoo_datatype_*` entry points
+/// take — those cover synchronization, metadata, and handlers.
 ///
-/// `traceparent`/`tracestate` are the W3C trace-context headers of the calling span
-/// (both nullable). The sync — including the push/pull that runs on the event-loop
-/// thread and the handler callbacks it dispatches — becomes a child of that span.
-/// Absent or malformed headers fall back to a trace without a parent.
-///
-/// This is a separate entry point rather than an extension of `qortoo_variable_sync`
-/// so a caller that does not propagate context pays for none of it.
+/// The result borrows `variable`: it is a pointer to a field of the variable handle, valid
+/// for exactly as long as that handle. It is not a second handle and is never released
+/// on its own — `qortoo_variable_free` releases the allocation exactly once, and this
+/// pointer dies with it.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn qortoo_variable_sync_with_context(
+pub unsafe extern "C" fn qortoo_variable_as_datatype(
     variable: *const QortooVariable,
-    traceparent: *const c_char,
-    tracestate: *const c_char,
-    err_out: *mut QortooError,
-) {
-    unsafe { datatype::sync_with_context(variable, traceparent, tracestate, err_out) }
-}
-
-/// Marks this datatype as unsubscribing (see `qortoo_client_unsubscribe_datatype`).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn qortoo_variable_unsubscribe(
-    variable: *const QortooVariable,
-    err_out: *mut QortooError,
-) {
-    unsafe { datatype::unsubscribe(variable, err_out) }
-}
-
-/// Returns the `DatatypeState` discriminant, or -1 if `variable` is null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn qortoo_variable_get_state(variable: *const QortooVariable) -> i32 {
-    unsafe { datatype::get_state(variable) }
-}
-
-/// Returns the `DataType` discriminant, or -1 if `variable` is null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn qortoo_variable_get_type(variable: *const QortooVariable) -> i32 {
-    unsafe { datatype::get_type(variable) }
-}
-
-/// Returns the datatype key (release with `qortoo_string_free`).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn qortoo_variable_get_key(variable: *const QortooVariable) -> *mut c_char {
-    unsafe { datatype::get_key(variable) }
-}
-
-/// Returns the server-side version (0 before the first sync or if `variable` is null).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn qortoo_variable_get_server_version(
-    variable: *const QortooVariable,
-) -> u64 {
-    unsafe { datatype::get_server_version(variable) }
-}
-
-/// Returns the client-side version (number of local operations).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn qortoo_variable_get_client_version(
-    variable: *const QortooVariable,
-) -> u64 {
-    unsafe { datatype::get_client_version(variable) }
-}
-
-/// Returns the last synchronized client version.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn qortoo_variable_get_synced_client_version(
-    variable: *const QortooVariable,
-) -> u64 {
-    unsafe { datatype::get_synced_client_version(variable) }
+) -> *const QortooDatatype {
+    unsafe { datatype::as_datatype(variable) }
 }
 
 // ---------------------------------------------------------------------------
@@ -341,41 +281,4 @@ pub unsafe extern "C" fn qortoo_variable_transaction_with_context(
             err_out,
         )
     }
-}
-
-// ---------------------------------------------------------------------------
-// Handlers
-// ---------------------------------------------------------------------------
-
-/// Registers (or replaces) a handler at `priority`. Callbacks arrive on Qortoo tokio
-/// worker threads; `userdata_drop` fires exactly once when the handler is replaced or
-/// unset — or immediately if `variable` is null and the handler cannot be registered.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn qortoo_variable_set_handler(
-    variable: *const QortooVariable,
-    priority: usize,
-    on_state_change: QortooOnStateChangeCallback,
-    on_error: QortooOnErrorCallback,
-    userdata: usize,
-    userdata_drop: QortooUserdataDropCallback,
-) {
-    unsafe {
-        datatype::set_handler(
-            variable,
-            priority,
-            on_state_change,
-            on_error,
-            userdata,
-            userdata_drop,
-        )
-    }
-}
-
-/// Removes the handler at `priority`. Returns true if one was removed.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn qortoo_variable_unset_handler(
-    variable: *const QortooVariable,
-    priority: usize,
-) -> bool {
-    unsafe { datatype::unset_handler(variable, priority) }
 }

@@ -57,16 +57,18 @@
  * ABI major version this build implements. Bump on any breaking change to exported
  * symbols, struct layout, or calling convention.
  */
-#define QORTOO_ABI_VERSION_MAJOR 0
+#define QORTOO_ABI_VERSION_MAJOR 1
 
 /**
  * ABI minor version this build implements. Bump when symbols are added without
  * breaking existing ones; reset to 0 when the major version bumps.
  *
- * - 1: initial `Client`/`Counter`/observability surface.
- * - 2: owned byte buffers (`QortooOwnedBytes`) and the `QortooVariable` handle.
+ * - 0: the shared `QortooDatatype` handle. Operations whose signature does not name
+ *   a datatype — synchronization, metadata, handlers — are exported once as
+ *   `qortoo_datatype_*` and reached through `qortoo_<type>_as_datatype`, replacing
+ *   the per-type copy of each.
  */
-#define QORTOO_ABI_VERSION_MINOR 2
+#define QORTOO_ABI_VERSION_MINOR 0
 
 /**
  * Opaque handle to a `qortoo::Client`.
@@ -78,6 +80,16 @@ typedef struct QortooClient QortooClient;
  * shares the same underlying datatype.
  */
 typedef struct QortooCounter QortooCounter;
+
+/**
+ * Opaque handle to any datatype, carrying what they all have in common.
+ *
+ * Every concrete handle (`QortooCounter`, `QortooVariable`) holds one of these, and
+ * `qortoo_<type>_as_datatype` borrows it. That borrow is a reference to a field of
+ * the concrete handle, not a second handle: it stays valid for exactly as long as
+ * the concrete handle, which is what `qortoo_<type>_free` releases.
+ */
+typedef struct QortooDatatype QortooDatatype;
 
 /**
  * Opaque handle to a `qortoo::LocalConnectivity`. The same handle may be passed to
@@ -265,7 +277,7 @@ char *qortoo_client_get_alias(const struct QortooClient *client);
 
 /**
  * Marks the datatype identified by `key` as unsubscribing. With manual connectivity a
- * following `qortoo_counter_sync` drives it to Disabled.
+ * following `qortoo_datatype_sync` drives it to Disabled.
  */
 void qortoo_client_unsubscribe_datatype(const struct QortooClient *client,
                                         const char *key,
@@ -300,8 +312,20 @@ struct QortooCounter *qortoo_counter_subscribe_or_create(const struct QortooClie
 
 /**
  * Releases this counter handle; the underlying datatype lives on inside the client.
+ * Any shared handle obtained from `qortoo_counter_as_datatype` dies with it.
  */
 void qortoo_counter_free(struct QortooCounter *counter);
+
+/**
+ * Returns this counter as the shared handle the `qortoo_datatype_*` entry points
+ * take — those cover synchronization, metadata, and handlers.
+ *
+ * The result borrows `counter`: it is a pointer to a field of the counter handle, valid
+ * for exactly as long as that handle. It is not a second handle and is never released
+ * on its own — `qortoo_counter_free` releases the allocation exactly once, and this
+ * pointer dies with it.
+ */
+const struct QortooDatatype *qortoo_counter_as_datatype(const struct QortooCounter *counter);
 
 /**
  * Increases the counter by `delta` (may be negative). Returns the new value, or 0 on error.
@@ -319,62 +343,6 @@ int64_t qortoo_counter_increase(const struct QortooCounter *counter, struct Qort
  * Returns the current counter value (0 if `counter` is null).
  */
 int64_t qortoo_counter_get_value(const struct QortooCounter *counter);
-
-/**
- * Blocking push/pull synchronization with the connectivity backend.
- */
-void qortoo_counter_sync(const struct QortooCounter *counter, struct QortooError *err_out);
-
-/**
- * `qortoo_counter_sync` continuing the caller's trace.
- *
- * `traceparent`/`tracestate` are the W3C trace-context headers of the calling span
- * (both nullable). The sync — including the push/pull that runs on the event-loop
- * thread and the handler callbacks it dispatches — becomes a child of that span.
- * Absent or malformed headers fall back to a trace without a parent.
- *
- * This is a separate entry point rather than an extension of `qortoo_counter_sync`
- * so a caller that does not propagate context pays for none of it.
- */
-void qortoo_counter_sync_with_context(const struct QortooCounter *counter,
-                                      const char *traceparent,
-                                      const char *tracestate,
-                                      struct QortooError *err_out);
-
-/**
- * Marks this datatype as unsubscribing (see `qortoo_client_unsubscribe_datatype`).
- */
-void qortoo_counter_unsubscribe(const struct QortooCounter *counter, struct QortooError *err_out);
-
-/**
- * Returns the `DatatypeState` discriminant, or -1 if `counter` is null.
- */
-int32_t qortoo_counter_get_state(const struct QortooCounter *counter);
-
-/**
- * Returns the `DataType` discriminant, or -1 if `counter` is null.
- */
-int32_t qortoo_counter_get_type(const struct QortooCounter *counter);
-
-/**
- * Returns the datatype key (release with `qortoo_string_free`).
- */
-char *qortoo_counter_get_key(const struct QortooCounter *counter);
-
-/**
- * Returns the server-side version (0 before the first sync or if `counter` is null).
- */
-uint64_t qortoo_counter_get_server_version(const struct QortooCounter *counter);
-
-/**
- * Returns the client-side version (number of local operations).
- */
-uint64_t qortoo_counter_get_client_version(const struct QortooCounter *counter);
-
-/**
- * Returns the last synchronized client version.
- */
-uint64_t qortoo_counter_get_synced_client_version(const struct QortooCounter *counter);
 
 /**
  * Executes `callback` atomically. The callback runs inline on the calling thread with a
@@ -406,21 +374,73 @@ void qortoo_counter_transaction_with_context(const struct QortooCounter *counter
                                              struct QortooError *err_out);
 
 /**
+ * Returns the `DatatypeState` discriminant, or -1 if `datatype` is null.
+ */
+int32_t qortoo_datatype_get_state(const struct QortooDatatype *datatype);
+
+/**
+ * Returns the `DataType` discriminant, or -1 if `datatype` is null.
+ */
+int32_t qortoo_datatype_get_type(const struct QortooDatatype *datatype);
+
+/**
+ * Returns the datatype key (release with `qortoo_string_free`), or null if
+ * `datatype` is null.
+ */
+char *qortoo_datatype_get_key(const struct QortooDatatype *datatype);
+
+/**
+ * Returns the server-side version (0 before the first sync or if `datatype` is null).
+ */
+uint64_t qortoo_datatype_get_server_version(const struct QortooDatatype *datatype);
+
+/**
+ * Returns the client-side version (number of local operations).
+ */
+uint64_t qortoo_datatype_get_client_version(const struct QortooDatatype *datatype);
+
+/**
+ * Returns the last synchronized client version.
+ */
+uint64_t qortoo_datatype_get_synced_client_version(const struct QortooDatatype *datatype);
+
+/**
+ * Blocking push/pull synchronization with the connectivity backend.
+ */
+void qortoo_datatype_sync(const struct QortooDatatype *datatype, struct QortooError *err_out);
+
+/**
+ * `qortoo_datatype_sync` continuing the caller's trace via the W3C
+ * `traceparent`/`tracestate` headers (both nullable; absent or malformed headers
+ * fall back to no parent).
+ */
+void qortoo_datatype_sync_with_context(const struct QortooDatatype *datatype,
+                                       const char *traceparent,
+                                       const char *tracestate,
+                                       struct QortooError *err_out);
+
+/**
+ * Marks this datatype as unsubscribing (see `qortoo_client_unsubscribe_datatype`).
+ */
+void qortoo_datatype_unsubscribe(const struct QortooDatatype *datatype,
+                                 struct QortooError *err_out);
+
+/**
  * Registers (or replaces) a handler at `priority`. Callbacks arrive on Qortoo tokio
  * worker threads; `userdata_drop` fires exactly once when the handler is replaced or
- * unset — or immediately if `counter` is null and the handler cannot be registered.
+ * unset — or immediately if `datatype` is null and the handler cannot be registered.
  */
-void qortoo_counter_set_handler(const struct QortooCounter *counter,
-                                uintptr_t priority,
-                                QortooOnStateChangeCallback on_state_change,
-                                QortooOnErrorCallback on_error,
-                                uintptr_t userdata,
-                                QortooUserdataDropCallback userdata_drop);
+void qortoo_datatype_set_handler(const struct QortooDatatype *datatype,
+                                 uintptr_t priority,
+                                 QortooOnStateChangeCallback on_state_change,
+                                 QortooOnErrorCallback on_error,
+                                 uintptr_t userdata,
+                                 QortooUserdataDropCallback userdata_drop);
 
 /**
  * Removes the handler at `priority`. Returns true if one was removed.
  */
-bool qortoo_counter_unset_handler(const struct QortooCounter *counter, uintptr_t priority);
+bool qortoo_datatype_unset_handler(const struct QortooDatatype *datatype, uintptr_t priority);
 
 /**
  * Creates an in-memory connectivity backend (realtime mode by default).
@@ -501,65 +521,20 @@ struct QortooVariable *qortoo_variable_subscribe_or_create(const struct QortooCl
 
 /**
  * Releases this variable handle; the underlying datatype lives on inside the client.
+ * Any shared handle obtained from `qortoo_variable_as_datatype` dies with it.
  */
 void qortoo_variable_free(struct QortooVariable *variable);
 
 /**
- * Blocking push/pull synchronization with the connectivity backend.
- */
-void qortoo_variable_sync(const struct QortooVariable *variable, struct QortooError *err_out);
-
-/**
- * `qortoo_variable_sync` continuing the caller's trace.
+ * Returns this variable as the shared handle the `qortoo_datatype_*` entry points
+ * take — those cover synchronization, metadata, and handlers.
  *
- * `traceparent`/`tracestate` are the W3C trace-context headers of the calling span
- * (both nullable). The sync — including the push/pull that runs on the event-loop
- * thread and the handler callbacks it dispatches — becomes a child of that span.
- * Absent or malformed headers fall back to a trace without a parent.
- *
- * This is a separate entry point rather than an extension of `qortoo_variable_sync`
- * so a caller that does not propagate context pays for none of it.
+ * The result borrows `variable`: it is a pointer to a field of the variable handle, valid
+ * for exactly as long as that handle. It is not a second handle and is never released
+ * on its own — `qortoo_variable_free` releases the allocation exactly once, and this
+ * pointer dies with it.
  */
-void qortoo_variable_sync_with_context(const struct QortooVariable *variable,
-                                       const char *traceparent,
-                                       const char *tracestate,
-                                       struct QortooError *err_out);
-
-/**
- * Marks this datatype as unsubscribing (see `qortoo_client_unsubscribe_datatype`).
- */
-void qortoo_variable_unsubscribe(const struct QortooVariable *variable,
-                                 struct QortooError *err_out);
-
-/**
- * Returns the `DatatypeState` discriminant, or -1 if `variable` is null.
- */
-int32_t qortoo_variable_get_state(const struct QortooVariable *variable);
-
-/**
- * Returns the `DataType` discriminant, or -1 if `variable` is null.
- */
-int32_t qortoo_variable_get_type(const struct QortooVariable *variable);
-
-/**
- * Returns the datatype key (release with `qortoo_string_free`).
- */
-char *qortoo_variable_get_key(const struct QortooVariable *variable);
-
-/**
- * Returns the server-side version (0 before the first sync or if `variable` is null).
- */
-uint64_t qortoo_variable_get_server_version(const struct QortooVariable *variable);
-
-/**
- * Returns the client-side version (number of local operations).
- */
-uint64_t qortoo_variable_get_client_version(const struct QortooVariable *variable);
-
-/**
- * Returns the last synchronized client version.
- */
-uint64_t qortoo_variable_get_synced_client_version(const struct QortooVariable *variable);
+const struct QortooDatatype *qortoo_variable_as_datatype(const struct QortooVariable *variable);
 
 /**
  * Sets the variable to the JSON value in `len` bytes at `data` — exactly one UTF-8
@@ -619,23 +594,6 @@ void qortoo_variable_transaction_with_context(const struct QortooVariable *varia
                                               QortooVariableTxCallback callback,
                                               uintptr_t userdata,
                                               struct QortooError *err_out);
-
-/**
- * Registers (or replaces) a handler at `priority`. Callbacks arrive on Qortoo tokio
- * worker threads; `userdata_drop` fires exactly once when the handler is replaced or
- * unset — or immediately if `variable` is null and the handler cannot be registered.
- */
-void qortoo_variable_set_handler(const struct QortooVariable *variable,
-                                 uintptr_t priority,
-                                 QortooOnStateChangeCallback on_state_change,
-                                 QortooOnErrorCallback on_error,
-                                 uintptr_t userdata,
-                                 QortooUserdataDropCallback userdata_drop);
-
-/**
- * Removes the handler at `priority`. Returns true if one was removed.
- */
-bool qortoo_variable_unset_handler(const struct QortooVariable *variable, uintptr_t priority);
 
 /**
  * Returns the ABI major version this library implements. Compare against the value
