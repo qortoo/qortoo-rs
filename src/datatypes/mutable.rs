@@ -194,7 +194,7 @@ impl MutableDatatype {
         self.handlers_manager.set_handler(priority, handler);
     }
 
-    pub fn unset_handler(&mut self, priority: usize) -> Option<DatatypeHandler> {
+    pub fn unset_handler(&mut self, priority: usize) -> bool {
         self.handlers_manager.unset_handler(priority)
     }
 

@@ -104,10 +104,15 @@ impl HandlersManager {
         self.handlers.insert(priority, Arc::new(handler));
     }
 
-    pub fn unset_handler(&mut self, priority: usize) -> Option<DatatypeHandler> {
-        self.handlers
-            .remove(&priority)
-            .and_then(|arc| Arc::try_unwrap(arc).ok())
+    /// Removes the handler at `priority`, reporting whether one was there.
+    ///
+    /// The handler itself is not handed back: [`dispatch`](Self::dispatch) clones
+    /// every handler's `Arc` into the task that notifies it, so a handler removed
+    /// while one of its notifications is still in flight is not solely owned here.
+    /// Reporting removal as a `bool` keeps the answer independent of that timing;
+    /// the handler is dropped once the last notification holding it finishes.
+    pub fn unset_handler(&mut self, priority: usize) -> bool {
+        self.handlers.remove(&priority).is_some()
     }
 
     fn dispatch<F>(&self, event_name: &'static str, notify: F)
@@ -205,6 +210,53 @@ mod tests_handers_manager {
         awaitility::at_most(Duration::from_secs(2))
             .poll_interval(Duration::from_micros(100))
             .until(|| call_count.load(Ordering::Relaxed) == 2);
+    }
+
+    #[test]
+    #[instrument]
+    fn can_report_removal_while_a_notification_is_in_flight() {
+        // `dispatch` hands every notification its own `Arc` clone of the handler, so a
+        // handler unset while one is still running is not solely owned by the manager.
+        // Removal must be reported on the map entry, not on sole ownership.
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .with_connectivity(connectivity)
+            .build()
+            .unwrap();
+        let counter = client
+            .create_datatype(get_test_func_name!())
+            .build_counter()
+            .unwrap();
+
+        // `entered` reports that the dispatched notification is running and holding a
+        // clone; `release` keeps it there until the unset below has been observed.
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let release_in_handler = release.clone();
+        counter.set_handler(
+            1,
+            DatatypeHandler::new().set_on_state_change(move |_ds, _old, _new| {
+                let _ = entered_tx.send(());
+                release_in_handler.wait();
+            }),
+        );
+
+        counter.sync().unwrap();
+        entered_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the handler must be dispatched");
+
+        assert!(
+            counter.unset_handler(1),
+            "a handler removed from the map is reported as removed even while notifying"
+        );
+        release.wait();
+
+        assert!(
+            !counter.unset_handler(1),
+            "a second unset at the same priority removes nothing"
+        );
     }
 
     #[test]

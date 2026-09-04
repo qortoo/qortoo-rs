@@ -88,7 +88,8 @@ pub trait Datatype {
 
     fn set_handler(&self, id: usize, handler: DatatypeHandler);
 
-    fn unset_handler(&self, id: usize) -> Option<DatatypeHandler>;
+    /// Removes the handler registered at `id`, returning whether one was there.
+    fn unset_handler(&self, id: usize) -> bool;
 
     #[cfg(test)]
     fn get_attr(&self) -> std::sync::Arc<crate::datatypes::common::Attribute>;
@@ -138,7 +139,7 @@ where
         self.get_core().set_handler(id, handler)
     }
 
-    fn unset_handler(&self, id: usize) -> Option<DatatypeHandler> {
+    fn unset_handler(&self, id: usize) -> bool {
         self.get_core().unset_handler(id)
     }
 

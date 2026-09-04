@@ -125,7 +125,7 @@ impl Datatype for TransactionalDatatype {
         self.mutable.write().set_handler(id, handler)
     }
 
-    fn unset_handler(&self, id: usize) -> Option<DatatypeHandler> {
+    fn unset_handler(&self, id: usize) -> bool {
         self.mutable.write().unset_handler(id)
     }
 

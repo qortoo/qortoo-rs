@@ -400,7 +400,7 @@ pub(crate) unsafe fn set_handler<H: DatatypeHandle>(
 /// Removes the handler at `priority`. Returns true if one was removed.
 pub(crate) unsafe fn unset_handler<H: DatatypeHandle>(handle: *const H, priority: usize) -> bool {
     match unsafe { handle.as_ref() } {
-        Some(h) => h.inner().unset_handler(priority).is_some(),
+        Some(h) => h.inner().unset_handler(priority),
         None => false,
     }
 }
