@@ -319,7 +319,14 @@ mod tests_variable {
     #[test]
     #[instrument]
     fn can_read_without_changing_state_version_or_push_buffer() {
-        let variable = Variable::new_for_test(DatatypeState::Creating);
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let (collection, key, _) = get_test_ids!();
+        let client = Client::builder(collection, "read-invariants")
+            .with_connectivity(connectivity)
+            .build()
+            .unwrap();
+        let variable = client.create_datatype(key).build_variable().unwrap();
         variable.set(&sample_profile()).unwrap();
         let state = variable.get_state();
         let version = variable.get_client_version();
