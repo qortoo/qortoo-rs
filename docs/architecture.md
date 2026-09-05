@@ -6,17 +6,28 @@ Qortoo-rs is a Rust SDK for CRDTs (Conflict-free Replicated Data Types) with dis
 
 ## Datatype Layer Stack
 
-Each datatype is composed of five layers stacked vertically. A user operation passes through all layers top-down.
+The public API, transaction handling, mutable state, synchronization, and CRDT logic
+have separate responsibilities. Local writes reach the CRDT through the transactional
+and mutable layers. Synchronization runs through the event loop and Wired layer,
+which shares the same mutable state.
 
 ```mermaid
 flowchart TD
-    API["<b>Public API</b> (e.g., Counter)<br/>implements DatatypeBlanket<br/>← User-facing type"]
-    TX["<b>Transactional Layer</b> — TransactionalDatatype<br/>← Transaction scope, DeferGuard commit/rollback"]
-    MU["<b>Mutable Layer</b> — MutableDatatype<br/>← Local state: CRDT, op_id, push_buffer, tx_record"]
-    WI["<b>Wired Layer</b> — WiredDatatype<br/>← Push/pull sync with connectivity backend"]
-    CR["<b>CRDT Layer</b> (e.g., CounterCrdt) — Crdt enum<br/>← Pure CRDT: local execution returns its rollback action,<br/>remote execution applies without rollback metadata"]
+    API["Public API: Counter / Variable"]
+    TX["TransactionalDatatype<br/>Transaction scope and local operation serialization"]
+    MU["MutableDatatype<br/>CRDT state, operation progress, and transaction records"]
+    CR["Crdt: CounterCrdt / VariableCrdt<br/>Local and remote state transitions"]
+    EL["EventLoop<br/>Sync scheduling and recovery"]
+    WI["WiredDatatype<br/>Build push packs and apply pull responses"]
+    CONN["Connectivity<br/>Push/pull exchange"]
 
-    API --> TX --> MU --> WI --> CR
+    API --> TX
+    TX -->|local write| MU
+    MU --> CR
+    TX -.->|explicit sync or realtime commit notification| EL
+    EL -->|push_pull| WI
+    WI -->|access shared state| MU
+    WI <-->|exchange packs| CONN
 ```
 
 > For datatype lifecycle states and write-access rules see [`docs/datatype-state.md`](datatype-state.md).
@@ -30,35 +41,57 @@ flowchart TD
 |-------|--------|--------------------|
 | Public API | `Counter`, `Variable` | User-facing methods; implements `DatatypeBlanket` |
 | Transactional | `TransactionalDatatype` | Transaction scope via `TransactionContext` and `DeferGuard`; serializes concurrent ops via `op_mutex` / `tx_mutex` |
-| Mutable | `MutableDatatype` | Owns `Crdt`, `OperationId`, `PushBuffer`, `TxRecord`; executes and records operations |
-| Wired | `WiredDatatype` | Assembles `PushPullPack` and calls `Connectivity::push_pull`; drives the event loop |
+| Mutable | `MutableDatatype` | Owns `Crdt`, `OperationId`, `MemoryPushBuffer`, `TxRecord`, checkpoint, lifecycle state, and handlers; executes and records operations |
+| Wired | `WiredDatatype` | Called by `EventLoop` to assemble `PushPullPack`, call `Connectivity::push_pull`, and apply responses through `PullHandler` |
 | CRDT | `CounterCrdt`, `VariableCrdt` | Pure state machine; no I/O, no locking; see [`docs/variable.md`](variable.md) for the LWW Variable |
 
 ## Shared State Model
 
 ```mermaid
 flowchart TD
+    API["Counter / Variable"]
     ATD["Arc&lt;TransactionalDatatype&gt;"]
-    ATTR["attr: Arc&lt;Attribute&gt;\nimmutable config (key, type, duid, option, is_readonly)"]
+    ATTR["Arc&lt;Attribute&gt;<br/>Identity, configuration, and client references"]
     MUT["mutable: Arc&lt;RwLock&lt;MutableDatatype&gt;&gt;"]
     CRDT["crdt: Crdt — CRDT state"]
     OPID["op_id: OperationId — lamport + cseq counter"]
-    PB["push_buffer — committed-but-not-acked transactions"]
+    PB["push_buffer — committed local transactions"]
     TXR["tx_record: TxRecord — pending wire transaction + local rollback actions + save point"]
     STATE["state: DatatypeState — lifecycle state"]
+    CP["checkpoint: CheckPoint — acknowledged progress"]
+    HM["handlers_manager: HandlersManager"]
     WD["WiredDatatype\n(shares the same Arc&lt;RwLock&lt;MutableDatatype&gt;&gt;)"]
 
-    ATD --> ATTR
-    ATD --> MUT
+    API -->|datatype| ATD
+    ATD -->|attr| ATTR
+    ATD -->|mutable| MUT
+    WD -->|attr| ATTR
+    MUT -->|attr| ATTR
+    ATTR -.->|weak_transactional: Weak| ATD
     MUT --> CRDT
     MUT --> OPID
     MUT --> PB
     MUT --> TXR
     MUT --> STATE
-    WD -.->|shares| MUT
+    MUT --> CP
+    MUT --> HM
+    HM -->|attr| ATTR
+    WD -->|mutable: same Arc| MUT
 ```
 
-`Arc<Attribute>` is shared across all layers and is the best place for per-datatype cross-cutting concerns (handler registry, push buffer options, etc.).
+Solid arrows show ownership or shared `Arc` references; the dashed arrow is a weak
+back-reference. `TransactionalDatatype` constructs `WiredDatatype` with clones of its
+`attr` and `mutable` handles and starts the event-loop task with that Wired handle.
+Local operations and synchronization therefore access one CRDT state.
+
+`Attribute` holds the key, datatype kind, readonly flag, push-buffer options, and client
+reference. Its `duid` and weak transactional back-reference are protected by their own
+`RwLock`s. `MutableDatatype` owns the handler registry and the state that changes during
+operation execution and synchronization.
+
+See the fields and constructors in [`transactional.rs`](../src/datatypes/transactional.rs),
+[`wired.rs`](../src/datatypes/wired.rs), [`mutable.rs`](../src/datatypes/mutable.rs), and
+[`common.rs`](../src/datatypes/common.rs).
 
 ## Operation Flow
 
@@ -66,36 +99,64 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    User["User calls counter.increase(1)"]
-    TX["TransactionalDatatype::execute_local_operation_as_tx()\n──────────────────────────────────────\nacquire op_mutex\nbegin_transaction_if_needed()\n→ creates TransactionContext + DeferGuard"]
-    MU["MutableDatatype::execute_local_operation()\n──────────────────────────────────────\nop.set_lamport(op_id.lamport + 1)\ncontext = OperationContext::try_new(&op, &op_id.cuid)?\n→ rejects modification Lamport 0\noutcome = crdt.execute_local_operation(&context)\n→ return value + rollback action"]
-    Ok["YES: succeeds\ntx_record.record_operation() ← append wire op + local rollback action\nop_id.next(is_new_tx) ← advance lamport (and cseq if new tx)"]
-    Err["NO: fails\nreturn Err (op_id unchanged)"]
-    Defer["DeferGuard drop → end_transaction(committed=true)\npush_buffer.enqueue(tx) ← ready to sync"]
+    User["counter.increase_by(1)"]
+    TX["execute_local_operation_as_tx<br/>Check write access, begin or join transaction,<br/>then acquire op_mutex and mutable.write()"]
+    MU["MutableDatatype::execute_local_operation<br/>Assign next Lamport and validate OperationContext<br/>Call crdt.execute_local_operation"]
+    Record["Record operation and rollback action in TxRecord<br/>Advance op_id and return the value"]
+    Err["Return error<br/>This failed operation does not advance op_id"]
+    Commit["On successful transaction scope exit:<br/>enqueue pending local transaction in push_buffer<br/>Discard rollback actions"]
+    Abort["On transaction abort or enqueue failure:<br/>restore recorded state through rollback actions"]
 
     User --> TX --> MU
-    MU -->|"succeeds"| Ok --> Defer
-    MU -->|"fails"| Err
+    MU -->|success| Record
+    MU -->|error| Err
+    Record -.->|scope commits| Commit
+    Record -.->|scope aborts| Abort
+    Err -.->|scope aborts| Abort
+    Commit -->|enqueue fails| Abort
 ```
+
+`begin_transaction()` creates a guard for a new scope or joins the matching active
+`TransactionContext`. A successful write inside an explicit transaction records its
+result immediately; enqueue happens when the enclosing scope commits. The standalone
+write creates its own scope. Detailed rollback and commit-error handling are described
+in [Transaction and Rollback](transaction-and-rollback.md).
+
+### Local read
+
+`Counter::get_value()` reads the CRDT under `mutable.read()`. `Variable::get()` clones
+the stored value's `Arc` under that read lock, then decodes outside the lock. These
+reads do not create operations or request synchronization; see
+[`counter.rs`](../src/datatypes/counter.rs) and [`variable.rs`](../src/datatypes/variable.rs).
 
 ### Sync (push/pull)
 
 ```mermaid
 flowchart TD
-    EL["EventLoop fires PushTransaction event"]
-    PP["WiredDatatype::push_pull()\n──────────────────────────────────────\nmutable.read() → assemble PushPullPack (push_buffer contents)\nconnectivity.push_pull(&pack)"]
-    Apply["mutable.write() → apply pulled transactions\n──────────────────────────────────────\nOperationContext::try_new(op, &tx.cuid)?\n→ rejects modification Lamport 0\nexecute_remote_transaction() for each remote tx\npush_buffer.deque(acked_cseq)"]
-    State["set_state(pulled.state)"]
+    EL["EventLoop handles PushTransaction<br/>Call WiredDatatype::push_pull"]
+    Pack["Acquire mutable.write()<br/>Build PushPullPack from buffered transactions<br/>and checkpoint"]
+    Exchange["Release mutable lock<br/>Call Connectivity::push_pull"]
+    Apply["Reacquire mutable.write()<br/>PullHandler::apply validates the response<br/>Applies subscribe snapshot when present<br/>Skips duplicates and executes remote transactions"]
+    State["On successful application:<br/>update checkpoint and lifecycle state"]
 
-    EL --> PP --> Apply --> State
+    EL --> Pack --> Exchange --> Apply --> State
 ```
+
+The mutable lock is held while building the outgoing pack and applying the response,
+but not during the backend exchange. Remote modification operations reach the CRDT
+through `MutableDatatype::execute_remote_transaction`, using the transaction's origin
+CUID in `OperationContext`; subscribe snapshots use the separate snapshot path.
+The checkpoint determines which buffered transactions are included in subsequent
+pushes. See [`WiredDatatype::do_push_pull`](../src/datatypes/wired.rs) and
+[`PullHandler`](../src/datatypes/pull_handler.rs) for the exchange and application paths;
+sync errors are covered by [Error Handling](error-handling.md).
 
 ## Concurrency Model
 
 - `mutable: Arc<RwLock<MutableDatatype>>` — all CRDT mutation is serialized here
 - `op_mutex: NoGuardMutex` — serializes concurrent `execute_local_operation` calls
 - `tx_mutex: NoGuardMutex` — serializes concurrent transaction scopes
-- Handler notifications are dispatched via `rt_handle.spawn` **after** the write lock is released to avoid deadlock (handlers may call `get_value()` which takes a read lock)
+- Handler callbacks run in separately spawned tasks; see [Handler System](handler-system.md) for their dispatch contract
 
 ## Key Types Quick Reference
 
@@ -112,5 +173,5 @@ flowchart TD
 | `Transaction` | `src/operations/transaction.rs` | Ordered group of operations sharing `cuid`/`cseq` |
 | `TxRecord` | `src/datatypes/tx_record.rs` | Pending wire transaction + local rollback actions + rollback save point |
 | `PushPullPack` | `src/types/push_pull_pack.rs` | Wire format for push/pull exchange |
-| `Attribute` | `src/datatypes/common.rs` | Immutable per-datatype config shared across layers |
+| `Attribute` | `src/datatypes/common.rs` | Shared identity, configuration, and client references; DUID and the weak transactional reference have interior mutability |
 | `DatatypeState` | `src/types/datatype.rs` | Lifecycle state machine; see [`docs/datatype-state.md`](datatype-state.md) |
