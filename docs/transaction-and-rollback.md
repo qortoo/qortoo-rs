@@ -1,168 +1,200 @@
 # Transaction and Rollback
 
-## Overview
+A transaction is the unit in which local changes to one datatype become visible and become
+eligible for synchronization. Every local write happens inside one, whether the application
+asks for it or not: a single write runs in a scope of its own, and several writes can be
+grouped into one scope that either takes effect completely or leaves no trace. This document
+defines how a scope is opened, what happens when two threads want one at the same time, and
+how an abandoned scope is undone. It does not describe how a committed transaction reaches
+other clients — see [`docs/event-loop.md`](event-loop.md) and
+[`docs/connectivity.md`](connectivity.md) for that.
 
-Every local write in Qortoo-rs is atomic. If any operation in a transaction fails, all previously applied operations are undone via local-only **rollback actions** — no CRDT clone is kept and rollback state is never added to the wire operation.
+## Model
 
-The central struct is `TxRecord` (`src/datatypes/tx_record.rs`), which lives inside `MutableDatatype` and manages:
-1. The **pending wire transaction** — operations applied but not yet committed
-2. The **local rollback actions** — state restoration commands paired with those operations
-3. The **rollback save point** — the `OperationId` and `DatatypeState` to restore on failure
+| Term | Meaning |
+|------|---------|
+| Transaction | A group of one or more local operations on a single datatype, committed or undone as a unit |
+| Scope | The span during which a transaction is open; opening and closing it is what commits or undoes the work |
+| Standalone write | A write made outside an explicit transaction, which opens and closes a scope of its own |
+| Transaction context | The token that identifies one scope, so a write can tell whether it belongs to the scope already open |
+| Pending transaction | The operations recorded so far in the open scope, in the form that will be sent to other clients |
+| Rollback action | A local-only instruction that undoes one applied operation; never sent to other clients |
+| Save point | The progress counters and lifecycle state captured when the scope opened, restored if it is undone |
 
-## TxRecord Structure
+A datatype has at most one open scope at a time. Operations accumulate into the pending
+transaction as they succeed, each paired with the action that would undo it. Closing the
+scope resolves both: a commit hands the pending transaction to the push buffer and throws the
+undo actions away, an abort runs the undo actions and throws the pending transaction away.
 
-```rust
-pub struct TxRecord {
-    pub pending: Option<Transaction>,   // None = no active transaction
-    pub rollback_op_id: OperationId,    // op_id before the transaction started
-    pub rollback_state: DatatypeState,  // state before the transaction started
-    rollback_actions: Vec<RollbackAction>,
-}
-```
+Rollback is by recorded inverse, not by snapshot. Nothing keeps a copy of the CRDT value, and
+nothing about undoing is ever serialized — a rollback action exists only on the client that
+created it, and only until its scope closes.
 
-- `pending` is `None` when idle, `Some(tx)` while a transaction is in progress.
-- `rollback_actions` contains one local-only action for each operation in `pending`.
-- `rollback_op_id` and `rollback_state` are captured at the moment the **first operation of a new transaction** is recorded (`record_operation`). They are not updated for subsequent operations in the same transaction.
+## Rules and Guarantees
 
-## Transaction Lifecycle
+**Scope.** A write outside an explicit transaction opens a scope, applies its operation, and
+closes the scope before returning. An explicit transaction opens one scope around a closure;
+writes made through the handle the closure receives join it rather than opening their own. The
+scope closes when the closure returns.
 
-```mermaid
-flowchart TD
-    Idle["Idle\n(pending = None)"]
-    Execute["execute_local_operation()\nlocate target once, capture pre-state, then mutate\nreturn value + rollback action"]
-    RecordFirst["record_operation()\n──────────────────────────────────────\npending = Some(Transaction::new(cuid, cseq+1))\nrollback_op_id = current op_id  ← save point set HERE\nrollback_state = current state  ← save point set HERE\nwire op + local action appended"]
-    Advance1["op_id.next(is_new_tx=true)\n→ cseq += 1, lamport += 1"]
-    RecordMore["record_operation() (is_new = false)\nwire op + local action appended"]
-    Advance2["op_id.next(is_new_tx=false)\n→ lamport += 1  (cseq unchanged within same tx)"]
-    Commit["end_transaction(committed=true)\npending.take() → push_buffer.enqueue(tx)\ndiscard rollback actions\n(rollback save point remains stale — harmless)"]
-    Rollback["end_transaction(committed=false) → do_rollback()\ntake actions → reverse → apply_rollback_action()\nop_id = rollback_op_id\nset_state(rollback_state)\npending/actions cleared"]
-    IdleEnd["Idle"]
+**Atomicity.** A scope commits only if the closure returns success. If it returns an error, or
+if any operation inside it fails, every operation already applied in that scope is undone and
+the datatype is left as it was when the scope opened. A committed transaction is enqueued whole
+or not at all.
 
-    Idle -->|"local operation"| Execute
-    Execute -->|"succeeds"| RecordFirst
-    RecordFirst --> Advance1
-    Advance1 -->|"more operations succeed"| RecordMore
-    RecordMore --> Advance2
-    Advance2 -->|"committed=true"| Commit
-    Advance2 -->|"committed=false"| Rollback
-    Commit --> IdleEnd
-    Rollback --> IdleEnd
-```
+**Concurrency.** A thread that asks for a scope while another thread holds one waits until the
+open scope closes, then proceeds. It is not refused and no error is returned. Writes within one
+open scope are serialized against each other, so operations accumulate in a defined order.
 
-## Success-Only Advance Pattern
+**Progress counters.** A datatype's operation counters advance only after an operation
+succeeds. A failed operation leaves them untouched, and the next operation takes the slot the
+failed one would have used. Committing a transaction advances the transaction sequence once,
+however many operations it contained; each successful operation advances the logical clock.
 
-`op_id` is advanced **only after a successful operation**. This eliminates the need for a "revert" path on failure:
+**Save point.** The counters and lifecycle state are captured when the first operation of a
+scope is recorded, not when the scope is requested. An undo restores exactly that snapshot, so
+a datatype that rolls back is indistinguishable from one where the scope never opened.
 
-```rust
-// MutableDatatype::execute_local_operation
-op.set_lamport(self.op_id.lamport + 1);          // compute, do not advance yet
-let context = OperationContext::try_new(&op, &self.op_id.cuid)?;
-let outcome = self.crdt.execute_local_operation(&context)?;
-let (return_value, rollback_action) = outcome.into_parts();
-let is_new_tx = self.tx_record.record_operation(
-    &self.op_id,
-    self.state,
-    op,
-    rollback_action,
-);
-self.op_id.next(is_new_tx);                      // advance only on success
-Ok(return_value)
-```
+**Undo order.** Rollback actions are applied in reverse of the order their operations were
+applied, so an operation is undone before anything it depended on.
 
-On failure: `op_id` is untouched, `pending` is unchanged. The next operation retries the same lamport slot.
+**Enqueue.** A committed transaction is enqueued for synchronization only if it originated on
+this client. Transactions are enqueued in sequence, and a gap in that sequence is rejected
+rather than accepted out of order. Buffered transactions stay in the buffer until the backend
+acknowledges them; see [`docs/connectivity.md`](connectivity.md).
 
-## Rollback via Local Actions
+**Limits on the guarantees.** The value a write returns is determined when the operation
+succeeds, which is before its scope closes. If the commit then fails — the push buffer is full,
+or the sequence is not contiguous — the transaction is rolled back and the failure is reported
+through the datatype's error handler, but the value already returned to the caller does not
+change and the call does not report an error. An application that must know a write survived
+its commit has to register an error handler; see
+[`docs/handler-system.md`](handler-system.md). Atomicity is also per datatype: there is no
+scope spanning two datatypes.
 
-Local execution locates its target once, captures the pre-mutation state needed for rollback, applies the mutation, and returns both the caller-facing value and rollback action as a `LocalOperationOutcome`. The action is recorded only if execution succeeds. Rollback applies those actions in reverse order:
+## Behavior
 
-```mermaid
-flowchart LR
-    subgraph applied["Applied (in order)"]
-        direction LR
-        A[op_A] --> B[op_B] --> C[op_C]
-    end
-    subgraph rollback["Rollback (reversed)"]
-        direction LR
-        D["rollback(action_C)"] --> E["rollback(action_B)"] --> F["rollback(action_A)"]
-    end
-    applied -.->|rollback| rollback
-```
+**A standalone write.** `counter.increase_by(1)` opens a scope, applies the operation to the
+CRDT, records the operation and its undo action, advances the counters, and returns the new
+value. The scope then closes as a commit, and the transaction — holding that one operation —
+is enqueued.
 
-Rollback actions are local implementation details and are not serialized into `Operation` or `Transaction`. The two existing CRDTs illustrate the two possible shapes:
-
-- **Inverse operation** — for `CounterIncrease(delta)`, the action increases by the wrapping inverse delta. Both forward and rollback additions use the same wrapping `i64` arithmetic (modulo 2^64), including the self-inverse `i64::MIN` case.
-- **Exact restore** — `VariableSet(new)` is not invertible: the new value alone cannot reconstruct the previous value or its winning timestamp. `VariableRollbackAction::Restore` instead captures the full previous `VariableState` (payload + timestamp) at execution time, without duplicating that state in the wire payload (see [`docs/variable.md`](variable.md)).
-
-Each concrete CRDT owns its action enum. The top-level `RollbackAction` has one wrapper variant per CRDT, not one variant per operation:
-
-```rust
-enum RollbackAction {
-    Counter(CounterRollbackAction),
-    Variable(VariableRollbackAction),
-}
-```
-
-`LocalOperationOutcome` stores the top-level `RollbackAction`. Each concrete CRDT wraps its own action when it creates the outcome, but it never matches actions owned by other CRDTs. The `Crdt` wrapper is the only place that matches a CRDT instance with its action family during rollback. Adding a new CRDT's action therefore does not require changing existing rollback code.
-
-```rust
-// MutableDatatype::do_rollback
-if let Some(tx) = self.tx_record.pending.take() {
-    let actions = self.tx_record.take_rollback_actions();
-    debug_assert_eq!(tx.operations.len(), actions.len());
-    for action in actions.into_iter().rev() {
-        self.crdt.apply_rollback_action(action);
-    }
-    self.op_id = self.tx_record.rollback_op_id.clone();
-    self.set_state(self.tx_record.rollback_state);
-}
-```
-
-If `pending` is `None` (no op was ever applied), `do_rollback` is a no-op — nothing to restore.
-
-## TransactionContext and DeferGuard
-
-At the `TransactionalDatatype` level, a transaction is scoped by `TransactionContext` and `DeferGuard`:
+**An explicit transaction that commits.** `counter.transaction("tag", |c| { … })` opens one
+scope and hands the closure a handle carrying that scope's context. Each write through that
+handle joins the open scope instead of opening its own. When the closure returns success, the
+scope closes as a commit and all the operations are enqueued as one transaction with one
+sequence number.
 
 ```mermaid
-flowchart TD
-    Entry["execute_local_operation_as_tx(tx_ctx, op)"]
-    Begin["begin_transaction(tx_ctx)"]
-    BeginTx["BeginTx(DeferGuard)\nnew transaction scope opened"]
-    SameCtx["SameCtx\njoined into caller's ongoing transaction"]
-    OtherCtx["OtherCtx\nreturn error immediately"]
-    Execute["MutableDatatype::execute_local_operation(op)"]
-    Drop["DeferGuard::drop()\n→ end_transaction(committed = result.is_ok())"]
-
-    Entry --> Begin
-    Begin -->|BeginTx| BeginTx
-    Begin -->|SameCtx| SameCtx
-    Begin -->|OtherCtx| OtherCtx
-    BeginTx --> Execute
-    SameCtx --> Execute
-    Execute --> Drop
+stateDiagram-v2
+    [*] --> Open: first write in the scope
+    Open --> Open: further writes append<br/>operation + undo action
+    Open --> Committed: closure returned success
+    Open --> Aborted: closure returned an error<br/>or an operation failed
+    Committed --> [*]: enqueue the transaction,<br/>discard the undo actions
+    Aborted --> [*]: run the undo actions in reverse,<br/>restore the save point
 ```
 
-- `SameCtx` — op is joined into the caller's ongoing transaction (no new `DeferGuard`).
-- `OtherCtx` — another transaction is in progress; the call returns an error immediately.
-- `BeginTx(DeferGuard)` — a new transaction scope is opened; `DeferGuard` commits or rolls back on drop.
+**An explicit transaction that aborts.** The closure returns an error after two successful
+writes. Both are undone in reverse order, the counters and lifecycle state return to the save
+point, and the transaction is never enqueued. The datatype's value is what it was before the
+closure ran, and the call reports the error.
 
-## OperationId Semantics
+**An operation that fails mid-transaction.** A write inside the closure returns an error — an
+invalid value, or a state that does not permit writes. That operation applied nothing, so no
+undo action is recorded for it and the counters do not advance. Whether the scope survives is
+the closure's decision: if it propagates the error, the scope aborts and the earlier writes are
+undone; if it handles the error and returns success, the scope commits with the operations that
+did succeed.
 
-`OperationId = (lamport: u64, cuid: Cuid, cseq: u64)`
+**A commit that fails to enqueue.** The closure returned success, but the push buffer rejects
+the transaction. The transaction is restored so its undo actions still match, the scope is
+undone as if it had aborted, and the error reaches the application through the error handler.
+Callers that already received values from writes in that scope are not notified individually.
 
-| Field | Meaning | Advances when |
-|-------|---------|---------------|
-| `lamport` | Logical clock | Every successful local operation |
-| `cuid` | Client unique ID | Never (set at construction) |
-| `cseq` | Transaction sequence number | Each new transaction committed |
+**A datatype that is disabled or unsubscribed with work pending.** Buffered transactions are
+not discarded by a lifecycle change on their own; what happens to them is decided by the
+recovery action for the triggering error, described in
+[`docs/error-handling.md`](error-handling.md).
 
-`rollback_op_id` captures the `(lamport, cuid, cseq)` snapshot from before the transaction. Restoring it on rollback returns the clock to exactly the pre-transaction state.
+## Rationale
 
-## Adding a New CRDT Operation Type
+**Undo is recorded, not snapshotted.** Keeping a copy of the CRDT value before each scope would
+cost memory proportional to the value rather than to the change, and for a datatype that is
+mostly read and rarely rolled back that cost is paid on every write. Recording one action per
+applied operation costs only what the scope actually changed.
 
-When adding a new local `OperationBody` variant, two local responsibilities must be implemented atomically:
+**Undo actions never reach the wire.** A rollback is a local decision about work that no other
+client ever saw. Putting undo information into the operation would grow every message with data
+only the originating client can use, and would let a peer replay a rollback that means nothing
+in its own history.
 
-1. `execute_local_operation` — locate the target once, capture the state required for rollback, apply the change, and return `LocalOperationOutcome`
-2. `apply_rollback_action` — restore the captured state during rollback
+**Counters advance only on success.** The alternative — advance first, revert on failure — needs
+a correct revert path for every failure mode, including ones that occur between advancing and
+detecting the failure. Advancing after success means a failed operation needs no cleanup at all:
+the state it would have changed was never changed.
 
-An `Err` from local execution must leave the CRDT unchanged because no rollback action is recorded for a failed operation. Remote execution uses `execute_remote_operation` returning `Result<()>`; it never creates rollback actions. Local execution, remote execution, and rollback application are implemented at the concrete CRDT level (for example, `CounterCrdt`). The `Crdt` enum wrapper in `src/datatypes/crdts/crdt.rs` routes each top-level `RollbackAction` to the matching concrete CRDT and owns the single mismatch check.
+**The save point is captured at the first recorded operation, not when the scope opens.** A
+scope that opens and closes without applying anything has nothing to restore, and capturing at
+scope entry would make every read-only scope carry a snapshot it never uses.
+
+**Each CRDT owns its own action type.** The top-level rollback action has one variant per CRDT
+rather than one per operation, and only the CRDT wrapper matches an action family to a CRDT
+instance. Adding a datatype adds one variant and touches no existing rollback code.
+
+**Some operations restore rather than invert.** An increment can be undone by adding its
+inverse, but a last-writer-wins assignment cannot: the new value carries no trace of what it
+replaced. Those operations capture the previous state in their undo action instead. Both shapes
+satisfy the same rule — the action restores what the operation changed — so the scope logic does
+not need to know which shape it holds. See [`docs/variable.md`](variable.md).
+
+## Extending: adding a local operation
+
+A new local operation has to implement two halves that fit together, at the concrete CRDT
+level:
+
+1. **Local execution** locates its target once, captures whatever the undo needs, applies the
+   change, and returns both the caller-facing value and the undo action.
+2. **Undo application** restores what that operation changed.
+
+An error from local execution must leave the CRDT untouched, because a failed operation records
+no undo action and nothing will be run to clean up after it. Remote execution is a separate
+path: it applies an operation that already happened elsewhere and never produces an undo action,
+because a remote transaction is never rolled back locally.
+
+## Code Map
+
+| Concern | Location |
+|---------|----------|
+| `TxRecord` — pending transaction, undo actions, and the save point | `src/datatypes/tx_record.rs` |
+| Applying an operation, recording it, and advancing the counters | `src/datatypes/mutable.rs` (`execute_local_operation`) |
+| Closing a scope: enqueue on commit, undo on abort | `src/datatypes/mutable.rs` (`end_transaction`, `do_rollback`) |
+| Opening and joining scopes, waiting for a scope held elsewhere | `src/datatypes/transactional.rs` (`begin_transaction`, `execute_local_operation_as_tx`, `do_transaction`) |
+| Scope-exit handling that commits or undoes | `src/utils/defer_guard.rs` |
+| The public `transaction(tag, closure)` entry point | `src/datatypes/counter.rs`, `src/datatypes/variable.rs` |
+| Sequence checks and capacity limits on enqueue | `src/datatypes/push_buffer.rs` |
+| Undo action families and the wrapper that routes them | `src/datatypes/crdts/` |
+| Counter arithmetic and its inverse | `src/datatypes/crdts/counter_crdt.rs` |
+
+| Verified by | Tests |
+|-------------|-------|
+| A transaction commits as a unit; an aborted one leaves no trace | `can_use_transaction` in `src/datatypes/counter.rs` |
+| Concurrent transactions from several threads all complete | `can_run_transactions_concurrently` in `src/datatypes/counter.rs` |
+| Operations and undo actions accumulate and are taken together | `can_record_and_take_rollback_actions` in `src/datatypes/tx_record.rs` |
+| A failed operation leaves the scope and counters unchanged | `can_preserve_transaction_state_when_operation_execution_fails` in `src/datatypes/mutable.rs` |
+| Undo actions live exactly as long as their scope | `can_manage_rollback_action_lifetimes` in `src/datatypes/mutable.rs` |
+| A commit that fails to enqueue is rolled back | `can_rollback_on_enqueue_failure` in `src/datatypes/transactional.rs` |
+| Counter undo, including the self-inverse extreme | `can_return_and_apply_a_counter_rollback_action` in `src/datatypes/crdts/counter_crdt.rs` |
+| Restore-shaped undo is routed to the right CRDT | `can_dispatch_local_variable_execution_and_rollback` in `src/datatypes/crdts/crdt.rs` |
+| Restoring the save point returns the counters exactly | `can_next_rollback_compare_operation_ids` in `src/types/operation_id.rs` |
+| Buffered transactions survive an unsubscribe | `can_unsubscribe_with_pending_transactions` in `src/datatypes/datatype.rs` |
+
+## Related Concepts
+
+- [`docs/architecture.md`](architecture.md) — where the transactional layer sits and what it shares with synchronization
+- [`docs/core-types.md`](core-types.md) — the logical clock and transaction sequence the counters carry
+- [`docs/datatype-state.md`](datatype-state.md) — the lifecycle states that permit or refuse writes
+- [`docs/variable.md`](variable.md) — the restore-shaped undo and why assignment is not invertible
+- [`docs/error-handling.md`](error-handling.md) — recovery actions, including the one that undoes a transaction
+- [`docs/handler-system.md`](handler-system.md) — how a commit failure reaches the application
+- [`docs/connectivity.md`](connectivity.md) — what happens to a transaction after it is enqueued
