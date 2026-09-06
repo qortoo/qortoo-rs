@@ -1,240 +1,225 @@
 # Core Types
 
-Qortoo separates identity, logical order, element identity, local progress, and
-transaction sequencing into distinct concepts. Each type answers one question and
-therefore carries one comparison meaning.
+A replicated datatype needs to answer five separate questions: which client or datatype
+something belongs to, which of two competing changes has precedence, which exact element an
+operation names, how far one client's own work has progressed, and how far a synchronization
+exchange has gotten. Qortoo gives each question its own type rather than overloading one
+identifier or counter to answer several, so each type has exactly one comparison meaning and
+mixing two up is a type error, not a runtime surprise. This document owns those definitions.
+How they participate in a specific flow — a local write, a sync exchange — is defined by the
+document that owns that flow: [`docs/transaction-and-rollback.md`](transaction-and-rollback.md)
+and [`docs/connectivity.md`](connectivity.md).
 
-## Overview
+## Model
 
-The core types describe two dimensions of a replicated datatype: what a change belongs
-to, and how that change progresses through the distributed system.
+| Term | Meaning |
+|------|---------|
+| `Uid` | Qortoo's one representation of stable, opaque identity |
+| `Cuid` | A `Uid` in the role of identifying a client |
+| `Duid` | A `Uid` in the role of identifying one logical datatype, shared by every one of its replicas |
+| `Timestamp` | The precedence key stamped on a change: a logical clock value paired with its origin client |
+| `OperationContext` | The execution-time pairing of one operation's clock value with its correct origin, assembled fresh for each execution and never persisted |
+| `ElementId` | An exact identity for one of several elements a single change can produce, distinct from precedence |
+| `OperationId` | A client's own evolving position: its next logical clock value and its next transaction number |
+| `CheckPoint` | The pair of progress numbers a synchronization exchange advances |
 
 ```mermaid
-flowchart LR
-    UID["Uid<br/>stable opaque identity"]
-    CUID["Cuid<br/>Client Unique ID"]
-    DUID["Duid<br/>Datatype Unique ID"]
-    RA["Datatype replica<br/>on client A"]
-    RB["Datatype replica<br/>on client B"]
-    OID["OperationId<br/>local logical progress"]
-    TS["Timestamp<br/>which change wins?"]
-    EID["ElementId<br/>which exact element?"]
+flowchart TD
+    UID["Uid: opaque identity"]
+    CUID["Cuid"]
+    DUID["Duid<br/>same for every replica"]
+    OID["OperationId<br/>this client's own evolving position"]
+    TX["a remote Transaction's origin"]
+    OP["an Operation's own clock value"]
+    CTX["OperationContext<br/>assembled once, at execution"]
+    TS["Timestamp<br/>held in CRDT and wire state"]
+    EID["ElementId<br/>reserved, not yet produced"]
     CP["CheckPoint<br/>sseq + cseq"]
 
     UID --> CUID
     UID --> DUID
-    DUID -->|same identity| RA
-    DUID -->|same identity| RB
     CUID --> OID
-    OID -->|logical time| TS
+    OID -->|local execution: origin| CTX
+    TX -->|remote execution: origin| CTX
+    OP -->|clock value| CTX
+    CTX --> TS
     TS --> EID
-    OID -->|client progress| CP
+    OID -->|cseq| CP
 ```
 
-These concepts answer different questions:
+## Rules and Guarantees
 
-| Question | Concept |
-|----------|---------|
-| Which client produced a change? | `Cuid` |
-| Which logical datatype do its replicas represent? | `Duid` |
-| Which concurrent change has precedence? | `Timestamp` |
-| Which exact element does an operation reference? | `ElementId` |
-| What logical time and local transaction comes next? | `OperationId` |
-| Which server-side and client-side transaction sequences are being carried? | `CheckPoint` |
+**Identity is opaque and carries a role, not a meaning of its own.** A `Uid`'s value
+distinguishes one client or datatype from another and encodes nothing else. `Cuid` and `Duid`
+share that same representation but name different things — a client versus a logical
+datatype — and every replica of one logical datatype carries the *same* `Duid`; replicas are
+never assigned separate ones. Because the two share a representation, nothing in the type
+system stops a `Cuid` from being passed where a `Duid` is expected; code that carries an
+identifier across a boundary is responsible for keeping its role straight. The nil `Uid` is a
+sentinel for "no identity assigned," never a generated one.
 
-## Core Types
+**A timestamp orders competing writes deterministically; it does not claim recency.** Ordering
+compares the logical clock value first, and only when two are equal does it fall back to
+origin identity. Two clients can independently produce the same clock value, so the identity
+comparison exists purely to break that tie the same way on every replica — it is not a claim
+that one client's writes are privileged over another's. What the ordering guarantees is that
+every replica resolves the same competing writes to the same winner; it says nothing about
+which one happened first in wall-clock time, because there is no wall clock in this
+comparison.
 
-### Identity: Uid, Cuid, and Duid
+**A timestamp is assembled at the point of execution, not read off the wire.** An operation
+carries only its own clock value; the identity that completes its timestamp comes from
+whichever local state names the operation's true origin — the executing client's own progress
+for a local operation, or the enclosing transaction's origin for a remote one. Assembling this
+pairing is a single, narrow step that runs immediately before an operation reaches its CRDT and
+produces nothing that is stored: the wire format carries only what it always carried, and this
+step exists only to construct the value on which precedence is decided.
 
-`Uid` is Qortoo's common representation of stable identity. The identifier is opaque:
-its value distinguishes one client or datatype from another, but does not encode
-business meaning.
+**Assembling a timestamp is also where a reserved clock value is enforced.** A logical clock
+value of zero is reserved for a CRDT's synthetic initial state, so assembling a timestamp for a
+real modification — local or remote — refuses a zero clock value outright. This is the one
+required check every modification passes through; it is not required when a fresh replica
+applies its starting snapshot, since a legitimate initial state is exactly the case the
+reservation exists for.
 
-Two semantic roles are built on that representation:
+**An element identity adds an exact position within one change, distinct from precedence.** A
+single change can produce more than one addressable element, and every element it produces
+shares that change's timestamp — so exact identity needs one more part, a value distinguishing
+elements produced together, compared only after the timestamp compares equal. Conflict
+resolution compares timestamps; looking up or referencing one particular element compares full
+element identities. Keeping the two separate means a distinguishing value can never quietly
+change which change wins a conflict.
 
-- `Cuid` means **Client Unique ID**. It identifies a client and remains stable while
-  that client produces local operations and transactions.
-- `Duid` means **Datatype Unique ID**. It identifies one logical datatype, independent
-  of where that datatype is replicated.
+**No current datatype produces more than one element per operation.** Element identity is
+defined and tested on its own, but nothing in the SDK today constructs one outside its own
+tests — it is reserved for an ordered datatype this SDK does not yet have. Treat it as
+infrastructure for later, not as a concept either bundled datatype currently exercises.
 
-A datatype can have replicas on multiple clients. Every replica of the same datatype
-has the same DUID; replicas do not receive separate DUIDs. The DUID is therefore the
-shared identity that says those replicas represent the same logical datatype.
+**A client's own progress is mutable state; a timestamp is the immutable value taken from it.**
+A client's position advances as it works: its logical clock value moves forward after every
+successful local operation, and it also absorbs whatever later clock value a remote operation
+carries, so a client's own clock never falls behind what it has already seen. Its transaction
+counter moves forward once per new local transaction, not once per operation, so several
+operations recorded in one transaction share a single transaction number while each still
+receives its own successive clock value. A timestamp, by contrast, is a value taken from this
+evolving state at one moment and then held fixed inside CRDT and wire state for as long as
+that write matters for precedence. An operation that fails, or a transaction that is undone,
+must not leave a permanent mark on this evolving position — see
+[`docs/transaction-and-rollback.md`](transaction-and-rollback.md) for how a save point restores
+it exactly.
 
-The nil UID represents an identity that has not been assigned. It is a sentinel, not a
-generated client or datatype identity.
+**A checkpoint tracks two independent notions of "how far," and only ever advances.** One
+number is how far the backend has acknowledged this client's own transactions — a client
+offers only the transactions numbered past that point. The other is how far this client has
+caught up with the backend's own record of everything it has accepted, from any client. The two
+move independently: a client can commit many transactions of its own between two exchanges,
+advancing the first number a great deal locally, while the second only ever moves in response to
+what an exchange returns. Combining two checkpoints keeps the greater of each number
+individually, so a checkpoint can only move forward, never regress. The exact accounting that
+decides which buffered or returned transactions are new is defined in
+[`docs/connectivity.md`](connectivity.md); this document defines only what the two numbers mean.
 
-`Cuid` and `Duid` share the same representation but have different conceptual roles.
-Code that moves an identifier across a boundary must preserve that role explicitly.
+**Limits on the guarantees.** Two different writes are never expected to share a timestamp —
+that would mean two operations from the same client at the same logical instant — and the
+comparison rules make no promise about what happens if one does; where this is checked, it is
+treated as corruption rather than a conflict to resolve (see
+[`docs/variable.md`](variable.md)). A client's own progress additionally has a full ordering
+and a merge helper defined for it, but nothing in the SDK currently compares two of these
+values or exercises that merge outside its own tests — the type is complete but that part of
+its surface is not yet load-bearing.
 
-### Precedence: Timestamp
+## Behavior
 
-A `Timestamp` is the deterministic precedence key for a change:
+**Assembling a local timestamp.** A client executes an operation. Its own next logical clock
+value is computed, paired with its own identity, and that pairing becomes the operation's
+timestamp for exactly the duration of this execution.
 
-```text
-Timestamp = (Lamport time, client identity)
-```
+**Assembling a remote timestamp.** A transaction arrives from another client. Each operation
+inside it is paired with that transaction's origin identity, not with any identity of the
+executing client's own — and the executing client's own logical clock absorbs whatever value
+the incoming operations carry, so it never falls behind what it has now seen.
 
-Lamport time establishes logical order. A higher Lamport value has precedence over a
-lower value. Two clients can independently produce the same Lamport value, so CUID
-provides a deterministic tie-breaker.
+**Rejecting a reserved clock value.** A modification operation is constructed with a zero
+logical clock value, whether by a bug or by malformed input. Assembling its timestamp refuses
+it immediately, before it reaches any CRDT, on both the local and the remote path alike.
 
-```text
-compare Lamport time
-    └── if equal, compare CUID
-```
+**Two elements from one change.** A single change produces two elements. Both receive the same
+timestamp; each receives a different distinguishing value, so the two remain individually
+addressable even though neither can be ranked ahead of the other by precedence alone.
 
-This creates one stable ordering on every replica of the datatype. It does not claim
-that the winning change occurred later in wall-clock time; it only guarantees that all
-replicas of the datatype resolve the same competing changes in the same way.
+**A transaction of several operations.** A client commits one transaction containing three
+operations. Its transaction counter advances once, while its logical clock advances three
+times — once per operation — so the transaction is one unit for sequencing purposes but three
+distinct points for precedence purposes.
 
-Equality, ordering, and hashing all describe this same `(Lamport, CUID)` identity.
-That consistency allows a CRDT rule to read naturally as “the greater timestamp wins.”
+**A checkpoint advancing after an exchange.** A client has committed transactions locally that
+the backend has not yet acknowledged, and the backend has accepted work from other clients that
+this one has not yet seen. Both directions become visible in one exchange: the acknowledgement
+of what this client sent moves its own progress number forward, and the transactions returned
+in response are used to move its record of the backend's overall progress forward to match.
 
-An `Operation` stores Lamport time, while the originating CUID is stored in the local
-`OperationId` or the enclosing remote `Transaction`. At the execution boundary,
-`OperationContext` combines those two sources into a `Timestamp`: local execution uses
-the local operation ID's CUID, and remote execution uses the transaction's CUID. The
-context is ephemeral; it does not change the persisted operation or transaction format.
+## Rationale
 
-The LWW `Variable` datatype is the concrete consumer of this ordering: it retains the
-winning write's `Timestamp` in its CRDT state and resolves every competing `Set` with
-the "greater timestamp wins" rule, reserving Lamport `0` for its synthetic initial
-state (see [`docs/variable.md`](variable.md)).
+**One type carries one comparison meaning.** A timestamp answers "which of two changes wins."
+An element identity answers "which exact element is this." Keeping the two as separate types
+means a distinguishing value literally cannot participate in deciding a conflict, because it is
+not part of the type that conflict resolution compares.
 
-### Exact element identity: ElementId
+**Logical time, not wall-clock time.** A logical clock gives every replica a deterministic
+sense of "before" and "after" without requiring synchronized physical clocks anywhere, which a
+distributed system cannot assume it has. The cost is that the resulting order says nothing
+about real elapsed time, which is a deliberate trade: the guarantee this SDK needs is that
+replicas agree, not that they agree with a wall clock.
 
-One logical operation can create more than one element. Those elements share a
-timestamp, so timestamp equality alone cannot identify a particular element.
+**Client identity breaks ties, not because origin should matter, but because something must.**
+Two clients can produce the same logical clock value entirely legitimately, working
+independently. The comparison needs some deterministic answer for that case, and identity is
+the one piece of information already attached to every write that is guaranteed to differ
+between two different clients producing it.
 
-`ElementId` adds a delimiter within the operation:
+**Evolving state and retained values are kept apart because they answer to different
+consumers.** A client's own progress has to change as it does new work and has to be
+undoable when work is undone. A timestamp embedded in CRDT state has to stay exactly what it
+was when a write happened, indefinitely, because other replicas' future comparisons depend on
+it never drifting. A single mutable type trying to serve both roles would have to guard every
+read of it against a concurrent write in progress; two types make each guarantee simple on its
+own.
 
-```text
-ElementId = (Timestamp, delimiter)
-```
+**Two sequence numbers instead of one.** A single counter cannot describe "how far my own work
+has been acknowledged" and "how far I've caught up with everyone else's" at the same time,
+because those move at different rates and for different reasons — one advances on every local
+commit, the other only on what an exchange actually confirms. Merging them into one number
+would force one of those two questions to be answered approximately.
 
-The two parts have separate meanings:
+## Code Map
 
-- `Timestamp` identifies the producing change and its precedence.
-- `delimiter` identifies one element produced by that change.
+| Concern | Location |
+|---------|----------|
+| `Uid`, `Cuid`, `Duid`, and the nil sentinel | `src/types/uid.rs` |
+| `Timestamp`, its comparison, and its wire encoding | `src/types/timestamp.rs` |
+| `OperationContext`, including the reserved-clock-value check | `src/types/operation_context.rs` |
+| `ElementId` — defined and tested, not yet constructed by any datatype | `src/types/element_id.rs` |
+| `OperationId`, its advance methods, and its transaction-boundary logic | `src/types/operation_id.rs` |
+| `CheckPoint` and merging two of them | `src/types/checkpoint.rs` |
+| Where a local timestamp is assembled and the local clock advances | `src/datatypes/mutable.rs` (`execute_local_operation`) |
+| Where a remote timestamp is assembled and the local clock absorbs it | `src/datatypes/mutable.rs` (`execute_remote_transaction`) |
 
-Different delimiters therefore produce different element identities even when their
-timestamps are equal. Conflict resolution compares timestamps; exact lookup and
-reference compare element IDs. Keeping these concepts separate prevents element
-identity from silently changing a conflict rule.
-
-### Local logical progress: OperationId
-
-`OperationId` is the evolving local position of a client's replica of a datatype:
-
-```text
-OperationId = (Lamport time, client identity, client transaction sequence)
-```
-
-It combines two forms of progress:
-
-- Lamport time advances for successful local operations and absorbs logical time seen
-  from remote operations.
-- client sequence (`cseq`) advances for new local transactions.
-
-These counters serve different purposes. Lamport time orders changes, while `cseq`
-groups and tracks transactions produced by one client. A transaction containing
-multiple operations therefore consumes one client sequence but multiple Lamport
-positions.
-
-The operation ID is mutable clock state. A `Timestamp` is an immutable value taken from
-that logical-time domain and retained in CRDT state. Failed or rolled-back work must
-not permanently advance the local position.
-
-### Transaction sequences: CheckPoint
-
-A `CheckPoint` carries two transaction sequence values used during push-pull:
-
-```text
-CheckPoint = (server sequence, client sequence)
-```
-
-- server sequence (`sseq`) represents the order of transactions received by the server.
-- client sequence (`cseq`) represents the transaction sequence from the perspective of
-  one client.
-
-Their role at a particular point in push-pull is determined by that protocol context.
-This overview defines only the two sequence domains.
-
-### Code map
-
-The concept definitions are kept together under `src/types/`:
-
-| Concept | Definition |
-|---------|------------|
-| `Uid`, `Cuid`, `Duid` | `src/types/uid.rs` |
-| `Timestamp` | `src/types/timestamp.rs` |
-| `ElementId` | `src/types/element_id.rs` |
-| `OperationContext` | `src/types/operation_context.rs` |
-| `OperationId` | `src/types/operation_id.rs` |
-| `CheckPoint` | `src/types/checkpoint.rs` |
-
-## How It Works
-
-The concepts participate in a change from creation to synchronization as follows:
-
-1. A client has a stable `Cuid`. A datatype has a stable `Duid`, and every replica of
-   that datatype carries the same DUID.
-2. A local operation receives the next Lamport time. `OperationContext` combines that
-   time with the local CUID before CRDT execution. Remote execution combines the
-   operation's Lamport time with its transaction's CUID.
-3. After successful execution, the first operation in a local transaction advances that
-   client's transaction sequence. A non-commutative CRDT can retain the context's
-   `Timestamp` so every replica selects the same winner when changes compete.
-4. If one operation creates multiple addressable elements, each receives an
-   `ElementId` with the same timestamp and a distinct delimiter.
-5. A transaction carries its client-side `cseq`, and the server places received
-   transactions in its server-side `sseq` order. Push-pull exchanges carry both values
-   in a `CheckPoint`.
-
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant D as Local datatype replica
-    participant S as Synchronization service
-
-    C->>C: Assign next Lamport time
-    C->>D: Build OperationContext and apply change
-    D->>C: Advance OperationId after success
-    opt Multiple elements
-        C->>D: Distinguish each ElementId
-    end
-    C->>S: Send transaction with CUID/cseq
-    S->>S: Assign sseq
-    S-->>C: Return CheckPoint(sseq, cseq)
-```
-
-The separation remains important throughout the flow: identity selects the client or
-logical datatype, logical time resolves competition, element identity selects an exact
-node, and sequence numbers locate transactions in client-side and server-side orders.
-
-## Key Design Decisions
-
-- **One type carries one comparison meaning.** `Timestamp` represents precedence;
-  `ElementId` represents exact identity. A delimiter never changes which operation
-  wins a conflict.
-- **Logical time is not wall-clock time.** Lamport time provides deterministic causal
-  progress without depending on synchronized physical clocks.
-- **Client identity completes the order.** CUID tie-breaking turns equal Lamport values
-  into a stable order shared by every replica of the datatype.
-- **Clock state and retained values are distinct.** `OperationId` evolves as work is
-  produced, while timestamps and element IDs remain immutable inside CRDT state.
-- **Transaction ordering has two reference points.** `cseq` follows one client's
-  transaction sequence; `sseq` follows the order of transactions received by the
-  server. `CheckPoint` carries both sequence values through push-pull.
+| Verified by | Tests |
+|-------------|-------|
+| Identity generation, validation, and the nil sentinel | `can_generate_uids`, `can_validate_uids`, `can_create_duid_and_cuid` in `src/types/uid.rs` |
+| Ordering compares the clock value first, then breaks ties by identity | `can_order_timestamps_by_lamport`, `can_break_timestamp_ordering_ties_by_cuid` in `src/types/timestamp.rs` |
+| The initial timestamp is older than any real one | `can_create_an_initial_timestamp_older_than_real_operations` in `src/types/timestamp.rs` |
+| A timestamp is assembled from an operation and its origin | `can_create_an_operation_context_with_an_origin_cuid` in `src/types/operation_context.rs` |
+| A zero clock value is refused for a real modification | `can_reject_a_modification_operation_with_zero_lamport` in `src/types/operation_context.rs` |
+| Element identities with equal timestamps still compare unequal, and order by timestamp then distinguishing value | `can_compare_exact_element_identity`, `can_order_element_ids_by_timestamp_then_delimiter` in `src/types/element_id.rs` |
+| A client's own clock advances only on success, and rollback restores it exactly | `can_next_rollback_compare_operation_ids` in `src/types/operation_id.rs` |
+| A transaction advances the transaction counter once regardless of operation count | `can_preserve_transaction_state_when_operation_execution_fails` in `src/datatypes/mutable.rs` |
+| Merging two checkpoints keeps the greater of each field | `can_use_checkpoint` in `src/types/checkpoint.rs` |
 
 ## Related Concepts
 
-- [Architecture](architecture.md) — where identity and progress live in the datatype
-  layer stack
-- [Transaction and Rollback](transaction-and-rollback.md) — how local logical progress
-  participates in atomic transactions
-- [Connectivity](connectivity.md) — how client and server transaction progress is
-  exchanged
-- [Event Loop](event-loop.md) — how server progress notifications trigger
-  synchronization
+- [`docs/architecture.md`](architecture.md) — where a client's progress and a datatype's identity live among its other state
+- [`docs/transaction-and-rollback.md`](transaction-and-rollback.md) — how a client's own progress is saved and restored around a transaction
+- [`docs/connectivity.md`](connectivity.md) — how the two checkpoint numbers are exchanged and reconciled
+- [`docs/variable.md`](variable.md) — the concrete consumer of timestamp precedence, including what it does if two writes ever share one
+- [`docs/error-handling.md`](error-handling.md) — how a rejected zero-clock-value operation surfaces as an error
