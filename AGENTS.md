@@ -104,13 +104,11 @@ When you change behavior described in one of these documents, update it in the s
 - **Cross-datatype test duplication**: when adding a new datatype (e.g., `Variable` alongside `Counter`), don't copy a sibling datatype's test for shared, datatype-agnostic plumbing — `DatatypeBuilder` key validation, readonly enforcement, lifecycle-state gating — onto the new one just because it has its own `build_*` method. That plumbing is proven once, by whichever datatype's test exercises it first; a second copy re-tests the same shared code path under a different name and adds no signal. Write a new datatype's own tests for what actually differs: its CRDT semantics, its value contract, and that its builder method actually constructs and wires up that concrete type.
 
 ## Naming Validation
-Collection names and datatype keys must:
-- Be 1-47 characters
-- Start with a letter (not digit)
-- Not start with "system." or contain ".system."
-- Use only alphanumeric, underscore, hyphen, or dot characters
 
-(See [`docs/client-and-datatype-builder.md`](docs/client-and-datatype-builder.md) for exactly where each rule is enforced.)
+Collection names and datatype keys follow different rules, and both lengths are measured in
+bytes. [`docs/client-and-datatype-builder.md`](docs/client-and-datatype-builder.md) owns those
+rules, with accepted and rejected examples and the point each one is checked. Do not restate
+them here or in another document.
 
 ## Documentation Guidelines
 
