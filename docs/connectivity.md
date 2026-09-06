@@ -61,10 +61,13 @@ transaction the client already applied is skipped rather than applied twice.
 when its event loop starts, handing over the channel the backend can use to tell it that work
 has arrived. A backend that is not realtime never uses it.
 
-**Notification is best-effort.** A realtime backend tells the other clients that a push
-succeeded, and a notification that cannot be delivered immediately is dropped rather than
-queued. Dropping one costs nothing but latency: the progress comparison in the next exchange
-finds the same work.
+**The notification itself is never dropped; what it triggers can be.** Registration hands the
+backend a channel that does not drop what is sent to it, so a realtime backend's "a push
+succeeded" reaches every registered client. What each client does in response is its own
+decision — checking whether the notification means there is actually anything new to pull, and
+if so, asking its own event loop to check again — and that second, client-local step is the one
+allowed to be dropped if one is already pending. See
+[`docs/event-loop.md`](event-loop.md) for exactly which channel that is and why.
 
 **Errors come back inside the package.** A backend that refuses reports the reason in the
 package rather than by failing the call, so the client can tell a refusal apart from an
@@ -146,10 +149,11 @@ from a live client's snapshot is much cheaper than replaying every transaction e
 Keeping the history as a fallback means losing the origin degrades performance rather than
 correctness.
 
-**Notification is allowed to be dropped.** The alternative is queuing notifications, which turns
-a slow consumer into unbounded memory. Because progress is compared on every exchange, a
-dropped notification delays convergence but cannot break it — which makes dropping the right
-trade.
+**A client is allowed to drop its own follow-up check, not the notification that caused it.**
+Queuing every follow-up would turn a burst of notifications into unbounded memory on the
+receiving client for no benefit, since one pending check already promises the next exchange
+will happen. Because progress is compared on every exchange rather than trusted from the
+notification's payload, a dropped follow-up delays convergence but cannot break it.
 
 **The interceptor is reachable only from tests.** Nothing in production has a reason to alter an
 exchange in flight. Gating the way to obtain it, rather than the type, keeps the wired layer
