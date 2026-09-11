@@ -11,6 +11,7 @@ Shared across all qortoo-* repos (canonical text in [qortoo-harness `AGENTS.md`]
 - Favor SOLID principles, especially Single Responsibility (SRP) and Open/Closed (OCP), where practical. Check for these during review.
 - Structure important concepts under `./docs/` so they're easy to follow from Markdown and diagrams grounded in the actual code. Use the `/qortoo-shared:doc-new` command to scaffold a new concept document.
 - All individual plan documents, regardless of the repository they concern, belong in the qortoo-harness repository's gitignored `.local/plans/` directory. Task lists and working notes likewise belong under qortoo-harness's `.local/` — never commit them or propose committing them. Claude Code's project-scoped agent memory (`.claude/agent-memory/`) is likewise personal and gitignored, not shared team knowledge.
+- When work is carried out against a plan document in `.local/plans/`, update that document — status, checklist items, progress log — as part of the same work, not only when separately asked. The plan should reflect what was actually done (including corrections, reverted commits, and scope decisions) closely enough that reading it alone tells the true current state.
 
 ## Project Structure & Module Organization
 - `src/` holds the Rust crate, with modules like `clients/`, `connectivity/`, `datatypes/`, `errors/`, `observability/`, `operations/`, `types/`, and `utils/`, plus shared roots like `constants.rs` and `defaults.rs`.
@@ -104,13 +105,11 @@ When you change behavior described in one of these documents, update it in the s
 - **Cross-datatype test duplication**: when adding a new datatype (e.g., `Variable` alongside `Counter`), don't copy a sibling datatype's test for shared, datatype-agnostic plumbing — `DatatypeBuilder` key validation, readonly enforcement, lifecycle-state gating — onto the new one just because it has its own `build_*` method. That plumbing is proven once, by whichever datatype's test exercises it first; a second copy re-tests the same shared code path under a different name and adds no signal. Write a new datatype's own tests for what actually differs: its CRDT semantics, its value contract, and that its builder method actually constructs and wires up that concrete type.
 
 ## Naming Validation
-Collection names and datatype keys must:
-- Be 1-47 characters
-- Start with a letter (not digit)
-- Not start with "system." or contain ".system."
-- Use only alphanumeric, underscore, hyphen, or dot characters
 
-(See [`docs/client-and-datatype-builder.md`](docs/client-and-datatype-builder.md) for exactly where each rule is enforced.)
+Collection names and datatype keys follow different rules, and both lengths are measured in
+bytes. [`docs/client-and-datatype-builder.md`](docs/client-and-datatype-builder.md) owns those
+rules, with accepted and rejected examples and the point each one is checked. Do not restate
+them here or in another document.
 
 ## Documentation Guidelines
 

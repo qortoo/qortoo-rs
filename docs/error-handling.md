@@ -1,284 +1,293 @@
 # Error Handling
 
-Qortoo separates *what went wrong* (a typed error) from *how the SDK recovers* (a single
-`RecoveryAction`). Wire-level and connectivity errors are translated into a
-`DatatypeError`, and `mapping()` pairs that error with the one recovery policy that
-applies — the pair travels as `DatatypeErrorWithAction`.
+Qortoo separates *what went wrong* from *how the SDK responds*. An error is a typed value
+naming the failure; a recovery action is the single policy that applies to it. Some errors
+are answered by the caller and never leave the call that produced them; others are decided
+by the SDK, which changes the datatype's lifecycle and its synchronization schedule and then
+tells the application what happened. This document defines which errors exist, which of the
+two destinations each one has, and what the SDK does on the way.
 
-## Overview
+## Model
+
+| Term | Meaning |
+|------|---------|
+| Typed error | A value naming a failure, carrying a numeric code and a human-readable message |
+| Caller-facing error | An error returned from the call that produced it; the caller decides what to do |
+| Routed error | An error the SDK acts on, pairing it with a recovery action before any consumer sees it |
+| Recovery action | One whole policy: the lifecycle effect and the scheduling effect that must happen together |
+| Translation boundary | The single place that pairs an error with its action, kept next to the error definition |
+| Wire error | A failure reported by the responder inside the exchange package, translated on arrival |
+| Internal reason | A crate-private cause behind an internal error, used to pick a routing before the cause is erased |
+
+An error reaches one of two destinations, never both. A caller-facing error is a return value:
+naming a key this client does not manage, writing to a datatype whose state forbids it, or
+handing a datatype a value it cannot represent. Nothing about the datatype changes and the SDK
+takes no action. A routed error is one the caller could not have prevented and cannot fix in
+place — a backend that timed out, a server that rejected the subscription — so the SDK pairs it
+with a recovery action, applies that action, and reports the error through the datatype's
+handler.
+
+Routing a caller-facing error is a defect, not a fallback: the translation boundary refuses
+those variants rather than assigning them a default action.
 
 ```mermaid
 flowchart TD
-    PPE["PushPullError\n(wire-level, in PushPullPack.error)\nsrc/errors/push_pull.rs"]
-    CNE["ConnectivityError\n(crate-internal)\nsrc/errors/connectivity.rs"]
-    IR["InternalReason\n(crate-private)\nsrc/errors/datatypes.rs"]
+    WIRE["wire error<br/>reported by the responder"]
+    CONN["backend error"]
+    INT["internal reason"]
+    DE["typed datatype error"]
+    MAP["translation boundary"]
+    PAIR["error + recovery action"]
+    LOOP["sync path:<br/>event loop applies the action"]
+    COMMIT["commit path:<br/>the committing thread applies the action"]
+    HANDLER["error handler"]
+    CALLER["the calling code"]
+    DIRECT["caller-facing error"]
 
-    DE["DatatypeError\nsrc/errors/datatypes.rs"]
-    MAP["mapping()"]
-    DEWA["DatatypeErrorWithAction\n{ error, recovery }"]
-    RA["RecoveryAction"]
-
-    EL["EventLoop\n(sync-path errors)"]
-    TX["TransactionalDatatype::end_transaction\n(commit-path errors)"]
-    CLIENT["ClientError\nsrc/errors/clients.rs"]
-
-    PPE -->|"to_datatype_error()"| DE
-    CNE -->|"to_datatype_error()"| DE
-    IR -->|"into_error()"| DE
-    DE --> MAP --> DEWA --> RA
-    IR -.->|"mapping() creation-site override"| DEWA
-
-    RA --> EL
-    RA --> TX
-    CLIENT -->|"returned directly to caller"| API["Public API caller"]
+    WIRE --> DE
+    CONN --> DE
+    INT --> DE
+    INT -.->|routing chosen before the cause is erased| PAIR
+    DE --> MAP --> PAIR
+    PAIR --> LOOP --> HANDLER
+    PAIR --> COMMIT --> HANDLER
+    DIRECT --> CALLER
 ```
 
----
+## Error Reference
 
-## Core Types
+### Client errors (codes 100–)
 
-| Type | File | Purpose |
-|------|------|---------|
-| `BoxedError` | `src/errors/mod.rs` | `Box<dyn Error + Send + Sync>` — thread-safe opaque error |
-| `ClientError` | `src/errors/clients.rs` | Client-side errors (name validation, datatype registration); returned directly to callers |
-| `DatatypeError` | `src/errors/datatypes.rs` | User-visible errors surfaced by all datatype operations |
-| `ServerRejectReason` | `src/errors/datatypes.rs` | Why the server permanently rejected an operation; carried by `DatatypeError::ServerRejected` |
-| `InternalReason` | `src/errors/datatypes.rs` | Crate-private reasons behind `DatatypeError::Internal` |
-| `ConnectivityError` | `src/errors/connectivity.rs` | Crate-internal errors from the connectivity backend (not re-exported) |
-| `PushPullError` | `src/errors/push_pull.rs` | Wire-level error set by the responder in `PushPullPack.error` |
-| `DatatypeErrorWithAction` | `src/errors/datatypes.rs` | `DatatypeError` + its `RecoveryAction` |
-| `RecoveryAction` | `src/errors/datatypes.rs` | The single recovery policy applied after a routed error |
-
----
-
-## Error Taxonomy
-
-### ClientError (codes 100–)
-
-Returned directly to API callers. Never routed through the event loop.
+Returned directly to the caller; never routed.
 
 | Variant | Code | Trigger |
 |---------|------|---------|
-| `InvalidCollectionName` | 100 | Collection name fails naming validation |
-| `FailedToSubscribeOrCreateDatatype` | 101 | Re-registering a key on the same client, or type mismatch |
+| `InvalidCollectionName` | 100 | The collection name fails naming validation |
+| `FailedToSubscribeOrCreateDatatype` | 101 | The key is already held by this client, or the requested kind or state does not match what is there |
 
-### DatatypeError (codes 200–)
+### Datatype errors (codes 200–)
 
-The public-facing error type for all datatype operations, surfaced via API return values
-and `on_error` handlers. Variants split into two groups:
+The public error type for datatype operations. Caller-facing variants are returned from the
+call; routed variants are paired with an action.
 
-**Caller-facing — returned directly, never routed through `mapping()`:**
+**Caller-facing.**
 
 | Variant | Code | Meaning |
 |---------|------|---------|
-| `TransactionFailed` | 201 | Transaction closure returned an error or commit failed |
-| `Disallowed` | 205 | Access denied for a reason other than state/readonly (e.g., key not managed by this client) |
-| `NotWritable` | 206 | Write rejected because the datatype state does not allow writes |
+| `TransactionFailed` | 201 | The transaction closure returned an error, or the commit could not complete |
+| `Disallowed` | 205 | Access denied for a reason other than state or readonly configuration, such as a key this client does not manage |
+| `NotWritable` | 206 | The datatype's lifecycle state does not permit writes |
+| `ValueConversion` | 214 | A value could not be converted to or from the datatype's representation; nothing was applied |
 
-**Routed — carry a `RecoveryAction` via `mapping()`:**
+**Routed.**
 
-| Variant | Code | Meaning | RecoveryAction |
-|---------|------|---------|----------------|
-| `Internal` | 202 | Internal SDK fault (see `InternalReason`); not user-actionable | `Disable`* |
-| `ReadonlyViolation` | 207 | Write from a client configured as readonly | `Disable` |
-| `SyncFailed` | 210 | Transient sync failure (connectivity timeout, server internal error) | `RetryWithBackOff` |
-| `PushBufferExceededMaxMemSize` | 211 | Transaction cannot be buffered for pushing | `RollbackTransaction` |
-| `ServerRejected(ServerRejectReason)` | 213 | Server permanently rejected the operation | `Disable` |
+| Variant | Code | Meaning | Recovery action |
+|---------|------|---------|-----------------|
+| `Internal` | 202 | An SDK fault, not actionable by the application | `Disable` \* |
+| `ReadonlyViolation` | 207 | The server reports a write from a client configured as readonly | `Disable` |
+| `SyncFailed` | 210 | A transient exchange failure, such as a timeout or a server-side internal error | `RetryWithBackOff` |
+| `PushBufferExceededMaxMemSize` | 211 | The committed transaction does not fit in the push buffer | `RollbackTransaction` |
+| `ServerRejected` | 213 | The server permanently refused the operation; the reason is carried inside | `Disable` |
 
-\* except `InternalReason::NonSequentialCseq`, which is routed to `RollbackTransaction`
-at its creation site — see [InternalReason](#3-internalreason--creation-site-routing).
+\* except the non-sequential-sequence reason, which chooses `RollbackTransaction` at its
+creation site — see **Creation-site routing** below.
 
-`ReadonlyViolation` appears on both sides: locally it is returned directly to the caller
-of a write API; when the *server* reports it (`PushPullError::ReadonlyViolation`), it is
-routed through `mapping()` and disables the datatype.
+`ReadonlyViolation` reaches both destinations depending on who detects it. A local write by a
+readonly client is refused as `NotWritable` before anything is applied; the same violation
+reported by the server arrives as a routed error and disables the datatype.
 
-### ServerRejectReason
+### Server rejection reasons
 
-Carried by `DatatypeError::ServerRejected`. New lifecycle operations (e.g., delete,
-merge) add variants here without touching `DatatypeError` itself.
+Carried inside a `ServerRejected` error. Lifecycle operations added later extend this set
+without changing the datatype error type.
 
 | Variant | Trigger |
 |---------|---------|
-| `CreateFailed` | Server refused to create the datatype (e.g., already exists) |
-| `ResourceNotFound` | Requested resource does not exist or has an incompatible type |
-| `MissingSubscription` | Server-side subscription entry is missing (e.g., server restarted) |
-| `ProtocolViolation` | Push violated the wire protocol (unexpected state transition, type mismatch) |
+| `CreateFailed` | The server refused to create the datatype, for example because it already exists |
+| `ResourceNotFound` | The requested resource does not exist or has an incompatible type |
+| `MissingSubscription` | The server has no subscription entry, for example after losing state |
+| `ProtocolViolation` | The push violated the wire protocol, such as an unexpected state transition or a type mismatch |
 
-### ConnectivityError (crate-internal)
+### Backend errors
 
-Not re-exported at the crate root; it stays internal until custom connectivity backends
+Crate-internal and not part of the public surface; they stay internal until custom backends
 become a public extension point.
 
-| Variant | Trigger | Converts to |
-|---------|---------|-------------|
-| `TimedOut` | Backend did not respond in time | `DatatypeError::SyncFailed` |
+| Variant | Trigger | Becomes |
+|---------|---------|---------|
+| `TimedOut` | The backend did not respond in time | `SyncFailed` |
 
-### PushPullError (codes 300–)
+### Wire errors (codes 300–)
 
-The wire-level error set by the responder (the server side) in `PushPullPack.error`.
-The client converts it via `to_datatype_error()`; variant names mirror
-`ServerRejectReason` where a counterpart exists.
+Set by the responder in the exchange package and translated on arrival. Names mirror the
+server rejection reasons where a counterpart exists.
 
-| Variant | Code | Converts to |
-|---------|------|-------------|
+| Variant | Code | Becomes |
+|---------|------|---------|
 | `ProtocolViolation` | 301 | `ServerRejected(ProtocolViolation)` |
 | `ReadonlyViolation` | 302 | `ReadonlyViolation` |
 | `CreateFailed` | 303 | `ServerRejected(CreateFailed)` |
 | `ResourceNotFound` | 304 | `ServerRejected(ResourceNotFound)` |
 | `MissingSubscription` | 305 | `ServerRejected(MissingSubscription)` |
-| `ServerInternalError` | 306 | `SyncFailed` (transient — retry with backoff) |
+| `ServerInternalError` | 306 | `SyncFailed`, treated as transient |
 
----
+### Recovery actions
 
-## RecoveryAction
+| Action | Lifecycle effect | Scheduling effect | Produced by |
+|--------|------------------|-------------------|-------------|
+| `NotifyOnly` | none; the handler is told and nothing changes | normal | *reserved* |
+| `RetryWithBackOff` | none | exponential backoff | `SyncFailed` |
+| `RollbackTransaction` | undo the pending transaction | never reaches the event loop | `PushBufferExceededMaxMemSize`, non-sequential sequence |
+| `Resubscribe` | reset local state, return to subscribing | normal | *reserved* |
+| `ResubscribeWithBackOff` | reset local state, return to subscribing | exponential backoff | *reserved* |
+| `Disable` | disable the datatype | stopped; further sync requests are refused | `Internal`, `ServerRejected`, `ReadonlyViolation` |
 
-Each variant is a self-consistent recovery policy: it bundles the event-loop scheduling
-effect and the datatype-lifecycle side effect that must occur together. Contradictory
-pairings (e.g., disabling the datatype while keeping sync scheduled) are unrepresentable
-by construction.
+## Rules and Guarantees
 
-| Variant | Lifecycle effect (`MutableDatatype::apply_action`) | Loop effect (`LoopMode`) | Producers |
-|---------|-----------------------------------------------------|--------------------------|-----------|
-| `NotifyOnly` | none — `on_error` only | `Normal` | *reserved* |
-| `RetryWithBackOff` | none | `BackOff` | `SyncFailed` |
-| `RollbackTransaction` | `do_rollback()` on the pending transaction | — (never reaches the loop) | `PushBufferExceededMaxMemSize`, `InternalReason::NonSequentialCseq` |
-| `Resubscribe` | `reset()` + state → `SubscribingOrCreating` | `Normal` | *reserved* |
-| `ResubscribeWithBackOff` | same as `Resubscribe` | `BackOff` | *reserved* |
-| `Disable` | `disable()` — state → `Disabled` | `Stopped` | `Internal`, `ServerRejected`, `ReadonlyViolation` |
+**One destination per error.** Every error is either returned to its caller or routed, and the
+classification is a property of the variant, not of the situation. The translation boundary
+treats a caller-facing variant as a defect and refuses it rather than choosing a default.
 
-> **WARNING (reserved variants)**: `Resubscribe` / `ResubscribeWithBackOff` reset local
-> state, which discards unpushed transactions in the push buffer. A local data-loss
-> policy must be decided before wiring a producer.
+**One action per routed error.** The translation from error to action lives next to the error
+definition, so a new routed variant is added in one place and every consumer matches
+exhaustively. No consumer decides policy for itself.
 
-`MutableDatatype::apply_action()` is the single dispatch point for the lifecycle side
-effect, shared by both consumer paths below.
+**Recovery actions are whole policies.** An action names a lifecycle effect and a scheduling
+effect together. There is no way to express a combination the SDK does not intend, such as
+disabling a datatype while leaving its synchronization scheduled.
 
----
+**One dispatch point for lifecycle effects.** Both consumer paths apply the lifecycle half of
+an action through the same code, so a rollback or a disable means the same thing regardless of
+which path decided it.
 
-## How It Works
+**The sync path.** A failed exchange is routed, the event loop takes its scheduling mode from
+the action, the lifecycle effect is applied, and the error is reported to the datatype's
+handler. Retrying uses exponential backoff between 500 ms and 30 s, and is not capped by an
+attempt count; a disabled datatype refuses further sync requests. See
+[`docs/event-loop.md`](event-loop.md).
 
-### 1. Sync path — errors routed through the event loop
+**The commit path.** Undoing a transaction never travels through the event loop, because the
+thread that committed is still the one that has to undo it. When enqueuing a committed
+transaction fails, the pending transaction is restored so its undo actions still match, the
+undo is applied, and the error is reported to the handler.
 
-When `push_pull()` fails, the raw error is converted to a `DatatypeError`
-(`to_datatype_error()`), then routed (`mapping()`):
+**Creation-site routing.** An internal error erases its cause into a message. A cause that
+needs a routing other than the internal default must therefore choose its action before the
+erasure, at the point the error is created. Every other cause defers to the single table.
 
-```mermaid
-flowchart TD
-    PP["wired.push_pull()"]
-    ERR["Err(DatatypeErrorWithAction)"]
-    LM["loop_mode = LoopMode::from(recovery)"]
-    HE["wired.handle_error(error, recovery)"]
-    AA["mutable.write().apply_action(recovery)"]
-    CB["mutable.read().call_error_handler(error)\n(on_error handlers, after lock release)"]
+**Reserved actions are unwired on purpose.** `Resubscribe` and `ResubscribeWithBackOff` reset
+local state, which discards transactions still waiting in the push buffer. No producer routes
+to them until that data-loss policy is decided.
 
-    PP -->|"failure"| ERR
-    ERR --> LM
-    ERR --> HE
-    HE --> AA --> CB
-```
+**Limits on the guarantees.** A commit-path failure does not change what the call returns: the
+value was determined when the operation succeeded, so the caller receives success while the
+transaction is undone, and the handler is the only notification. An application that must know
+a write survived its commit has to register one — see
+[`docs/handler-system.md`](handler-system.md). Stack traces attached to internal errors are
+diagnostic only; a platform that cannot produce one omits the trace and preserves the typed
+error, and trace formatting never replaces an application error or escapes as a panic across a
+language boundary.
 
-The event loop derives its scheduling mode from the action
-(`impl From<RecoveryAction> for LoopMode` in `event_loop.rs`):
+## Behavior
 
-| RecoveryAction | LoopMode |
-|----------------|----------|
-| `NotifyOnly`, `Resubscribe` | `Normal` |
-| `RetryWithBackOff`, `ResubscribeWithBackOff` | `BackOff` — exponential backoff (500ms–30s, unlimited retries) |
-| `Disable` | `Stopped` — further `PushTransaction` events are rejected |
-| `RollbackTransaction` | `debug_assert` — must never reach the loop |
+**A backend that times out.** The exchange fails, the error becomes a transient sync failure,
+and the action is to retry with backoff. Nothing about the datatype changes: its value, its
+lifecycle state, and its buffered transactions are all intact, and the handler is told. The
+next attempt happens after the backoff interval, which grows with consecutive failures.
 
-See [`docs/event-loop.md`](event-loop.md) for the full BackOff and Stopped flow.
+**A server that rejects the subscription.** The wire error becomes a server rejection and the
+action is to disable. The lifecycle effect runs first, so the datatype is already disabled when
+the error notification arrives — a handler that inspects the datatype it is given observes the
+disabled state, not the state the request was sent in. The event loop stops and refuses further
+sync requests.
 
-### 2. Commit path — errors consumed on the user thread
+**A push buffer that is full.** The transaction closure returned success, but the transaction
+does not fit. The action is to undo, which happens on the committing thread rather than in the
+event loop. The datatype returns to its pre-transaction value and the handler is told. The call
+that made the write still returned its value.
 
-`RollbackTransaction` never travels through the event loop. When
-`MutableDatatype::end_transaction()` fails to enqueue the committed transaction into the
-push buffer, the pending transaction is restored and the routed error is returned to
-`TransactionalDatatype::end_transaction()`, which handles it synchronously:
+**A value the datatype cannot represent.** Converting the value fails before any operation is
+created, so nothing is applied, no transaction opens, and the failure is returned from the call
+that supplied the value. Nothing is routed and no handler is involved.
 
-```mermaid
-flowchart TD
-    ET["mutable.end_transaction()"]
-    ENQ["push_buffer.enqueue(tx)"]
-    RESTORE["restore tx_record.pending\nretain local rollback actions"]
-    APPLY["mutable.apply_action(RollbackTransaction)\n→ do_rollback()"]
-    NOTIFY["call_error_handler(error)\n(after write-lock release)"]
+**A transaction that arrives out of sequence.** The push buffer rejects a transaction whose
+sequence number is not contiguous. This is an internal fault, whose default routing would
+disable the datatype, but it is recoverable by undoing the transaction — so the routing is
+chosen where the error is created, and the transaction is undone instead.
 
-    ET --> ENQ
-    ENQ -->|"Err(DatatypeErrorWithAction)"| RESTORE
-    RESTORE --> APPLY --> NOTIFY
-```
+## Rationale
 
-This path runs in a defer guard after the write API has already returned, so the
-`on_error` handler is the only way the user learns about the rollback. See
-[`docs/transaction-and-rollback.md`](transaction-and-rollback.md) for the rollback
-mechanics.
+**A recovery action is one policy, not two independent axes.** Scheduling and lifecycle
+effects are not independent: disabling a datatype while leaving its synchronization scheduled
+is not a state the system should be able to express. Naming the valid policies directly makes
+the invalid combinations unrepresentable and lets every consumer match exhaustively instead of
+reasoning about which pairs are coherent.
 
-### 3. InternalReason — creation-site routing
+**The error-to-action table lives next to the errors.** A central match in the event loop would
+make the loop the place every new error variant is remembered, and would give the loop
+authority over policy for errors it never sees — the commit path among them. Keeping the
+translation next to the error definition means adding a variant is a local change.
 
-`InternalReason` names the crate-private causes of `DatatypeError::Internal`:
-`Deserialize`, `ExecuteOperation`, `EventLoop`, `NonSequentialCseq`,
-`GetPushingTransactions`. `into_error()` erases the reason into `Internal(String)`, so a
-reason that needs a routing other than the `Internal` default (`Disable`) must be mapped
-**before** the erasure, at its creation site, via `InternalReason::mapping()`:
+**Caller-facing variants have no default action.** Assigning one would make a misrouted error
+silently produce a lifecycle change, which is worse than the error itself. Refusing them turns
+a routing mistake into a failure that is found immediately rather than a datatype that quietly
+disables itself.
 
-- `NonSequentialCseq` → `RollbackTransaction` (mapped inside `push_buffer.enqueue()`)
-- all other reasons → delegate to `DatatypeError::mapping()`, which stays the single
-  source of truth per error variant
+**Internal causes are erased, so their routing is chosen first.** The public surface should not
+grow a variant for every internal fault, but a few of those faults are recoverable in a way the
+generic internal error is not. Choosing the action at the creation site keeps the public error
+type small without losing the distinction that matters.
 
-### 4. with_err_out! Macro
+**Wire error names mirror the rejection reasons they become.** The translation between the two
+is then obvious to read and hard to get wrong, and a new server-side reason has an evident
+counterpart.
 
-All internal error paths use the `with_err_out!` macro (`src/errors/mod.rs`) to log an
-ANSI-colored error message plus a filtered stack trace showing only frames within the
-Qortoo SDK:
+**Errors compare by variant, not by message.** Tests and callers ask whether two failures are
+the same kind, which is the question that has a stable answer; message strings carry context
+that is expected to differ between occurrences of the same failure.
 
-```rust
-let err = with_err_out!(InternalReason::EventLoop(err_msg).into_error());
-```
+**Public error types are extensible.** Every public error enum is marked non-exhaustive and
+carries explicit numeric codes, so adding a variant does not break downstream code and codes
+stay stable for language bindings that transmit them.
 
-The macro captures `Backtrace::force_capture()` and `Location::caller()`, then calls
-`with_stack_trace` which filters frames by `SDK_NAME` and formats them with `↘︎` arrows.
-Stack traces are diagnostic only: when a platform returns an unavailable, empty, or
-otherwise unparsable backtrace, the log omits the filtered trace and preserves the
-original typed error. Stack-trace formatting must never replace an application error or
-surface as a panic across an FFI boundary.
+## Code Map
 
----
+| Concern | Location |
+|---------|----------|
+| Datatype errors, rejection reasons, internal causes, recovery actions, and the translation boundary | `src/errors/datatypes.rs` |
+| Client errors | `src/errors/clients.rs` |
+| Backend errors | `src/errors/connectivity.rs` |
+| Wire errors and their translation | `src/errors/push_pull.rs` |
+| The boxed error alias and the logging macro that captures a filtered stack trace | `src/errors/mod.rs` |
+| Observability-specific errors | `src/errors/observability.rs` |
+| Applying the lifecycle half of an action | `src/datatypes/mutable.rs` (`apply_action`) |
+| The sync-path consumer | `src/datatypes/wired.rs` (`handle_error`) |
+| Deriving the scheduling mode from an action | `src/datatypes/event_loop.rs` |
+| The commit-path consumer | `src/datatypes/transactional.rs` (`end_transaction`) |
+| Sequence and capacity checks that produce routed errors | `src/datatypes/push_buffer.rs` |
 
-## Key Design Decisions
-
-- **Single `RecoveryAction` enum instead of two action axes**: an earlier design paired
-  an event-loop action with a lifecycle action, but only three of the twelve
-  combinations were ever produced and several were contradictory (e.g., disable the
-  datatype but keep syncing). Encoding only the valid policies makes invalid states
-  unrepresentable and gives each consumer an exhaustive match.
-
-- **`mapping()` as the translation boundary**: `DatatypeError::mapping()` owns the
-  error→action table rather than a central match in the event loop. Adding a routed
-  variant means updating one method next to the error definition (Open/Closed
-  Principle). Caller-facing variants hitting `mapping()` is a bug and panics via
-  `unreachable!`.
-
-- **Names mirror across layers**: `PushPullError` variants align with
-  `ServerRejectReason` variants (`CreateFailed`, `ResourceNotFound`,
-  `MissingSubscription`, `ProtocolViolation`), so `to_datatype_error()` is
-  self-documenting.
-
-- **Variant equality by discriminant**: `ClientError`, `DatatypeError`, and
-  `PushPullError` use `mem::discriminant`-based `PartialEq`, not payload equality. Test
-  code can assert two errors are the *same kind* without caring about message strings.
-
-- **`#[non_exhaustive]` on all public enums**: adding new variants is not a breaking API
-  change for downstream crates.
-
-- **`#[repr(i32)]` numeric codes**: `DatatypeError` (200–) and `PushPullError` (300–)
-  assign explicit integer discriminants to support wire-level error code mapping without
-  relying on Rust's unstable discriminant values.
-
----
+| Verified by | Tests |
+|-------------|-------|
+| Errors compare by variant rather than by message | `can_compare_errors` in `src/errors/mod.rs` |
+| The logging macro preserves the typed error | `can_use_err_macro` in `src/errors/mod.rs` |
+| An unavailable stack trace is omitted rather than fatal | `can_omit_an_unavailable_stack_trace` in `src/errors/mod.rs` |
+| Client error messages keep a stable format | `can_use_error_msg_format` in `src/errors/clients.rs` |
+| Every observability error variant is distinct | `can_describe_every_variant_distinctly` in `src/errors/observability.rs` |
+| An invalid collection name is refused at the caller | `can_reject_invalid_collection_names` in `src/clients/client.rs` |
+| A create failure disables the datatype and detaches it | `can_auto_detach_after_create_failure_disables_datatype` in `src/clients/client.rs` |
+| A subscribe failure disables the datatype and detaches it | `can_auto_detach_after_subscribe_failure_disables_datatype` in `src/clients/client.rs` |
+| An unmanaged key is refused at the caller | `can_reject_unsubscribe_for_unmanaged_key` in `src/clients/client.rs` |
+| A commit that cannot be enqueued is undone | `can_rollback_on_enqueue_failure` in `src/datatypes/transactional.rs` |
+| The server refuses protocol violations and pushes from disabled or unsubscribed clients | `can_reject_subscribed_push_from_unsubscribed_client`, `can_reject_type_mismatch_in_subscribed_push`, `can_reject_push_from_disabled_client` in `src/connectivity/local_datatype_server.rs` |
+| An error notification carries the datatype and its state | `can_notify_error` in `src/datatypes/handler.rs` |
 
 ## Related Concepts
 
-- [`docs/event-loop.md`](event-loop.md) — how `LoopMode` (derived from `RecoveryAction`) drives BackOff and Stopped scheduling
-- [`docs/architecture.md`](architecture.md) — overall layer stack; errors surface from the Wired layer upward
-- [`docs/transaction-and-rollback.md`](transaction-and-rollback.md) — the rollback that `RecoveryAction::RollbackTransaction` triggers
+- [`docs/architecture.md`](architecture.md) — where the two consumer paths sit in the layer model
+- [`docs/event-loop.md`](event-loop.md) — backoff, the stopped mode, and how scheduling responds to an action
+- [`docs/transaction-and-rollback.md`](transaction-and-rollback.md) — what undoing a transaction does
+- [`docs/handler-system.md`](handler-system.md) — how an error reaches the application
+- [`docs/datatype-state.md`](datatype-state.md) — the lifecycle states an action moves a datatype between
+- [`docs/connectivity.md`](connectivity.md) — where backend and wire errors originate
+- [`docs/variable.md`](variable.md) — the value contract whose violations surface as conversion errors
+- [`docs/go-binding.md`](go-binding.md) — how numeric codes cross a language boundary

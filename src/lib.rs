@@ -61,8 +61,8 @@
 //! - `observability-metrics` - Adds managed metrics export through Prometheus
 //! - `observability` - Umbrella enabling both managed exporters
 //!
-//! Managed observability is opt-in and exposes
-//! [`init_observability`]/[`shutdown_observability`]. Building a [`Client`] never
+//! Managed observability is opt-in and, when one of the two features above is enabled,
+//! exposes `init_observability`/`shutdown_observability`. Building a [`Client`] never
 //! installs a subscriber, recorder, or exporter.
 
 #[cfg(feature = "observability-log")]
