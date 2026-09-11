@@ -18,7 +18,7 @@ Qortoo is a Rust SDK for conflict-free datatypes with distributed synchronizatio
 - **Checkpoint Tracking**: Sequence synchronization for distributed state
 - **Enhanced Error Handling**: Structured stack traces with typed error codes for better debugging
 - **Observability**: `tracing` instrumentation with application-owned logs, traces, metrics, and profiling exporters
-- **High Code Coverage**: Enforced 90% minimum coverage with cargo-tarpaulin
+- **Code Coverage**: CI gates merges at 80% minimum; `make tarpaulin` runs a stricter 90% check locally
 
 ## Quick Start
 
@@ -112,7 +112,7 @@ cargo test module_name::
 # Lint (run before PR)
 make lint
 
-# Code coverage (requires 90% minimum)
+# Code coverage (90% minimum locally; CI gates at 80%)
 make tarpaulin
 
 # Generate documentation
