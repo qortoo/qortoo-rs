@@ -11,6 +11,7 @@ Shared across all qortoo-* repos (canonical text in [qortoo-harness `AGENTS.md`]
 - Favor SOLID principles, especially Single Responsibility (SRP) and Open/Closed (OCP), where practical. Check for these during review.
 - Structure important concepts under `./docs/` so they're easy to follow from Markdown and diagrams grounded in the actual code. Use the `/qortoo-shared:doc-new` command to scaffold a new concept document.
 - All individual plan documents, regardless of the repository they concern, belong in the qortoo-harness repository's gitignored `.local/plans/` directory. Task lists and working notes likewise belong under qortoo-harness's `.local/` — never commit them or propose committing them. Claude Code's project-scoped agent memory (`.claude/agent-memory/`) is likewise personal and gitignored, not shared team knowledge.
+- When work is carried out against a plan document in `.local/plans/`, update that document — status, checklist items, progress log — as part of the same work, not only when separately asked. The plan should reflect what was actually done (including corrections, reverted commits, and scope decisions) closely enough that reading it alone tells the true current state.
 
 ## Project Structure & Module Organization
 - `src/` holds the Rust crate, with modules like `clients/`, `connectivity/`, `datatypes/`, `errors/`, `observability/`, `operations/`, `types/`, and `utils/`, plus shared roots like `constants.rs` and `defaults.rs`.
