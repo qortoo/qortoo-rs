@@ -5,20 +5,32 @@
 [![GitHub commit activity](https://img.shields.io/github/commit-activity/w/qortoo/qortoo-rs)](https://github.com/qortoo/qortoo-rs/graphs/commit-activity)
 [![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/qortoo/qortoo-rs/build-test-coverage.yml)](https://github.com/qortoo/qortoo-rs/actions/workflows/build-test-coverage.yml)
 
-Qortoo is a Rust SDK for conflict-free datatypes with distributed synchronization capabilities.
+Qortoo is a Rust SDK for conflict-free replicated datatypes (CRDTs) with atomic
+transactions and a pluggable connectivity trait for synchronization. This is a pre-release
+crate (`0.1.0`, not yet published to crates.io) consumed by pinning a commit as a git or path
+dependency; `qortoo-go`'s CI does exactly this.
 
 ## Features
 
-- **CRDT Datatypes**: Conflict-free replicated data types (Counter, with more coming)
+- **CRDT Datatypes**: `Counter` and [`Variable`](docs/variable.md) (last-write-wins), with more planned
 - **Transaction Support**: Atomic transactions with automatic rollback on failure
 - **Read-Only Mode**: Create read-only datatypes for observation without modification
 - **Event Loop System**: Priority-based event processing with graceful shutdown
-- **Connectivity Abstraction**: Pluggable backends for distributed synchronization
+- **Connectivity Abstraction**: A `Connectivity` trait for synchronization backends. The two
+  bundled backends are in-process only — the default backend answers a single client and shares
+  nothing, and the local backend simulates a server for clients sharing one process (see
+  [`docs/connectivity.md`](docs/connectivity.md)); nothing ships yet for syncing across a network.
 - **Push Buffer Management**: Memory-managed operation buffering with configurable limits
 - **Checkpoint Tracking**: Sequence synchronization for distributed state
 - **Enhanced Error Handling**: Structured stack traces with typed error codes for better debugging
 - **Observability**: `tracing` instrumentation with application-owned logs, traces, metrics, and profiling exporters
 - **Code Coverage**: CI gates merges at 80% minimum; `make tarpaulin` runs a stricter 90% check locally
+
+## Requirements
+
+- Edition 2024, with a declared minimum of Rust `1.87.0` (`rust-version` in `Cargo.toml`). CI
+  builds and tests only against `1.97.1`; earlier toolchains down to the declared minimum are
+  not built in CI and are not verified to work.
 
 ## Quick Start
 
@@ -87,6 +99,12 @@ cargo run --example profile  # pprof CPU profiles → Pyroscope
 ```
 
 See [`docs/observability.md`](docs/observability.md) for the full reference.
+
+## Documentation
+
+[`docs/README.md`](docs/README.md) indexes every concept document by reading path — first use,
+how a datatype works, operating it, and contributing. `cargo doc --no-deps --open` generates the
+API reference from source.
 
 ## Build and Development Commands
 
