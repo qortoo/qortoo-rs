@@ -12,21 +12,14 @@ This is just an unnecessarily detailed explanation of the name.
 
 ## Architecture at a Glance
 
-Each datatype is composed of five layers stacked vertically. A user operation passes through all layers top-down:
+Each datatype is composed from five responsibilities: the public API an application calls, a
+transactional layer, the mutable state, a wired layer, and the CRDT state machine. These are
+responsibilities rather than a containment chain. The transactional layer and the wired layer
+both hold the same mutable state and both write to it — local operations arrive through one,
+synchronization through the other — so a datatype is one state with two writers, not five
+layers that wrap each other.
 
-```
-┌─────────────────────────────────────────┐
-│  Public API  (e.g., Counter)            │  ← User-facing type
-├─────────────────────────────────────────┤
-│  Transactional Layer                    │  ← Atomic scope, DeferGuard commit/rollback
-├─────────────────────────────────────────┤
-│  Mutable Layer                          │  ← Local CRDT state, push buffer, TxRecord
-├─────────────────────────────────────────┤
-│  Wired Layer                            │  ← Sync with connectivity backend
-├─────────────────────────────────────────┤
-│  CRDT Layer  (e.g., CounterCrdt)        │  ← Pure CRDT implementation
-└─────────────────────────────────────────┘
-```
+[Architecture](architecture.md) owns the responsibility table, the diagrams, and the concurrency model.
 
 ## Core Architecture Documents
 
