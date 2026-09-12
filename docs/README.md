@@ -1,6 +1,6 @@
 # Qortoo-rs Documentation
 
-Qortoo-rs is a Rust SDK for **conflict-free replicated data types (CRDTs)** with distributed synchronization. It provides atomic transactions with rollback, read-only observation modes, and pluggable connectivity backends.
+Qortoo-rs is a Rust SDK for **conflict-free replicated data types (CRDTs)** with atomic transactions and rollback, read-only observation modes, and a pluggable `Connectivity` trait for synchronization. The two bundled backends are in-process only — see [Connectivity](connectivity.md) for what they do and don't do.
 
 ## Origin of the Name `Qortoo`
 
@@ -43,9 +43,7 @@ layers that wrap each other.
 
 | Document | Description |
 |----------|-------------|
-| Getting Started | TBD — Installation, basic setup, and first datatype |
-| Datatypes Reference | TBD — Counter and [Variable](variable.md) APIs; planned `Map` type |
-| Testing Guide | TBD — Test macros, `LocalConnectivity` realtime pitfall, and async test patterns |
+| [Getting Started](getting-started.md) | Adding the crate, a first Counter and Variable, and manual two-client sync |
 
 ## Maintaining This Documentation
 
