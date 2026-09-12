@@ -3,8 +3,32 @@ name: Build and Test
 on:
   push:
     branches: [ "main" ]
+    paths-ignore:
+      # Prose and editor/tooling assets are not build inputs: no `include_str!`
+      # pulls them into the crate, and CI never runs the docker stack.
+      - '**/*.md'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.github/CODEOWNERS'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/workflows/assign-reviewers.yml'
+      - 'qortoo-rs-docker/**'
   pull_request:
     branches: [ "main" ]
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.github/CODEOWNERS'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/workflows/assign-reviewers.yml'
+      - 'qortoo-rs-docker/**'
+
+# One run per branch. Superseded PR runs are cancelled; pushes to main are not,
+# so every merged commit keeps its own Codecov report.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
