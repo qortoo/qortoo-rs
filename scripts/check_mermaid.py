@@ -34,6 +34,15 @@ def main() -> int:
     total = 0
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
+        # mermaid-cli renders through headless Chromium via Puppeteer. Chromium's
+        # own sandbox needs a container/kernel feature that CI runners (GitHub
+        # Actions' ubuntu-latest included) commonly don't grant to an
+        # unprivileged process, so it refuses to start at all without this flag
+        # — this is Puppeteer's own documented workaround, not a project-specific
+        # hack, and it only affects this render step, not any other sandboxing.
+        puppeteer_config = tmp_path / "puppeteer-config.json"
+        puppeteer_config.write_text('{"args": ["--no-sandbox"]}', encoding="utf-8")
+
         for md_file in sorted(DOCS_DIR.glob("*.md")):
             text = md_file.read_text(encoding="utf-8")
             for i, block in enumerate(MERMAID_BLOCK_RE.findall(text)):
@@ -42,7 +51,11 @@ def main() -> int:
                 out = tmp_path / f"{md_file.stem}_{i}.svg"
                 src.write_text(block, encoding="utf-8")
                 result = subprocess.run(
-                    ["npx", "--yes", "@mermaid-js/mermaid-cli", "-i", str(src), "-o", str(out)],
+                    [
+                        "npx", "--yes", "@mermaid-js/mermaid-cli",
+                        "-i", str(src), "-o", str(out),
+                        "-p", str(puppeteer_config),
+                    ],
                     capture_output=True,
                     text=True,
                 )
