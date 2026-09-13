@@ -29,44 +29,10 @@ Shared across all qortoo-* repos (canonical text in [qortoo-harness `AGENTS.md`]
 - **Nightly required** for `rustfmt` (used in `make lint`)
 
 ## Build, Test, and Development Commands
-```shell
-# Install dependencies (cargo-tarpaulin)
-make install
 
-# Run all tests
-cargo test
-
-# Run tests with observability stack (requires local stack: make obs-up)
-make obs-up
-cargo test --all-features
-
-# Run a single test
-cargo test test_name
-
-# Run tests in a specific module
-cargo test module_name::
-
-# Lint (run before PR) — runs nightly fmt check, cargo check, and clippy with -D warnings
-make lint
-
-# Code coverage (local: 90% minimum; CI: 80% minimum)
-make tarpaulin
-
-# Generate documentation (use /qortoo-rust:doc-generate for full report with missing-doc analysis)
-make doc
-
-# Rust core fixed-budget benchmarks (see docs/performance.md)
-make bench
-
-# Stage the C header, static library, pkg-config metadata, and manifest
-make native-sdk-stage
-
-# Manage the local Grafana, Prometheus, Tempo, Loki, and Pyroscope stack
-make obs-up
-make obs-down
-make obs-down-v
-make obs-logs
-```
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full command reference — it runs with
+only `cargo`, `make`, and `git`, no agent or plugin required. `make doc` has an
+agent-only variant, `/qortoo-rust:doc-generate`, that adds a missing-doc report.
 
 ## Architecture
 
@@ -86,10 +52,9 @@ The full architecture is documented in `docs/`, kept accurate via `/qortoo-rust:
 
 When you change behavior described in one of these documents, update it in the same change — don't let `AGENTS.md` or `docs/` drift from the code (this happened before: this file used to duplicate `DatatypeState`'s variant names inline and had gone stale relative to `src/types/datatype.rs`; the fix was deleting the duplicate and linking to `docs/datatype-state.md` instead).
 
-## Coding Style & Naming Conventions
-- Follow standard Rust style: 4-space indentation, `snake_case` for functions/modules, `PascalCase` for types.
-- Formatting uses `.rustfmt.toml` (`group_imports = "StdExternalCrate"` — std, external, then local imports; `imports_granularity = "Crate"` — group imports at crate level). Requires the pinned nightly rustfmt (`cargo +nightly-2026-08-02 fmt`).
-- Treat clippy warnings as errors (`make lint`).
+## Coding Style
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md#coding-style).
 
 ## Testing Guidelines
 - Name test functions `can_<behavior>` (e.g. `can_reject_a_null_collection`), describing the

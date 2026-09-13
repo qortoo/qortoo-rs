@@ -103,42 +103,10 @@ See [`docs/observability.md`](docs/observability.md) for the full reference.
 ## Documentation
 
 [`docs/README.md`](docs/README.md) indexes every concept document by reading path — first use,
-how a datatype works, operating it, and contributing. `cargo doc --no-deps --open` generates the
-API reference from source.
+how a datatype works, and operating it. `cargo doc --no-deps --open` generates the API
+reference from source.
 
-## Build and Development Commands
+## Contributing
 
-```shell
-# Install dependencies (cargo-tarpaulin)
-make install
-
-# Run all tests without installing a log/trace subscriber
-cargo test
-
-# Run tests with Qortoo logs and OTLP trace export
-cargo test --features observability-trace
-
-# Run tests with all feature-gated code enabled
-cargo test --all-features
-
-# Run a single test
-cargo test test_name
-
-# Run tests in a specific module
-cargo test module_name::
-
-# Lint (run before PR)
-make lint
-
-# Code coverage (90% minimum locally; CI gates at 80%)
-make tarpaulin
-
-# Generate documentation
-make doc
-
-# Observability stack
-make obs-up        # start Grafana / Prometheus / Tempo / Loki / Pyroscope
-make obs-down      # stop the stack
-make obs-down-v    # stop and remove persisted volumes
-make obs-logs      # tail container logs
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full build, test, lint, coverage, and
+documentation procedure — runnable with only `cargo`, `make`, and `git`.
