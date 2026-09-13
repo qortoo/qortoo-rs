@@ -101,17 +101,21 @@ assert_eq!(counter2.get_value(), 1);
 
 A subscribing client must create (or already know of) the resource before it can subscribe —
 `subscribe_datatype` on a key nothing has ever created fails. That's why `client1` creates and
-syncs first. This exact flow is exercised as a doctest in
-[`local_connectivity.rs`](../src/connectivity/local_connectivity.rs); running
-`cargo test --doc local_connectivity` runs it.
+syncs first. A related, independently-written version of this same flow is also exercised as
+a doctest in [`local_connectivity.rs`](../src/connectivity/local_connectivity.rs).
+
+All three walkthroughs on this page — Counter, Variable, and this two-client sync — are kept
+verbatim in [`tests/getting_started.rs`](../tests/getting_started.rs) and run on every `cargo
+test`. If one of them starts failing after an API change, that's a signal to update this page
+to match, not a bug in the test.
 
 ## Running this yourself
 
 ```shell
 git clone https://github.com/qortoo/qortoo-rs
 cd qortoo-rs
-cargo test --doc local_connectivity   # the two-client sync example above, verified
-cargo doc --no-deps --open            # the full API reference
+cargo test --test getting_started      # every code block on this page, verified
+cargo doc --no-deps --open             # the full API reference
 ```
 
 There is no `cargo run` entry point for the snippets on this page — they're library code, not

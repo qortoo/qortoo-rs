@@ -64,6 +64,18 @@ jobs:
       - name: Build
         run: cargo build --verbose
 
+      - name: Check rustdoc links
+        # A [`Foo`]-style doc link only resolves if Foo is compiled in for that
+        # same build, so the same link can be valid under one feature
+        # combination and broken under another (fa3f0a1 fixed a real case of
+        # this). -D rustdoc::broken_intra_doc_links makes that failure loud
+        # instead of a silent warning. default and --all-features cover every
+        # combination that currently matters; the individual observability-*
+        # features were checked by hand and don't branch separately from these two.
+        run: |
+          RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" cargo doc --no-deps
+          RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" cargo doc --no-deps --all-features
+
       - name: Check qortoo-ffi ABI contract
         run: |
           make ffi-header-check

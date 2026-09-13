@@ -72,9 +72,29 @@ cargo doc --no-deps --all-features
 RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links" cargo doc --no-deps --all-features
 ```
 
-Check every relative Markdown link and source-path reference you add or touch actually
-resolves — there is no automated check for this yet (tracked as a documentation-tooling
-gap, not something CI enforces today).
+Check every relative Markdown link, in-file anchor, and source-path reference you add or
+touch actually resolves:
+
+```shell
+make check-docs   # or: python3 scripts/check_doc_links.py
+```
+
+This also flags a new `docs/*.md` file that isn't linked from
+[`docs/README.md`](docs/README.md)'s index. It never touches the network — external
+URLs are out of scope for this check — and CI runs it on every change to a Markdown
+file or to the script itself, independent of the main build/test workflow.
+
+If you add or change a Mermaid diagram, confirm it still renders — a syntax error in
+one is otherwise silent until someone views the page:
+
+```shell
+make check-mermaid   # or: python3 scripts/check_mermaid.py
+```
+
+Unlike `check-docs`, this needs Node/npm and fetches `@mermaid-js/mermaid-cli` from the
+npm registry on first run, so it's a separate target and a separate CI job. Neither
+script checks that a diagram's labels still match the code — that's still a manual
+comparison against `src/`, same as any other claim in a concept doc.
 
 ## Coding Style
 
