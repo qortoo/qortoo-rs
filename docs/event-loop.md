@@ -98,7 +98,7 @@ inside that captured context rather than its own. Without this, every exchange â
 handler notification it goes on to trigger â€” would appear to originate from the loop's own
 long-lived background task instead of from whoever actually asked for it, which is what breaks
 a trace crossing a language boundary; see
-[`docs/go-binding.md`](go-binding.md#observability-boundary).
+[`docs/go-binding.md`](go-binding.md#behavior) ("A caller's trace continuing across the boundary").
 
 **Unsubscribing records intent locally and returns immediately.** It does not contact the
 backend itself. Whether and when the backend hears about it depends on the same realtime rule

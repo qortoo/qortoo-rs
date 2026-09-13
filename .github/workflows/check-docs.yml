@@ -1,0 +1,41 @@
+name: Check Documentation
+
+# Runs on the changes build-test-coverage.yml's paths-ignore deliberately skips —
+# a pure documentation change never touches build inputs, but it's exactly the
+# change most likely to introduce a broken relative link, anchor, an unindexed
+# doc, or a Mermaid diagram that no longer parses.
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - '**/*.md'
+      - 'scripts/check_doc_links.py'
+      - 'scripts/check_mermaid.py'
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - '**/*.md'
+      - 'scripts/check_doc_links.py'
+      - 'scripts/check_mermaid.py'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check-doc-links:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check relative links, anchors, and docs/ index
+        # No network access is used or required by this script.
+        run: python3 scripts/check_doc_links.py
+
+  check-mermaid:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Render every Mermaid diagram in docs/
+        # Needs npx (Node.js, preinstalled on ubuntu-latest) and network access
+        # to fetch @mermaid-js/mermaid-cli from the npm registry.
+        run: python3 scripts/check_mermaid.py

@@ -29,6 +29,16 @@ ffi-coverage:
 doc:
 	cargo doc --no-deps --open
 
+.PHONY: check-docs
+check-docs:
+	python3 scripts/check_doc_links.py
+
+# Separate from check-docs: this one needs Node/npm and network access to fetch
+# @mermaid-js/mermaid-cli, so a contributor without either can still run check-docs.
+.PHONY: check-mermaid
+check-mermaid:
+	python3 scripts/check_mermaid.py
+
 # ── FFI ABI contract (qortoo-ffi/src/version.rs) ────────────────────────────────
 # The generated header is checked in so a diff shows up in code review, not just in
 # CI: cbindgen regenerates it as a build.rs side effect of `cargo build`, so if the
