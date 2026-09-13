@@ -12,7 +12,7 @@ dependency; `qortoo-go`'s CI does exactly this.
 
 ## Features
 
-- **CRDT Datatypes**: `Counter` and [`Variable`](docs/variable.md) (last-write-wins), with more planned
+- **CRDT Datatypes**: [`Counter`](docs/counter.md) and [`Variable`](docs/variable.md) (last-write-wins), with more planned
 - **Transaction Support**: Atomic transactions with automatic rollback on failure
 - **Read-Only Mode**: Create read-only datatypes for observation without modification
 - **Event Loop System**: Priority-based event processing with graceful shutdown

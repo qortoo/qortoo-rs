@@ -41,6 +41,12 @@ client. See [Connectivity](connectivity.md) for what the bundled backends do and
 
 ## Your first Variable
 
+Counter and Variable converge differently, and that's what decides which one fits: a counter
+merges concurrent writes by adding them, so it only ever holds a cumulative number. A variable
+merges by keeping whichever write has the greater timestamp, so it can hold any JSON-shaped
+value — but a concurrent write to it doesn't accumulate, it gets replaced. Reach for `Variable`
+when what you're storing isn't a running total.
+
 `Variable` stores one JSON value with last-writer-wins semantics. It starts out holding JSON
 `null`; any `serde`-serializable type round-trips through `set`/`get` after that:
 
@@ -111,3 +117,23 @@ cargo doc --no-deps --open            # the full API reference
 There is no `cargo run` entry point for the snippets on this page — they're library code, not
 binaries. The observability examples under `## Observability` in the root README are the
 crate's only runnable examples today.
+
+## Troubleshooting
+
+**Two clients don't see each other's writes.** No connectivity backend was supplied, so both
+clients got the default one, which shares nothing with anyone — this is what "Your first
+Counter" above actually demonstrates. Pass the same `Arc<LocalConnectivity>` to every client
+that should share data, as in [Syncing two clients](#syncing-two-clients). See
+[Connectivity](connectivity.md) for what each bundled backend does and doesn't share.
+
+**A write right after `subscribe_datatype` fails with `NotWritable`.** A subscribing datatype
+starts in the `Subscribing` state, which is not writable — only `Subscribed` is. Call `sync()`
+and let it succeed before writing; see [Datatype State](datatype-state.md) for the full
+lifecycle.
+
+**A state-change handler doesn't seem to have run yet right after `build_counter()`/
+`build_variable()`.** With a realtime backend a datatype starts talking to it on its own,
+without an explicit `sync()` — but the handler that reports the resulting state change runs on
+a spawned task, not on the thread that called `build_counter()`. Checking the handler's effect
+immediately afterward is a race; poll for it (as the crate's own tests do) instead of asserting
+right away. See [Handler System](handler-system.md) for the dispatch guarantees this relies on.

@@ -30,6 +30,7 @@ layers that wrap each other.
 | [Client and DatatypeBuilder](client-and-datatype-builder.md) | `Client` builder pattern, collection/key naming validation, and the `DatatypeBuilder` chain |
 | [Datatype State](datatype-state.md) | `DatatypeState` lifecycle, write access, sync intent states, and unsubscribe cleanup |
 | [Transaction and Rollback](transaction-and-rollback.md) | `TxRecord` structure, transaction lifecycle, and inverse-operation rollback |
+| [Counter](counter.md) | Cumulative `i64` arithmetic, wrapping semantics, and rollback by recorded inverse |
 | [Variable](variable.md) | LWW `Variable` datatype: JSON value contract, timestamp precedence, exact-restore rollback, and snapshot format |
 | [Connectivity](connectivity.md) | `Connectivity` trait, `NullConnectivity`, `LocalConnectivity`/`LocalDatatypeServer`, and `WiredInterceptor` |
 | [Handler System](handler-system.md) | `DatatypeHandler`, `HandlersManager`, priority-based async dispatch |
