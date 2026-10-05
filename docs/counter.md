@@ -4,7 +4,7 @@ A counter is a conflict-free datatype holding one `i64` that changes only by add
 Every increment is an operation, not an assignment, so increments made concurrently on
 different replicas all survive rather than one overwriting another — every replica ends up
 holding the sum of every increment ever applied to it. Everything a counter shares with other
-datatypes — transaction scope, synchronization, handlers — is defined in
+datatypes — local transactions, synchronization, handlers — is defined in
 [`docs/architecture.md`](architecture.md) and
 [`docs/transaction-and-rollback.md`](transaction-and-rollback.md). This document owns only
 what is specific to a counter: its arithmetic and what that arithmetic implies for rollback.
@@ -116,6 +116,6 @@ own, non-arithmetic value.
 ## Related Concepts
 
 - [`docs/architecture.md`](architecture.md) — the shared layer stack and the convergence limits every datatype, including this one, is bound by
-- [`docs/transaction-and-rollback.md`](transaction-and-rollback.md) — the transaction scope and rollback-by-inverse mechanism this document assumes
+- [`docs/transaction-and-rollback.md`](transaction-and-rollback.md) — the local transaction and rollback-by-inverse mechanism this document assumes
 - [`docs/variable.md`](variable.md) — a sibling datatype whose rollback shape (exact restore) contrasts with a counter's (recorded inverse)
 - [`docs/getting-started.md`](getting-started.md) — a runnable first Counter and a two-client sync walkthrough

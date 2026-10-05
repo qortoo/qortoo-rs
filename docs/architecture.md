@@ -30,7 +30,7 @@ Each datatype is composed from five layers:
 | Layer | Responsibility |
 |-------|----------------|
 | Public API | The methods an application calls, one type per datatype kind |
-| Transactional | Transaction scope, write-access checks, and serialization of concurrent local operations |
+| Transactional | Local transaction lifecycle, write-access checks, and serialization of concurrent local operations |
 | Mutable | The datatype's changing state: CRDT value, operation progress, buffered transactions, transaction record, lifecycle state, checkpoint, and handler registry |
 | Wired | Assembling what to send, applying what comes back |
 | CRDT | The convergence rules themselves — a pure state machine with no I/O and no locking |
@@ -88,11 +88,19 @@ copy.
 be cloned and moved across threads freely; clones share one state rather than diverging.
 
 **Serialization of writes.** All mutation of a datatype's state passes through that
-datatype's single lock. Concurrent local operations and concurrent transaction scopes are
+datatype's single lock. Concurrent standalone writes and explicit local transactions are
 serialized by the transactional layer before they reach it; the mechanism and the transaction
 semantics it enforces are defined in
 [`docs/transaction-and-rollback.md`](transaction-and-rollback.md). Reads take the same lock
 for shared access and create no operations.
+
+The transactional layer gives each local transaction a transaction mutex guard and records its
+active context. Tagged operations with that same context join the local transaction and acquire
+their own operation guards. Every competing local call waits for the transaction guard and uses
+it directly to own the next local transaction after cleanup; there is no release-and-retry
+admission step. These guards do not extend the mutable-state lock across network calls, and only
+the transaction guard spans a user callback. Remote response application uses the shared mutable
+state directly and does not participate in this local transaction admission protocol.
 
 **Runtime.** Datatypes do not run on the application's runtime. Building a client builds a
 multi-threaded Tokio runtime for it, sized to the machine's available parallelism, with
@@ -130,11 +138,11 @@ immediately: the datatype starts in a creating or subscribing state, is writable
 according to that state, and reports the transition to subscribed once the backend confirms
 it.
 
-**A local write.** The call checks write access, opens or joins a transaction scope, takes
+**A local write.** The call checks write access, opens or joins a local transaction, takes
 the datatype's lock, and applies the operation to the CRDT. The operation and an action that
-would undo it are recorded, and the value is returned. When the enclosing scope commits, the
-recorded transaction is queued for the backend; when it aborts, the recorded undo actions
-restore the previous state.
+would undo it are recorded, and the value is returned. When the enclosing local transaction
+commits, the recorded transaction is queued for the backend; when it rolls back, the recorded
+undo actions restore the previous state.
 
 ```mermaid
 sequenceDiagram
@@ -144,13 +152,13 @@ sequenceDiagram
     participant CRDT as CRDT
 
     App->>TX: counter.increase_by(1)
-    TX->>TX: check write access, open or join a scope
+    TX->>TX: check write access, open or join a local transaction
     TX->>MUT: take the lock
     MUT->>CRDT: apply the operation
     CRDT-->>MUT: new value + undo action
     MUT-->>TX: record both, advance progress
     TX-->>App: return the value
-    Note over TX,MUT: on scope commit: queue the transaction<br/>on scope abort: run the undo actions
+    Note over TX,MUT: on local transaction commit: queue the transaction<br/>on local transaction abort: run the undo actions
 ```
 
 **A local read.** A read takes the lock for shared access, copies what it needs, and returns.
@@ -225,7 +233,7 @@ in return.
 | `ClientCommon` — collection, client identity, runtime handle, backend | `src/clients/common.rs` |
 | `DatatypeManager` — key-to-datatype table, subscribe-or-create, detach | `src/clients/datatype_manager.rs` |
 | Shared runtimes keyed by group | `src/utils/runtime.rs` |
-| `TransactionalDatatype` — scope, write-access checks, construction of the layers, event-loop start | `src/datatypes/transactional.rs` |
+| `TransactionalDatatype` — local transaction, write-access checks, construction of the layers, event-loop start | `src/datatypes/transactional.rs` |
 | `MutableDatatype` — the per-datatype state behind the lock | `src/datatypes/mutable.rs` |
 | `WiredDatatype` — package assembly and the backend call | `src/datatypes/wired.rs` |
 | `PullHandler` — validating and applying a response | `src/datatypes/pull_handler.rs` |
@@ -248,7 +256,7 @@ in return.
 - [`docs/client-and-datatype-builder.md`](client-and-datatype-builder.md) — building a client, naming rules, and the datatype builder chain
 - [`docs/core-types.md`](core-types.md) — identities, CRDT ordering keys, and progress counters
 - [`docs/datatype-state.md`](datatype-state.md) — the lifecycle states and the write access each allows
-- [`docs/transaction-and-rollback.md`](transaction-and-rollback.md) — transaction scope, serialization, and undo actions
+- [`docs/transaction-and-rollback.md`](transaction-and-rollback.md) — local transaction lifecycle, serialization, and undo actions
 - [`docs/variable.md`](variable.md) — the LWW `Variable` datatype
 - [`docs/connectivity.md`](connectivity.md) — the backend interface and the bundled backends
 - [`docs/event-loop.md`](event-loop.md) — event priorities, channels, and retry behavior

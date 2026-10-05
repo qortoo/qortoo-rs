@@ -1,6 +1,8 @@
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{collections::BTreeMap, sync::Arc};
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, MutexGuard, RwLock};
 use tracing::{Span, info_span, instrument};
 
 use crate::{
@@ -18,7 +20,6 @@ use crate::{
     },
     observability::trace::add_span_event,
     operations::Operation,
-    utils::{defer_guard::DeferGuard, no_guard_mutex::NoGuardMutex},
 };
 
 #[derive(Debug, Default)]
@@ -66,21 +67,48 @@ mod tests_transaction_context {
 }
 
 #[derive(derive_more::Display)]
-pub enum BeginTransactionResult<'a> {
-    #[display("BeginTx")]
-    BeginTx(DeferGuard<'a>),
-    #[display("SameCtx")]
-    SameCtx,
-    #[display("OtherCtx")]
-    OtherCtx,
+enum LocalTransactionAdmission<'a> {
+    #[display("Started")]
+    Started(LocalTransactionGuard<'a>),
+    #[display("JoinedExisting")]
+    JoinedExisting,
+}
+
+/// Owns one local transaction and the mutex guard that admits it.
+/// Joined operations and waiting callers never own this transaction's cleanup.
+struct LocalTransactionGuard<'a> {
+    datatype: &'a TransactionalDatatype,
+    context: Arc<TransactionContext>,
+    mutex_guard: Option<MutexGuard<'a, ()>>,
+    committed: bool,
+}
+
+impl LocalTransactionGuard<'_> {
+    fn commit(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for LocalTransactionGuard<'_> {
+    fn drop(&mut self) {
+        self.datatype
+            .end_transaction(self.context.tag.clone(), self.committed);
+        // Cleanup clears the context before fair handoff. If cleanup unwinds,
+        // the remaining MutexGuard field still releases the mutex.
+        if let Some(guard) = self.mutex_guard.take() {
+            MutexGuard::unlock_fair(guard);
+        }
+    }
 }
 
 pub struct TransactionalDatatype {
     pub attr: Arc<Attribute>,
     pub mutable: Arc<RwLock<MutableDatatype>>,
     tx_ctx: RwLock<Option<Arc<TransactionContext>>>,
-    op_mutex: NoGuardMutex,
-    tx_mutex: NoGuardMutex,
+    op_mutex: Mutex<()>,
+    tx_mutex: Mutex<()>,
+    #[cfg(test)]
+    tx_waiters: AtomicUsize,
     event_loop: Arc<EventLoop>,
 }
 
@@ -153,6 +181,8 @@ impl TransactionalDatatype {
             tx_ctx: Default::default(),
             op_mutex: Default::default(),
             tx_mutex: Default::default(),
+            #[cfg(test)]
+            tx_waiters: Default::default(),
         });
 
         attr.set_transactional(Arc::downgrade(&arc_td));
@@ -217,37 +247,23 @@ impl TransactionalDatatype {
         op: Operation,
     ) -> Result<ReturnType, DatatypeError> {
         self.check_writable()?;
-        let mut _defer_guard = None;
-        let mut retries = 0;
-        loop {
-            match self.begin_transaction(tx_ctx.clone()) {
-                BeginTransactionResult::BeginTx(dg) => {
-                    _defer_guard = Some(dg);
-                    break;
-                }
-                BeginTransactionResult::SameCtx => {
-                    // After the first call inside do_transaction, subsequent execute_local_operation_as_tx calls in tx_func run as SameCtx.
-                    // If execute_local_operation_as_tx is invoked from another thread, the tx_mutex can ensure exclusive execution.
-                    _defer_guard = Some(DeferGuard::new());
-                    break;
-                }
-                BeginTransactionResult::OtherCtx => {
-                    // For OtherCtx, begin_transaction is repeatedly attempted until it transitions to BeginTx.
-                    // If an operation is already running, the tx_mutex is locked, so we wait until we can acquire the tx_mutex lock.
-                    retries += 1;
-                    add_span_event!("OtherCtx", "retries" => retries);
-                    self.wait_for_mutex();
-                }
+        let mut transaction_guard = match self.begin_transaction(tx_ctx) {
+            LocalTransactionAdmission::Started(guard) => Some(guard),
+            LocalTransactionAdmission::JoinedExisting => {
+                // The enclosing transaction owns commit or rollback cleanup. This operation
+                // only acquires the operation mutex below.
+                None
             }
+        };
+        let operation_guard = self.op_mutex.lock();
+        let result = self.mutable.write().execute_local_operation(op);
+        // Release mutable and the operation mutex before transaction cleanup takes
+        // mutable again. On panic, stack unwinding preserves the same order.
+        MutexGuard::unlock_fair(operation_guard);
+        let ret = result?;
+        if let Some(guard) = transaction_guard.as_mut() {
+            guard.commit();
         }
-        let defer_guard = _defer_guard.as_mut().unwrap();
-        self.op_mutex.lock();
-        defer_guard.add_defer_func(move |_committed| {
-            self.op_mutex.unlock();
-        });
-        let mut mutable = self.mutable.write();
-        let ret = mutable.execute_local_operation(op)?;
-        defer_guard.commit();
         Ok(ret)
     }
 
@@ -262,9 +278,9 @@ impl TransactionalDatatype {
                 }
                 Ok(false) => None,
                 Err(dewa) => {
-                    // This path runs in a defer guard, after the API call has returned, and
-                    // does not go through the event loop: only RollbackTransaction is expected
-                    // here, and the on_error handler is the only way to notify the user.
+                    // Transaction cleanup runs before the API returns, but after its Result
+                    // has been selected. This path does not go through the event loop:
+                    // only RollbackTransaction is expected, and on_error reports it.
                     debug_assert!(matches!(dewa.recovery, RecoveryAction::RollbackTransaction));
                     mutable.apply_action(dewa.recovery);
                     Some(dewa.error)
@@ -276,45 +292,47 @@ impl TransactionalDatatype {
             self.mutable.read().call_error_handler(err);
         }
         self.tx_ctx.write().take();
-        self.tx_mutex.unlock();
     }
 
-    fn begin_transaction(&self, tx_ctx: Arc<TransactionContext>) -> BeginTransactionResult<'_> {
-        let mut self_tx_ctx = self.tx_ctx.write();
-        // self.tx_ctx defaults to None when no transaction is active.
-        // Once a transaction begins, self.tx_ctx is set to the current transaction context.
-        // After do_transaction gets BeginTx by begin_transaction, this None condition branch won't execute again.
-        if self_tx_ctx.is_none() {
-            let curr_tx_ctx = {
-                if tx_ctx.has_tag() {
-                    tx_ctx.clone()
-                } else {
-                    // If an operation is executed without a transaction, tx_ctx does not have a tag.
-                    // In this case, a new TransactionContext is created,
-                    // so BeginTransactionResult::SameCtx cannot be returned for the execution of the concurrent operations.
-                    Arc::new(TransactionContext::default())
-                }
-            };
-            *self_tx_ctx = Some(curr_tx_ctx.clone());
-            let tag = curr_tx_ctx.tag.clone().unwrap_or("NONE".to_owned());
-
-            let mut defer_guard = DeferGuard::new();
-            defer_guard.add_defer_func(move |committed| {
-                self.end_transaction(curr_tx_ctx.tag.to_owned(), committed);
-            });
-            add_span_event!("BeginTx", "tag" => tag);
-            BeginTransactionResult::BeginTx(defer_guard)
-        } else if self_tx_ctx.as_ref().unwrap() == &tx_ctx {
-            // When execute_local_op_as_tx is called within tx_func of do_transaction, SameCtx should be returned.
-            // This means self.tx_ctx is not replaced by end_transaction.
-            let tag = tx_ctx.tag.clone().unwrap_or("NONE".to_owned());
-            add_span_event!("SameCtx", "tag" => tag);
-            BeginTransactionResult::SameCtx
-        } else {
-            // When either execute_local_op_as_tx or do_transaction is called from another thread while do_transaction is running, OtherTx is returned.
-            // OtherTx causes begin_transaction to be repeated in a loop until it transitions to BeginTx.
-            BeginTransactionResult::OtherCtx
+    fn begin_transaction(&self, tx_ctx: Arc<TransactionContext>) -> LocalTransactionAdmission<'_> {
+        // Only tagged contexts can join an explicit transaction. Standalone
+        // handles share a default context but must always open distinct local transactions.
+        if tx_ctx.has_tag() {
+            let active = self.tx_ctx.read();
+            if active.as_ref() == Some(&tx_ctx) {
+                let tag = tx_ctx.tag.clone().unwrap_or("NONE".to_owned());
+                drop(active);
+                add_span_event!("JoinedLocalTransaction", "tag" => tag);
+                return LocalTransactionAdmission::JoinedExisting;
+            }
         }
+
+        // The current local transaction keeps this mutex until cleanup is complete.
+        // A waiter that receives the guard becomes the next owner directly,
+        // rather than releasing it and racing through begin_transaction again.
+        #[cfg(test)]
+        self.tx_waiters.fetch_add(1, Ordering::SeqCst);
+        let mutex_guard = self.tx_mutex.lock();
+        #[cfg(test)]
+        self.tx_waiters.fetch_sub(1, Ordering::SeqCst);
+
+        let current = if tx_ctx.has_tag() {
+            tx_ctx
+        } else {
+            Arc::new(TransactionContext::default())
+        };
+        let tag = current.tag.clone().unwrap_or("NONE".to_owned());
+        let mut active = self.tx_ctx.write();
+        debug_assert!(active.is_none());
+        *active = Some(current.clone());
+        drop(active);
+        add_span_event!("StartedLocalTransaction", "tag" => tag);
+        LocalTransactionAdmission::Started(LocalTransactionGuard {
+            datatype: self,
+            context: current,
+            mutex_guard: Some(mutex_guard),
+            committed: false,
+        })
     }
 
     pub fn do_transaction<F>(
@@ -325,40 +343,16 @@ impl TransactionalDatatype {
     where
         F: FnOnce() -> Result<(), DatatypeError>,
     {
-        let mut retries = 0;
-        loop {
-            match self.begin_transaction(tx_ctx.clone()) {
-                BeginTransactionResult::BeginTx(mut dg) => {
-                    self.tx_mutex.lock();
-                    let tx_func_span = info_span!("tx_func");
-                    return tx_func_span.in_scope(|| tx_func().inspect(|_x| dg.commit()));
-                }
-                BeginTransactionResult::SameCtx => {
-                    // do_transaction should not / cannot be called with the same tx_ctx from different threads
-                    unreachable!(
-                        "do_transaction should not be called concurrently with same context"
-                    );
-                }
-                BeginTransactionResult::OtherCtx => {
-                    retries += 1;
-                    add_span_event!("OtherCtx", "retries" => retries);
-                    // This can occur when the current transaction cannot begin due to any other concurrent operation or transaction.
-                    self.wait_for_tx_mutex();
-                }
+        match self.begin_transaction(tx_ctx) {
+            LocalTransactionAdmission::Started(mut guard) => {
+                let tx_func_span = info_span!("tx_func");
+                tx_func_span.in_scope(|| tx_func().inspect(|_x| guard.commit()))
+            }
+            LocalTransactionAdmission::JoinedExisting => {
+                // Public transaction entry points always create a fresh context.
+                unreachable!("do_transaction cannot join its own active context");
             }
         }
-    }
-
-    #[inline]
-    fn wait_for_mutex(&self) {
-        self.op_mutex.lock();
-        self.op_mutex.unlock();
-    }
-
-    #[inline]
-    fn wait_for_tx_mutex(&self) {
-        self.tx_mutex.lock();
-        self.tx_mutex.unlock();
     }
 
     pub fn push_transaction(&self) {
@@ -376,21 +370,237 @@ impl Drop for TransactionalDatatype {
 
 #[cfg(test)]
 mod tests_transactional {
-    use std::sync::Arc;
+    use std::{
+        panic::{AssertUnwindSafe, catch_unwind},
+        sync::{Arc, atomic::Ordering, mpsc},
+        thread,
+        time::Duration,
+    };
 
     use parking_lot::Mutex;
+    use rstest::rstest;
     use tracing::{Span, info, info_span, instrument};
     use tracing_opentelemetry::OpenTelemetrySpanExt;
 
     use crate::{
-        Client, DataType, DatatypeState,
+        Client, DataType, DatatypeError, DatatypeState,
         datatypes::{
             common::new_attribute,
-            transactional::{TransactionContext, TransactionalDatatype},
+            option::DatatypeOption,
+            transactional::{LocalTransactionAdmission, TransactionContext, TransactionalDatatype},
         },
-        operations::Operation,
+        operations::{MemoryMeasurable, Operation, transaction::Transaction},
         utils::test_utils::{get_test_collection_name, get_test_func_name},
     };
+
+    const WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    fn can_hold_standalone_transaction_until_commit_before_admitting_waiters(
+        #[case] explicit_waiter: bool,
+    ) {
+        let attr = new_attribute!(DataType::Counter);
+        let datatype = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
+        let context = Arc::new(TransactionContext::default());
+        let LocalTransactionAdmission::Started(mut owner) =
+            datatype.begin_transaction(context.clone())
+        else {
+            panic!("a standalone write must own a new local transaction");
+        };
+
+        // Pause the standalone path after its local transaction begins. Its mutex guard and
+        // active context must already exclude competing local transactions.
+        assert!(datatype.tx_mutex.try_lock().is_none());
+        assert!(datatype.tx_ctx.read().is_some());
+
+        let (waiting_tx, waiting_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let waiting_datatype = datatype.clone();
+        let waiter = thread::spawn(move || {
+            let context = Arc::new(if explicit_waiter {
+                TransactionContext::new("waiting")
+            } else {
+                TransactionContext::default()
+            });
+            waiting_tx.send(()).unwrap();
+            if explicit_waiter {
+                waiting_datatype
+                    .do_transaction(context.clone(), || {
+                        waiting_datatype.execute_local_operation_as_tx(
+                            context,
+                            Operation::new_counter_increase(1),
+                        )?;
+                        Ok(())
+                    })
+                    .unwrap();
+            } else {
+                waiting_datatype
+                    .execute_local_operation_as_tx(context, Operation::new_counter_increase(1))
+                    .unwrap();
+            }
+            finished_tx.send(()).unwrap();
+        });
+        waiting_rx.recv_timeout(WAIT_TIMEOUT).unwrap();
+        awaitility::at_most(WAIT_TIMEOUT).until(|| datatype.tx_waiters.load(Ordering::SeqCst) == 1);
+        assert!(finished_rx.try_recv().is_err());
+
+        datatype
+            .mutable
+            .write()
+            .execute_local_operation(Operation::new_counter_increase(10))
+            .unwrap();
+        owner.commit();
+        drop(owner);
+
+        finished_rx.recv_timeout(WAIT_TIMEOUT).unwrap();
+        waiter.join().unwrap();
+        let mutable = datatype.mutable.read();
+        assert_eq!(mutable.crdt.as_counter().unwrap().value(), 11);
+        assert_eq!(mutable.op_id.cseq, 2);
+        let values: Vec<_> = mutable
+            .push_buffer
+            .iter()
+            .map(|tx| tx.operations.len())
+            .collect();
+        assert_eq!(values, vec![1, 1]);
+        assert!(datatype.tx_ctx.read().is_none());
+        assert!(datatype.tx_mutex.try_lock().is_some());
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum TransactionOutcome {
+        Commit,
+        CallbackError,
+        Panic,
+        EnqueueError,
+    }
+
+    #[rstest]
+    #[case(TransactionOutcome::Commit)]
+    #[case(TransactionOutcome::CallbackError)]
+    #[case(TransactionOutcome::Panic)]
+    #[case(TransactionOutcome::EnqueueError)]
+    fn can_finish_transaction_cleanup_before_releasing_waiters(
+        #[case] outcome: TransactionOutcome,
+    ) {
+        let attr = new_attribute!(DataType::Counter);
+        let datatype = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (owner_done_tx, owner_done_rx) = mpsc::channel();
+        let owner_datatype = datatype.clone();
+        let owner = thread::spawn(move || {
+            let context = Arc::new(TransactionContext::new("owner"));
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                owner_datatype.do_transaction(context.clone(), || {
+                    owner_datatype.execute_local_operation_as_tx(
+                        context.clone(),
+                        Operation::new_counter_increase(10),
+                    )?;
+                    // Joined operations release only their operation guards;
+                    // the enclosing transaction retains its transaction guard.
+                    assert!(owner_datatype.op_mutex.try_lock().is_some());
+                    assert_eq!(owner_datatype.tx_ctx.read().as_ref(), Some(&context));
+                    assert!(owner_datatype.tx_mutex.try_lock().is_none());
+                    if matches!(outcome, TransactionOutcome::EnqueueError) {
+                        // Reject this two-operation transaction while leaving
+                        // enough capacity for the waiter's single operation.
+                        owner_datatype.execute_local_operation_as_tx(
+                            context,
+                            Operation::new_counter_increase(10),
+                        )?;
+                        let mut mutable = owner_datatype.mutable.write();
+                        let op_id = &mutable.op_id;
+                        let mut tx = Transaction::new(&op_id.cuid, 1);
+                        tx.push_operation(Operation::new_counter_increase(1));
+                        mutable.push_buffer.option = Arc::new(DatatypeOption {
+                            max_mem_size_of_push_buffer: tx.size(),
+                        });
+                    }
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv_timeout(WAIT_TIMEOUT).unwrap();
+                    match outcome {
+                        TransactionOutcome::Commit | TransactionOutcome::EnqueueError => Ok(()),
+                        TransactionOutcome::CallbackError => {
+                            Err(DatatypeError::TransactionFailed("abort".into()))
+                        }
+                        TransactionOutcome::Panic => panic!("abort the transaction by unwinding"),
+                    }
+                })
+            }));
+            match outcome {
+                TransactionOutcome::Panic => assert!(result.is_err()),
+                TransactionOutcome::CallbackError => assert!(result.unwrap().is_err()),
+                // Enqueue rejection is reported through the error handler.
+                TransactionOutcome::Commit | TransactionOutcome::EnqueueError => {
+                    assert!(result.unwrap().is_ok())
+                }
+            }
+            owner_done_tx.send(()).unwrap();
+        });
+        entered_rx.recv_timeout(WAIT_TIMEOUT).unwrap();
+
+        let (waiting_tx, waiting_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let waiting_datatype = datatype.clone();
+        let waiter = thread::spawn(move || {
+            let context = Arc::new(TransactionContext::default());
+            waiting_tx.send(()).unwrap();
+            waiting_datatype
+                .execute_local_operation_as_tx(context, Operation::new_counter_increase(1))
+                .unwrap();
+            finished_tx.send(()).unwrap();
+        });
+        waiting_rx.recv_timeout(WAIT_TIMEOUT).unwrap();
+        awaitility::at_most(WAIT_TIMEOUT).until(|| datatype.tx_waiters.load(Ordering::SeqCst) == 1);
+        assert!(finished_rx.try_recv().is_err());
+        release_tx.send(()).unwrap();
+        owner_done_rx.recv_timeout(WAIT_TIMEOUT).unwrap();
+        finished_rx.recv_timeout(WAIT_TIMEOUT).unwrap();
+        owner.join().unwrap();
+        waiter.join().unwrap();
+
+        let committed = matches!(outcome, TransactionOutcome::Commit);
+        let mutable = datatype.mutable.read();
+        assert_eq!(
+            mutable.crdt.as_counter().unwrap().value(),
+            if committed { 11 } else { 1 }
+        );
+        assert_eq!(mutable.op_id.cseq, if committed { 2 } else { 1 });
+        assert_eq!(
+            mutable.push_buffer.iter().count(),
+            if committed { 2 } else { 1 }
+        );
+        assert!(datatype.tx_ctx.read().is_none());
+        assert!(datatype.op_mutex.try_lock().is_some());
+        assert!(datatype.tx_mutex.try_lock().is_some());
+    }
+
+    #[test]
+    fn can_release_standalone_locks_after_operation_failure() {
+        let attr = new_attribute!(DataType::Counter);
+        let datatype = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
+        assert!(
+            datatype
+                .execute_local_operation_as_tx(
+                    Default::default(),
+                    Operation::new_snapshot(Vec::new().into_boxed_slice()),
+                )
+                .is_err()
+        );
+        assert!(datatype.tx_ctx.read().is_none());
+        assert!(datatype.op_mutex.try_lock().is_some());
+        assert!(datatype.tx_mutex.try_lock().is_some());
+        datatype
+            .execute_local_operation_as_tx(Default::default(), Operation::new_counter_increase(1))
+            .unwrap();
+        assert_eq!(
+            datatype.mutable.read().crdt.as_counter().unwrap().value(),
+            1
+        );
+    }
 
     #[test]
     #[instrument]
