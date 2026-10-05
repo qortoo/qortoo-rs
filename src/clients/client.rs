@@ -199,6 +199,8 @@ impl Client {
 
 #[cfg(test)]
 mod tests_client {
+    use std::{sync::mpsc, time::Duration};
+
     use tracing::instrument;
 
     use crate::{
@@ -220,6 +222,41 @@ mod tests_client {
         let client = Client::builder("collection1", "alias1").build().unwrap();
         assert_eq!(client.get_collection(), "collection1");
         assert_eq!(client.get_alias(), "alias1");
+    }
+
+    #[test]
+    fn can_reject_a_duplicate_build_without_reading_mutable_state() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .with_connectivity(connectivity)
+            .build()
+            .unwrap();
+        let key = get_test_func_name!();
+        let counter = client.create_datatype(&key).build_counter().unwrap();
+        let mutable_guard = counter.get_core().mutable.write();
+        let (result_tx, result_rx) = mpsc::channel();
+
+        std::thread::scope(|scope| {
+            let duplicate_key = key.clone();
+            let worker = scope.spawn(|| {
+                let result = client
+                    .create_datatype(duplicate_key)
+                    .build_counter()
+                    .map(|_| ());
+                result_tx.send(result).unwrap();
+            });
+
+            let duplicate = result_rx.recv_timeout(Duration::from_secs(5));
+            drop(mutable_guard);
+            worker.join().unwrap();
+
+            assert!(
+                duplicate
+                    .expect("duplicate detection must not wait for mutable datatype state")
+                    .is_err()
+            );
+        });
     }
 
     #[test]

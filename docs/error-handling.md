@@ -63,7 +63,7 @@ Returned directly to the caller; never routed.
 | Variant | Code | Trigger |
 |---------|------|---------|
 | `InvalidCollectionName` | 100 | The collection name fails naming validation |
-| `FailedToSubscribeOrCreateDatatype` | 101 | The key is already held by this client, or the requested kind or state does not match what is there |
+| `FailedToSubscribeOrCreateDatatype` | 101 | The datatype key is invalid, or the client already holds that key |
 
 ### Datatype errors (codes 200–)
 

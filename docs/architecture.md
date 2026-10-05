@@ -123,6 +123,12 @@ datatype's own references do not keep it alive. Dropping the last handle stops i
 loop. A datatype that transitions to disabled removes itself from the client's table, and only
 if the table still holds that same instance.
 
+**Client table lock order.** The client table lock protects key membership and the datatype
+handle stored for each key. Code holding that lock does not inspect mutable datatype state.
+A transition to `Disabled` already holds the mutable-state lock when it takes the client table
+lock to detach the matching instance; keeping client-table operations independent of mutable
+state prevents the opposite client-table-to-mutable order and its circular wait.
+
 **Limits on the guarantees.** Convergence is a property of the CRDT layer and holds for
 datatypes that actually exchange operations; the default backend exchanges with no one, so
 two clients built with it never converge. Nothing here guarantees when a local change reaches
@@ -245,6 +251,7 @@ in return.
 |-------------|-------|
 | `Client` and datatype handles are `Send + Sync` | `can_assert_send_and_sync_traits` in `src/clients/client.rs`, `src/datatypes/counter.rs`, `src/datatypes/variable.rs` |
 | A key already in the table cannot be built a second time | `can_use_subscribe_or_create_datatype` in `src/clients/datatype_manager.rs` |
+| Rejecting a duplicate build does not inspect mutable datatype state while holding the client table lock | `can_reject_a_duplicate_build_without_reading_mutable_state` in `src/clients/client.rs` |
 | Concurrent local operations are serialized | `can_run_transactions_concurrently` in `src/datatypes/counter.rs` |
 | Two clients converge over a shared backend | `can_sync_bidirectionally_between_two_clients` in `src/connectivity/local_datatype_server.rs` |
 | Convergence is independent of exchange order | `can_converge_via_cuid_tie_break_regardless_of_sync_order` in `src/datatypes/variable.rs` |

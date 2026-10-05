@@ -53,11 +53,13 @@ impl DatatypeManager {
         match self.datatypes.entry(arc_key.clone()) {
             Entry::Occupied(entry) => {
                 let existing = entry.get();
+                // Lock order: a Disabled transition may acquire the client table lock while
+                // holding per-datatype mutable state, so this table-locked method must not
+                // acquire mutable state.
                 Err(with_err_out!(
                     ClientError::FailedToSubscribeOrCreateDatatype(format!(
-                        "{type:?} '{key}' was demanded as {state:?}, but the client already has {:?} '{key}' as {:?}",
-                        existing.get_type(),
-                        existing.get_state()
+                        "{type:?} '{key}' was demanded as {state:?}, but the client already manages '{key}' as {:?}",
+                        existing.get_type()
                     ))
                 ))
             }
