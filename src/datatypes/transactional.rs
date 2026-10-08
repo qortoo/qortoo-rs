@@ -1,6 +1,10 @@
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::Arc,
+    thread::{self, ThreadId},
+};
 
 use parking_lot::{Mutex, MutexGuard, RwLock};
 use tracing::{Span, info_span, instrument};
@@ -67,29 +71,29 @@ mod tests_transaction_context {
 }
 
 #[derive(derive_more::Display)]
-enum LocalTransactionAdmission<'a> {
+enum TransactionAdmission<'a> {
     #[display("Started")]
-    Started(LocalTransactionGuard<'a>),
+    Started(TransactionGuard<'a>),
     #[display("JoinedExisting")]
     JoinedExisting,
 }
 
 /// Owns one local transaction and the mutex guard that admits it.
 /// Joined operations and waiting callers never own this transaction's cleanup.
-struct LocalTransactionGuard<'a> {
+struct TransactionGuard<'a> {
     datatype: &'a TransactionalDatatype,
     context: Arc<TransactionContext>,
     mutex_guard: Option<MutexGuard<'a, ()>>,
     committed: bool,
 }
 
-impl LocalTransactionGuard<'_> {
+impl TransactionGuard<'_> {
     fn commit(&mut self) {
         self.committed = true;
     }
 }
 
-impl Drop for LocalTransactionGuard<'_> {
+impl Drop for TransactionGuard<'_> {
     fn drop(&mut self) {
         self.datatype
             .end_transaction(self.context.tag.clone(), self.committed);
@@ -101,12 +105,18 @@ impl Drop for LocalTransactionGuard<'_> {
     }
 }
 
+/// Associates the active context with the thread executing its local transaction.
+struct ActiveTransactionContext {
+    context: Arc<TransactionContext>,
+    owner_thread: ThreadId,
+}
+
 pub struct TransactionalDatatype {
     pub attr: Arc<Attribute>,
     pub mutable: Arc<RwLock<MutableDatatype>>,
-    tx_ctx: RwLock<Option<Arc<TransactionContext>>>,
+    active_tx_ctx: RwLock<Option<ActiveTransactionContext>>,
     op_mutex: Mutex<()>,
-    tx_mutex: Mutex<()>,
+    tx_mutex: Arc<Mutex<()>>,
     #[cfg(test)]
     tx_waiters: AtomicUsize,
     event_loop: Arc<EventLoop>,
@@ -138,7 +148,7 @@ impl Datatype for TransactionalDatatype {
     }
 
     fn sync(&self) -> Result<(), DatatypeError> {
-        self.check_disabled("sync")?;
+        self.check_sync_allowed()?;
         self.event_loop.send_push_transaction_with_guarantee()
     }
 
@@ -178,7 +188,7 @@ impl TransactionalDatatype {
             ))),
             attr: attr.clone(),
             event_loop: event_loop.clone(),
-            tx_ctx: Default::default(),
+            active_tx_ctx: Default::default(),
             op_mutex: Default::default(),
             tx_mutex: Default::default(),
             #[cfg(test)]
@@ -194,7 +204,11 @@ impl TransactionalDatatype {
     }
 
     fn get_wired_datatype(&self) -> Arc<WiredDatatype> {
-        Arc::new(WiredDatatype::new(self.mutable.clone(), self.attr.clone()))
+        Arc::new(WiredDatatype::new(
+            self.mutable.clone(),
+            self.attr.clone(),
+            self.tx_mutex.clone(),
+        ))
     }
 
     /// Checks whether this datatype is writable based on its readonly flag and state.
@@ -220,12 +234,24 @@ impl TransactionalDatatype {
         Ok(())
     }
 
-    fn check_disabled(&self, op: &str) -> Result<(), DatatypeError> {
+    fn check_sync_allowed(&self) -> Result<(), DatatypeError> {
         if self.mutable.read().get_state() == DatatypeState::Disabled {
-            return Err(DatatypeError::NotWritable(format!(
-                "{} is not allowed in Disabled state",
-                op
-            )));
+            return Err(DatatypeError::NotWritable(
+                "sync is not allowed in Disabled state".to_owned(),
+            ));
+        }
+        // Response application uses the local transaction gate. Waiting for a
+        // synchronous response from inside that transaction would form a cycle.
+        if self
+            .active_tx_ctx
+            .read()
+            .as_ref()
+            .is_some_and(|active| active.owner_thread == thread::current().id())
+        {
+            return Err(DatatypeError::Disallowed(
+                "sync is not allowed on the thread that owns the active local transaction"
+                    .to_owned(),
+            ));
         }
         Ok(())
     }
@@ -247,24 +273,27 @@ impl TransactionalDatatype {
         op: Operation,
     ) -> Result<ReturnType, DatatypeError> {
         self.check_writable()?;
-        let mut transaction_guard = match self.begin_transaction(tx_ctx) {
-            LocalTransactionAdmission::Started(guard) => Some(guard),
-            LocalTransactionAdmission::JoinedExisting => {
-                // The enclosing transaction owns commit or rollback cleanup. This operation
-                // only acquires the operation mutex below.
-                None
-            }
-        };
-        let operation_guard = self.op_mutex.lock();
-        let result = self.mutable.write().execute_local_operation(op);
-        // Release mutable and the operation mutex before transaction cleanup takes
-        // mutable again. On panic, stack unwinding preserves the same order.
-        MutexGuard::unlock_fair(operation_guard);
-        let ret = result?;
-        if let Some(guard) = transaction_guard.as_mut() {
-            guard.commit();
+        self.with_local_transaction(self.begin_transaction(tx_ctx), || {
+            let operation_guard = self.op_mutex.lock();
+            let result = self.mutable.write().execute_local_operation(op);
+            // Release mutable and the operation mutex before transaction cleanup takes
+            // mutable again. On panic, stack unwinding preserves the same order.
+            MutexGuard::unlock_fair(operation_guard);
+            result
+        })
+    }
+
+    /// Runs local work and marks an owned transaction for commit only on success.
+    /// Joined work leaves commit and rollback to its enclosing transaction.
+    fn with_local_transaction<R>(
+        &self,
+        admission: TransactionAdmission<'_>,
+        action: impl FnOnce() -> Result<R, DatatypeError>,
+    ) -> Result<R, DatatypeError> {
+        match admission {
+            TransactionAdmission::Started(mut guard) => action().inspect(|_| guard.commit()),
+            TransactionAdmission::JoinedExisting => action(),
         }
-        Ok(ret)
     }
 
     #[instrument(skip_all)]
@@ -291,19 +320,19 @@ impl TransactionalDatatype {
             // Notify after releasing the write lock; handlers may re-enter the datatype.
             self.mutable.read().call_error_handler(err);
         }
-        self.tx_ctx.write().take();
+        self.active_tx_ctx.write().take();
     }
 
-    fn begin_transaction(&self, tx_ctx: Arc<TransactionContext>) -> LocalTransactionAdmission<'_> {
+    fn begin_transaction(&self, tx_ctx: Arc<TransactionContext>) -> TransactionAdmission<'_> {
         // Only tagged contexts can join an explicit transaction. Standalone
         // handles share a default context but must always open distinct local transactions.
         if tx_ctx.has_tag() {
-            let active = self.tx_ctx.read();
-            if active.as_ref() == Some(&tx_ctx) {
+            let active = self.active_tx_ctx.read();
+            if active.as_ref().map(|active| &active.context) == Some(&tx_ctx) {
                 let tag = tx_ctx.tag.clone().unwrap_or("NONE".to_owned());
                 drop(active);
                 add_span_event!("JoinedLocalTransaction", "tag" => tag);
-                return LocalTransactionAdmission::JoinedExisting;
+                return TransactionAdmission::JoinedExisting;
             }
         }
 
@@ -322,12 +351,15 @@ impl TransactionalDatatype {
             Arc::new(TransactionContext::default())
         };
         let tag = current.tag.clone().unwrap_or("NONE".to_owned());
-        let mut active = self.tx_ctx.write();
+        let mut active = self.active_tx_ctx.write();
         debug_assert!(active.is_none());
-        *active = Some(current.clone());
+        *active = Some(ActiveTransactionContext {
+            context: current.clone(),
+            owner_thread: thread::current().id(),
+        });
         drop(active);
         add_span_event!("StartedLocalTransaction", "tag" => tag);
-        LocalTransactionAdmission::Started(LocalTransactionGuard {
+        TransactionAdmission::Started(TransactionGuard {
             datatype: self,
             context: current,
             mutex_guard: Some(mutex_guard),
@@ -343,16 +375,15 @@ impl TransactionalDatatype {
     where
         F: FnOnce() -> Result<(), DatatypeError>,
     {
-        match self.begin_transaction(tx_ctx) {
-            LocalTransactionAdmission::Started(mut guard) => {
-                let tx_func_span = info_span!("tx_func");
-                tx_func_span.in_scope(|| tx_func().inspect(|_x| guard.commit()))
-            }
-            LocalTransactionAdmission::JoinedExisting => {
-                // Public transaction entry points always create a fresh context.
-                unreachable!("do_transaction cannot join its own active context");
-            }
+        let admission = self.begin_transaction(tx_ctx);
+        if matches!(admission, TransactionAdmission::JoinedExisting) {
+            // Public transaction entry points always create a fresh context.
+            unreachable!("do_transaction cannot join its own active context");
         }
+        self.with_local_transaction(admission, || {
+            let tx_func_span = info_span!("tx_func");
+            tx_func_span.in_scope(tx_func)
+        })
     }
 
     pub fn push_transaction(&self) {
@@ -383,17 +414,93 @@ mod tests_transactional {
     use tracing_opentelemetry::OpenTelemetrySpanExt;
 
     use crate::{
-        Client, DataType, DatatypeError, DatatypeState,
+        Client, DataType, Datatype, DatatypeError, DatatypeState, LocalConnectivity,
         datatypes::{
             common::new_attribute,
             option::DatatypeOption,
-            transactional::{LocalTransactionAdmission, TransactionContext, TransactionalDatatype},
+            transactional::{TransactionAdmission, TransactionContext, TransactionalDatatype},
         },
         operations::{MemoryMeasurable, Operation, transaction::Transaction},
         utils::test_utils::{get_test_collection_name, get_test_func_name},
     };
 
     const WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+    #[test]
+    fn can_reject_sync_on_the_local_transaction_owner_thread() {
+        let attr = new_attribute!(DataType::Counter);
+        let datatype = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
+        let TransactionAdmission::Started(_transaction) =
+            datatype.begin_transaction(Arc::new(TransactionContext::new("active")))
+        else {
+            panic!("a new context must start a local transaction");
+        };
+
+        assert!(matches!(
+            datatype.sync(),
+            Err(DatatypeError::Disallowed(message))
+                if message == "sync is not allowed on the thread that owns the active local transaction"
+        ));
+    }
+
+    #[test]
+    fn can_reject_sync_from_both_handles_inside_a_transaction_callback() {
+        let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .build()
+            .unwrap();
+        let counter = client.create_datatype("counter").build_counter().unwrap();
+        let original = counter.clone();
+        counter
+            .transaction("owner", move |transaction_handle| {
+                assert!(matches!(
+                    transaction_handle.sync(),
+                    Err(DatatypeError::Disallowed(_))
+                ));
+                assert!(matches!(original.sync(), Err(DatatypeError::Disallowed(_))));
+                transaction_handle.increase()?;
+                Ok(())
+            })
+            .unwrap();
+        counter.sync().unwrap();
+        assert_eq!(counter.get_value(), 1);
+    }
+
+    #[test]
+    fn can_complete_sync_from_another_thread_after_local_rollback() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let collection = get_test_collection_name!();
+        let client = Client::builder(collection.clone(), get_test_func_name!())
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let counter = client.create_datatype("counter").build_counter().unwrap();
+        counter.sync().unwrap();
+        let (response_tx, response_rx) = crossbeam_channel::unbounded();
+        connectivity
+            .get_wired_interceptor(&format!("{collection}/counter"), &client.get_cuid())
+            .unwrap()
+            .set_after_pull(move |_| {
+                response_tx.send(()).unwrap();
+                Ok(())
+            });
+        let (finished_tx, finished_rx) = crossbeam_channel::unbounded();
+        let callback_finished_rx = finished_rx.clone();
+        let sync_counter = counter.clone();
+        let result = counter.transaction("rollback", move |transaction_handle| {
+            transaction_handle.increase_by(10)?;
+            thread::spawn(move || {
+                finished_tx.send(sync_counter.sync()).unwrap();
+            });
+            response_rx.recv_timeout(WAIT_TIMEOUT).unwrap();
+            // The network exchange finished while this callback still owns the gate.
+            assert!(callback_finished_rx.try_recv().is_err());
+            Err("rollback".into())
+        });
+        assert!(matches!(result, Err(DatatypeError::TransactionFailed(_))));
+        finished_rx.recv_timeout(WAIT_TIMEOUT).unwrap().unwrap();
+        assert_eq!(counter.get_value(), 0);
+    }
 
     #[rstest]
     #[case(false)]
@@ -404,8 +511,7 @@ mod tests_transactional {
         let attr = new_attribute!(DataType::Counter);
         let datatype = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
         let context = Arc::new(TransactionContext::default());
-        let LocalTransactionAdmission::Started(mut owner) =
-            datatype.begin_transaction(context.clone())
+        let TransactionAdmission::Started(mut owner) = datatype.begin_transaction(context.clone())
         else {
             panic!("a standalone write must own a new local transaction");
         };
@@ -413,7 +519,7 @@ mod tests_transactional {
         // Pause the standalone path after its local transaction begins. Its mutex guard and
         // active context must already exclude competing local transactions.
         assert!(datatype.tx_mutex.try_lock().is_none());
-        assert!(datatype.tx_ctx.read().is_some());
+        assert!(datatype.active_tx_ctx.read().is_some());
 
         let (waiting_tx, waiting_rx) = mpsc::channel();
         let (finished_tx, finished_rx) = mpsc::channel();
@@ -465,8 +571,7 @@ mod tests_transactional {
             .map(|tx| tx.operations.len())
             .collect();
         assert_eq!(values, vec![1, 1]);
-        assert!(datatype.tx_ctx.read().is_none());
-        assert!(datatype.tx_mutex.try_lock().is_some());
+        assert!(datatype.active_tx_ctx.read().is_none());
     }
 
     #[derive(Clone, Copy, Debug)]
@@ -502,7 +607,14 @@ mod tests_transactional {
                     // Joined operations release only their operation guards;
                     // the enclosing transaction retains its transaction guard.
                     assert!(owner_datatype.op_mutex.try_lock().is_some());
-                    assert_eq!(owner_datatype.tx_ctx.read().as_ref(), Some(&context));
+                    assert_eq!(
+                        owner_datatype
+                            .active_tx_ctx
+                            .read()
+                            .as_ref()
+                            .map(|active| &active.context),
+                        Some(&context)
+                    );
                     assert!(owner_datatype.tx_mutex.try_lock().is_none());
                     if matches!(outcome, TransactionOutcome::EnqueueError) {
                         // Reject this two-operation transaction while leaving
@@ -573,9 +685,8 @@ mod tests_transactional {
             mutable.push_buffer.iter().count(),
             if committed { 2 } else { 1 }
         );
-        assert!(datatype.tx_ctx.read().is_none());
+        assert!(datatype.active_tx_ctx.read().is_none());
         assert!(datatype.op_mutex.try_lock().is_some());
-        assert!(datatype.tx_mutex.try_lock().is_some());
     }
 
     #[test]
@@ -590,9 +701,8 @@ mod tests_transactional {
                 )
                 .is_err()
         );
-        assert!(datatype.tx_ctx.read().is_none());
+        assert!(datatype.active_tx_ctx.read().is_none());
         assert!(datatype.op_mutex.try_lock().is_some());
-        assert!(datatype.tx_mutex.try_lock().is_some());
         datatype
             .execute_local_operation_as_tx(Default::default(), Operation::new_counter_increase(1))
             .unwrap();

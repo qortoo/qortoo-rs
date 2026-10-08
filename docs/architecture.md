@@ -99,8 +99,10 @@ active context. Tagged operations with that same context join the local transact
 their own operation guards. Every competing local call waits for the transaction guard and uses
 it directly to own the next local transaction after cleanup; there is no release-and-retry
 admission step. These guards do not extend the mutable-state lock across network calls, and only
-the transaction guard spans a user callback. Remote response application uses the shared mutable
-state directly and does not participate in this local transaction admission protocol.
+the transaction guard spans a user callback. The wired layer shares that transaction guard: a
+remote response may arrive while local work is open, but applying its transactions, snapshot, or
+lifecycle change waits until the local commit or rollback finishes. Error recovery and snapshots
+served to new subscribers follow the same rule.
 
 **Runtime.** Datatypes do not run on the application's runtime. Building a client builds a
 multi-threaded Tokio runtime for it, sized to the machine's available parallelism, with
@@ -111,10 +113,12 @@ while handler callbacks are spawned as ordinary tasks onto the worker threads. T
 memory cost therefore scales with the number of clients and datatypes; that cost has not been
 characterized here.
 
-**Synchronization boundaries.** The lock is held while assembling what to send and while
-applying what comes back, and released across the backend exchange, so a slow or unreachable
-backend does not block local reads and writes. What is sent, what is skipped, and how errors
-are routed are defined in [`docs/connectivity.md`](connectivity.md),
+**Synchronization boundaries.** The mutable-state lock is held while assembling what to send and
+while applying what comes back, and released across the backend exchange. The local transaction
+guard is acquired only after the response arrives, before applying it. Calling synchronous
+`sync()` on the thread that owns the active local transaction is rejected, which prevents the callback from
+waiting for a response whose application is waiting for that same transaction. What is sent,
+what is skipped, and how errors are routed are defined in [`docs/connectivity.md`](connectivity.md),
 [`docs/event-loop.md`](event-loop.md), and
 [`docs/error-handling.md`](error-handling.md).
 
@@ -174,13 +178,15 @@ reflects every local write that has returned, whether or not it has reached the 
 **A sync exchange.** The event loop wakes on a queued transaction, an explicit sync request,
 or a notification from the backend. It takes the lock, builds a package from the buffered
 transactions and the datatype's acknowledged progress, and releases the lock. It then calls
-the backend. On a response it takes the lock again, validates the response, applies a state
-snapshot if one is present, skips transactions it has already seen, executes the rest against
-the CRDT, and updates the acknowledged progress and lifecycle state.
+the backend. On a response it waits for any open local transaction to finish, takes the mutable
+lock again, validates the response, applies a state snapshot if one is present, skips
+transactions it has already seen, executes the rest against the CRDT, and updates the
+acknowledged progress and lifecycle state.
 
 ```mermaid
 sequenceDiagram
     participant EL as Event loop
+    participant TX as Local transaction gate
     participant MUT as Mutable state
     participant CONN as Backend
 
@@ -189,8 +195,10 @@ sequenceDiagram
     EL->>EL: release the lock
     EL->>CONN: exchange
     CONN-->>EL: response
+    EL->>TX: wait for local commit or rollback
     EL->>MUT: take the lock, validate and apply
     MUT-->>EL: progress and state updated
+    EL->>TX: release the gate
     Note over EL,MUT: local reads and writes proceed<br/>while the exchange is in flight
 ```
 
@@ -206,8 +214,9 @@ to apply remote transactions to the same value local writes act on, and it must 
 opening a user transaction, checking write access, or recording undo actions — none of which
 apply to a change that already happened elsewhere. Giving the wired layer its own reference to
 the mutable state keeps the sync path out of the transaction machinery while still leaving one
-CRDT value per datatype. The cost is that the mutable state's invariants are a joint property
-of both paths rather than something the transactional layer alone can enforce.
+CRDT value per datatype. The wired path shares only the local transaction admission gate, which
+prevents remote application from interleaving with rollback while leaving protocol handling out
+of a user transaction. The mutable state's invariants remain a joint property of both paths.
 
 **The CRDT layer holds no locks and performs no I/O.** Convergence rules are the part that has
 to be right regardless of scheduling. Keeping them in a pure state machine means they can be

@@ -63,10 +63,19 @@ handle's default context is replaced with a fresh identity for each new local tr
 concurrent standalone writes cannot accidentally join each other. Unwinding releases both owned
 guards after rollback and context cleanup.
 
-The transaction mutex does not guard reads or remote response application. The mutable-state
-lock protects each state access and is released between local operations and across the user
-closure's own work. Local transaction serialization therefore does not provide isolation from
-remote changes or hide uncommitted values from other readers.
+The wired layer shares the transaction mutex. Network exchange remains outside it, but applying
+a remote response waits until the open local transaction has committed or rolled back. The same
+gate covers response snapshots, lifecycle changes, error recovery, and snapshots served to new
+subscribers, so local rollback cannot erase a remote change applied during the transaction.
+Synchronous `sync()` is rejected on the thread that owns the active local transaction, including
+calls through a captured original handle, because its response cannot be applied until the
+callback finishes. Calls from other threads can exchange with the backend and wait for the gate
+before applying the response. The owner thread must not wait for another thread to finish
+`sync()` on the same datatype: that indirect circular wait is not detected.
+
+Reads do not acquire the transaction mutex. The mutable-state lock protects each individual
+state access and is released between local operations and across the user closure's own work, so
+another handle can observe values written by a transaction that has not committed yet.
 
 **Progress counters.** A datatype's operation counters advance only after an operation
 succeeds. A failed operation leaves them untouched, and the next operation takes the slot the
@@ -200,7 +209,8 @@ because a remote transaction is never rolled back locally.
 | Applying an operation, recording it, and advancing the counters | `src/datatypes/mutable.rs` (`execute_local_operation`) |
 | Closing a local transaction: enqueue on commit, undo on abort | `src/datatypes/mutable.rs` (`end_transaction`, `do_rollback`) |
 | Opening and joining local transactions, waiting for a local transaction held elsewhere | `src/datatypes/transactional.rs` (`begin_transaction`, `execute_local_operation_as_tx`, `do_transaction`) |
-| Local transaction cleanup and active-context ownership | `src/datatypes/transactional.rs` (`LocalTransactionGuard`) |
+| Success handling for owned or joined local work, cleanup, and active-context ownership | `src/datatypes/transactional.rs` (`with_local_transaction`, `TransactionGuard`) |
+| Waiting to apply remote responses, recovery, and subscriber snapshot generation after local transaction cleanup | `src/datatypes/wired.rs` (`with_transaction_gate`) |
 | The public `transaction(tag, closure)` entry point | `src/datatypes/counter.rs`, `src/datatypes/variable.rs` |
 | Sequence checks and capacity limits on enqueue | `src/datatypes/push_buffer.rs` |
 | Undo action families and the wrapper that routes them | `src/datatypes/crdts/` |
@@ -217,6 +227,9 @@ because a remote transaction is never rolled back locally.
 | A failed operation leaves the local transaction and counters unchanged | `can_preserve_transaction_state_when_operation_execution_fails` in `src/datatypes/mutable.rs` |
 | Undo actions live exactly as long as their local transaction | `can_manage_rollback_action_lifetimes` in `src/datatypes/mutable.rs` |
 | A commit that fails to enqueue is rolled back | `can_rollback_on_enqueue_failure` in `src/datatypes/transactional.rs` |
+| A remote Variable set waits for local rollback and remains the winner afterward | `can_preserve_remote_variable_set_after_local_transaction_rollback` in `src/datatypes/wired.rs` |
+| Sync on the owner thread is rejected through both callback and original handles | `can_reject_sync_on_the_local_transaction_owner_thread`, `can_reject_sync_from_both_handles_inside_a_transaction_callback` in `src/datatypes/transactional.rs` |
+| Sync from another thread exchanges during the callback and completes after rollback | `can_complete_sync_from_another_thread_after_local_rollback` in `src/datatypes/transactional.rs` |
 | Counter undo, including the self-inverse extreme | `can_return_and_apply_a_counter_rollback_action` in `src/datatypes/crdts/counter_crdt.rs` |
 | Restore-shaped undo is routed to the right CRDT | `can_dispatch_local_variable_execution_and_rollback` in `src/datatypes/crdts/crdt.rs` |
 | Restoring the save point returns the counters exactly | `can_next_rollback_compare_operation_ids` in `src/types/operation_id.rs` |

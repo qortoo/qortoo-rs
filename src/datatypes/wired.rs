@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use tracing::{instrument, trace, warn};
 
 #[cfg(test)]
@@ -21,15 +21,23 @@ use crate::{
 pub struct WiredDatatype {
     pub mutable: Arc<RwLock<MutableDatatype>>,
     pub attr: Arc<Attribute>,
+    // Shared with TransactionalDatatype so remote mutations cannot interleave
+    // with a local transaction's commit or rollback.
+    tx_mutex: Arc<Mutex<()>>,
     #[cfg(test)]
     interceptor: Arc<WiredInterceptor>,
 }
 
 impl WiredDatatype {
-    pub fn new(mutable: Arc<RwLock<MutableDatatype>>, attr: Arc<Attribute>) -> Self {
+    pub fn new(
+        mutable: Arc<RwLock<MutableDatatype>>,
+        attr: Arc<Attribute>,
+        tx_mutex: Arc<Mutex<()>>,
+    ) -> Self {
         Self {
             mutable,
             attr,
+            tx_mutex,
             #[cfg(test)]
             interceptor: WiredInterceptor::new_arc(),
         }
@@ -48,6 +56,7 @@ impl WiredDatatype {
                 Default::default(),
             ))),
             attr,
+            tx_mutex: Default::default(),
             interceptor,
         })
     }
@@ -65,8 +74,16 @@ impl WiredDatatype {
     }
 
     pub fn handle_error(&self, err: DatatypeError, recovery: RecoveryAction) {
-        self.mutable.write().apply_action(recovery);
+        self.with_transaction_gate(|mutable| mutable.apply_action(recovery));
         self.mutable.read().call_error_handler(err);
+    }
+
+    /// Runs a state operation under the transaction gate, then the mutable write lock.
+    /// Both guards are released before returning to the caller.
+    fn with_transaction_gate<R>(&self, action: impl FnOnce(&mut MutableDatatype) -> R) -> R {
+        let _tx_guard = self.tx_mutex.lock();
+        let mut mutable = self.mutable.write();
+        action(&mut mutable)
     }
 
     #[instrument(skip_all)]
@@ -130,9 +147,10 @@ impl WiredDatatype {
 
         add_span_event!("recv PULL PushPullPack", "ppp"=> pulled_ppp.to_string());
 
-        let mut mutable = self.mutable.write();
-        let mut pull_handler = PullHandler::new(&mut pulled_ppp, &mut mutable);
-        pull_handler.apply()
+        self.with_transaction_gate(|mutable| {
+            let mut pull_handler = PullHandler::new(&mut pulled_ppp, mutable);
+            pull_handler.apply()
+        })
     }
 
     pub fn cuid(&self) -> Cuid {
@@ -140,12 +158,13 @@ impl WiredDatatype {
     }
 
     pub fn get_subscribe_snapshot(&self) -> Transaction {
-        let m = self.mutable.write();
-        let snap_op = m.new_snapshot_operation();
-        let mut tx = Transaction::new_with_cuid(&self.cuid());
-        tx.push_operation(snap_op);
-        tx.sseq = m.checkpoint.sseq;
-        tx
+        self.with_transaction_gate(|mutable| {
+            let snap_op = mutable.new_snapshot_operation();
+            let mut tx = Transaction::new_with_cuid(&self.cuid());
+            tx.push_operation(snap_op);
+            tx.sseq = mutable.checkpoint.sseq;
+            tx
+        })
     }
 }
 
@@ -176,11 +195,19 @@ impl MutableDatatype {
 
 #[cfg(test)]
 mod tests_wired {
+    use std::{
+        sync::{Arc, mpsc},
+        thread,
+        time::Duration,
+    };
+
     use crate::{
         DataType, DatatypeState,
         datatypes::{
             common::new_attribute, wired::WiredDatatype, wired_interceptor::WiredInterceptor,
         },
+        operations::{Operation, transaction::Transaction},
+        types::uid::Cuid,
     };
 
     #[test]
@@ -193,5 +220,60 @@ mod tests_wired {
         );
 
         assert!(wired.push_if_needed());
+    }
+
+    #[test]
+    fn can_preserve_remote_variable_set_after_local_transaction_rollback() {
+        let attr = new_attribute!(DataType::Variable);
+        let interceptor = WiredInterceptor::new_arc();
+        let (response_ready_tx, response_ready_rx) = mpsc::channel();
+        interceptor.set_after_pull(move |pull| {
+            let remote_cuid = Cuid::try_from("0000000000000001").unwrap();
+            let mut operation =
+                Operation::new_variable_set(b"\"remote\"".to_vec().into_boxed_slice());
+            operation.set_lamport(2);
+            let mut transaction = Transaction::new(&remote_cuid, 1);
+            transaction.sseq = 1;
+            transaction.push_operation(operation);
+            pull.transactions = vec![Arc::new(transaction)];
+            pull.checkpoint.sseq = 1;
+            response_ready_tx.send(()).unwrap();
+            Ok(())
+        });
+        let wired = WiredDatatype::new_arc_for_test(attr, DatatypeState::Creating, interceptor);
+        let worker_wired = wired.clone();
+        let local_transaction = wired.tx_mutex.lock();
+        wired
+            .mutable
+            .write()
+            .execute_local_operation(Operation::new_variable_set(
+                b"\"local\"".to_vec().into_boxed_slice(),
+            ))
+            .unwrap();
+        let (finished_tx, finished_rx) = mpsc::channel();
+
+        let worker = thread::spawn(move || {
+            finished_tx.send(worker_wired.push_pull()).unwrap();
+        });
+        response_ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the backend response must arrive while the local transaction is active");
+        assert!(finished_rx.try_recv().is_err());
+        wired.mutable.write().do_rollback();
+
+        drop(local_transaction);
+        finished_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("response application must resume after the local transaction finishes")
+            .unwrap();
+        worker.join().unwrap();
+
+        let mutable = wired.mutable.read();
+        assert_eq!(mutable.crdt.as_variable().unwrap().value(), b"\"remote\"");
+        assert_eq!(mutable.op_id.cseq, 0);
+        assert_eq!(mutable.op_id.lamport, 2);
+        assert_eq!(mutable.checkpoint.cseq, 0);
+        assert_eq!(mutable.checkpoint.sseq, 1);
+        assert_eq!(mutable.get_state(), DatatypeState::Subscribed);
     }
 }
