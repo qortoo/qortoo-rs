@@ -58,10 +58,12 @@ transaction and clears its context before releasing the mutex, so the same wait 
 between operations as well as cleanup. Fair mutex handoff reduces barging but does not promise
 FIFO admission of local transactions.
 
-An operation joining the active context owns only an operation mutex guard. A standalone
-handle's default context is replaced with a fresh identity for each new local transaction, so
-concurrent standalone writes cannot accidentally join each other. Unwinding releases both owned
-guards after rollback and context cleanup.
+An operation joining the active context acquires the mutable-state write lock for its value
+change, rollback record, and counter update. Concurrent operations sharing that context execute
+one at a time under this lock. A standalone handle's default context is replaced with a fresh
+identity for each new local transaction, so concurrent standalone writes cannot accidentally
+join each other. Unwinding releases the mutable-state lock before transaction rollback and
+context cleanup release the transaction guard.
 
 The wired layer shares the transaction mutex. Network exchange remains outside it, but applying
 a remote response waits until the open local transaction has committed or rolled back. The same
@@ -167,10 +169,10 @@ detecting the failure. Advancing after success means a failed operation needs no
 the state it would have changed was never changed.
 
 **A guard carries the right to finish the local transaction.** The local transaction owns the
-transaction guard and each operation owns its operation guard. A waiter becomes the next owner
-only after acquiring the previous local transaction's mutex guard. Transaction cleanup never
-infers ownership from whether a mutex happens to be locked. The operation guard is released
-before transaction cleanup takes the mutable-state lock to commit or roll back.
+transaction guard, while each operation holds the mutable-state write lock. A waiter becomes
+the next owner only after acquiring the previous local transaction's mutex guard. Transaction
+cleanup never infers ownership from whether a mutex happens to be locked. Each operation
+releases its mutable-state lock before transaction cleanup takes it again to commit or roll back.
 
 **The save point is captured at the first recorded operation, not when the local transaction
 begins.** A local transaction that finishes without applying anything has nothing to restore,
@@ -219,6 +221,7 @@ because a remote transaction is never rolled back locally.
 | Verified by | Tests |
 |-------------|-------|
 | A transaction commits as a unit; an aborted one leaves no trace | `can_use_transaction` in `src/datatypes/counter.rs` |
+| Concurrent operations sharing one context preserve values, counters, batch boundaries, rollback, and subsequent progress | `can_serialize_concurrent_operations_in_one_transaction` in `src/datatypes/transactional.rs` |
 | Concurrent transactions from several threads all complete | `can_run_transactions_concurrently` in `src/datatypes/counter.rs` |
 | A standalone local transaction excludes competing writes and transactions until commit | `can_hold_standalone_transaction_until_commit_before_admitting_waiters` in `src/datatypes/transactional.rs` |
 | Commit, callback error, panic, and enqueue rejection finish cleanup before the next write | `can_finish_transaction_cleanup_before_releasing_waiters` in `src/datatypes/transactional.rs` |

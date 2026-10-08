@@ -115,7 +115,6 @@ pub struct TransactionalDatatype {
     pub attr: Arc<Attribute>,
     pub mutable: Arc<RwLock<MutableDatatype>>,
     active_tx_ctx: RwLock<Option<ActiveTransactionContext>>,
-    op_mutex: Mutex<()>,
     tx_mutex: Arc<Mutex<()>>,
     #[cfg(test)]
     tx_waiters: AtomicUsize,
@@ -189,7 +188,6 @@ impl TransactionalDatatype {
             attr: attr.clone(),
             event_loop: event_loop.clone(),
             active_tx_ctx: Default::default(),
-            op_mutex: Default::default(),
             tx_mutex: Default::default(),
             #[cfg(test)]
             tx_waiters: Default::default(),
@@ -274,12 +272,8 @@ impl TransactionalDatatype {
     ) -> Result<ReturnType, DatatypeError> {
         self.check_writable()?;
         self.with_local_transaction(self.begin_transaction(tx_ctx), || {
-            let operation_guard = self.op_mutex.lock();
-            let result = self.mutable.write().execute_local_operation(op);
-            // Release mutable and the operation mutex before transaction cleanup takes
-            // mutable again. On panic, stack unwinding preserves the same order.
-            MutexGuard::unlock_fair(operation_guard);
-            result
+            // Release the mutable write lock before the transaction guard performs cleanup.
+            self.mutable.write().execute_local_operation(op)
         })
     }
 
@@ -403,7 +397,7 @@ impl Drop for TransactionalDatatype {
 mod tests_transactional {
     use std::{
         panic::{AssertUnwindSafe, catch_unwind},
-        sync::{Arc, atomic::Ordering, mpsc},
+        sync::{Arc, Barrier, atomic::Ordering, mpsc},
         thread,
         time::Duration,
     };
@@ -416,7 +410,7 @@ mod tests_transactional {
     use crate::{
         Client, DataType, Datatype, DatatypeError, DatatypeState, LocalConnectivity,
         datatypes::{
-            common::new_attribute,
+            common::{ReturnType, new_attribute},
             option::DatatypeOption,
             transactional::{TransactionAdmission, TransactionContext, TransactionalDatatype},
         },
@@ -587,6 +581,127 @@ mod tests_transactional {
     #[case(TransactionOutcome::CallbackError)]
     #[case(TransactionOutcome::Panic)]
     #[case(TransactionOutcome::EnqueueError)]
+    fn can_serialize_concurrent_operations_in_one_transaction(#[case] outcome: TransactionOutcome) {
+        const WORKERS: usize = 4;
+        const OPERATIONS_PER_WORKER: usize = 16;
+        const TOTAL_OPERATIONS: usize = WORKERS * OPERATIONS_PER_WORKER;
+        let attr = new_attribute!(DataType::Counter);
+        let datatype = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
+        let context = Arc::new(TransactionContext::new("shared"));
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            datatype.do_transaction(context.clone(), || {
+                let barrier = Arc::new(Barrier::new(WORKERS));
+                let mut values = thread::scope(|scope| {
+                    let workers: Vec<_> = (0..WORKERS)
+                        .map(|_| {
+                            let datatype = &datatype;
+                            let context = context.clone();
+                            let barrier = barrier.clone();
+                            scope.spawn(move || {
+                                barrier.wait();
+                                (0..OPERATIONS_PER_WORKER)
+                                    .map(|_| {
+                                        let ReturnType::Counter(value) = datatype
+                                            .execute_local_operation_as_tx(
+                                                context.clone(),
+                                                Operation::new_counter_increase(1),
+                                            )
+                                            .unwrap()
+                                        else {
+                                            panic!("expected a counter result");
+                                        };
+                                        value
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                        })
+                        .collect();
+                    workers
+                        .into_iter()
+                        .flat_map(|worker| worker.join().unwrap())
+                        .collect::<Vec<_>>()
+                });
+                values.sort_unstable();
+                assert_eq!(values, (1..=TOTAL_OPERATIONS as i64).collect::<Vec<_>>());
+
+                // An operation error leaves earlier operations and their counters intact.
+                assert!(
+                    datatype
+                        .execute_local_operation_as_tx(
+                            context.clone(),
+                            Operation::new_snapshot(Vec::new().into_boxed_slice()),
+                        )
+                        .is_err()
+                );
+                assert!(matches!(
+                    datatype.execute_local_operation_as_tx(
+                        context.clone(),
+                        Operation::new_counter_increase(1),
+                    )?,
+                    ReturnType::Counter(value) if value == (TOTAL_OPERATIONS + 1) as i64
+                ));
+                if matches!(outcome, TransactionOutcome::EnqueueError) {
+                    let mut mutable = datatype.mutable.write();
+                    let mut transaction = Transaction::new(&mutable.op_id.cuid, 1);
+                    transaction.push_operation(Operation::new_counter_increase(1));
+                    mutable.push_buffer.option = Arc::new(DatatypeOption {
+                        max_mem_size_of_push_buffer: transaction.size(),
+                    });
+                }
+                match outcome {
+                    TransactionOutcome::Commit | TransactionOutcome::EnqueueError => Ok(()),
+                    TransactionOutcome::CallbackError => {
+                        Err(DatatypeError::TransactionFailed("abort".into()))
+                    }
+                    TransactionOutcome::Panic => panic!("abort concurrent transaction"),
+                }
+            })
+        }));
+        match outcome {
+            TransactionOutcome::Panic => assert!(result.is_err()),
+            TransactionOutcome::CallbackError => assert!(result.unwrap().is_err()),
+            // Commit-time enqueue rejection still uses the current S6 error-handler contract.
+            _ => assert!(result.unwrap().is_ok()),
+        }
+        let committed = matches!(outcome, TransactionOutcome::Commit);
+        {
+            let mutable = datatype.mutable.read();
+            let operation_count = if committed { TOTAL_OPERATIONS + 1 } else { 0 };
+            assert_eq!(
+                mutable.crdt.as_counter().unwrap().value(),
+                operation_count as i64
+            );
+            assert_eq!(mutable.op_id.lamport, operation_count as u64);
+            assert_eq!(mutable.op_id.cseq, u64::from(committed));
+            let batches: Vec<_> = mutable.push_buffer.iter().collect();
+            assert_eq!(batches.len(), usize::from(committed));
+            if committed {
+                assert_eq!(batches[0].operations.len(), operation_count);
+                assert_eq!(batches[0].cseq, 1);
+                assert_eq!(batches[0].tag.as_deref(), Some("shared"));
+            }
+        }
+        assert!(datatype.active_tx_ctx.read().is_none());
+        datatype
+            .execute_local_operation_as_tx(Default::default(), Operation::new_counter_increase(1))
+            .unwrap();
+        let mutable = datatype.mutable.read();
+        assert_eq!(mutable.op_id.cseq, if committed { 2 } else { 1 });
+        assert_eq!(
+            mutable.crdt.as_counter().unwrap().value(),
+            if committed {
+                (TOTAL_OPERATIONS + 2) as i64
+            } else {
+                1
+            }
+        );
+    }
+
+    #[rstest]
+    #[case(TransactionOutcome::Commit)]
+    #[case(TransactionOutcome::CallbackError)]
+    #[case(TransactionOutcome::Panic)]
+    #[case(TransactionOutcome::EnqueueError)]
     fn can_finish_transaction_cleanup_before_releasing_waiters(
         #[case] outcome: TransactionOutcome,
     ) {
@@ -604,9 +719,8 @@ mod tests_transactional {
                         context.clone(),
                         Operation::new_counter_increase(10),
                     )?;
-                    // Joined operations release only their operation guards;
-                    // the enclosing transaction retains its transaction guard.
-                    assert!(owner_datatype.op_mutex.try_lock().is_some());
+                    // Each operation releases mutable; the enclosing transaction
+                    // retains its transaction guard between operations.
                     assert_eq!(
                         owner_datatype
                             .active_tx_ctx
@@ -686,7 +800,6 @@ mod tests_transactional {
             if committed { 2 } else { 1 }
         );
         assert!(datatype.active_tx_ctx.read().is_none());
-        assert!(datatype.op_mutex.try_lock().is_some());
     }
 
     #[test]
@@ -702,7 +815,6 @@ mod tests_transactional {
                 .is_err()
         );
         assert!(datatype.active_tx_ctx.read().is_none());
-        assert!(datatype.op_mutex.try_lock().is_some());
         datatype
             .execute_local_operation_as_tx(Default::default(), Operation::new_counter_increase(1))
             .unwrap();
