@@ -55,7 +55,9 @@ datatype the state it already holds notifies nothing. A transition into `Disable
 additionally detaches the datatype from the client's datatype table. An error is reported
 when the datatype's recovery path raises one — after the event loop applies a recovery
 action, or when a transaction fails to commit — and is delivered independently of any state
-change the same failure may have caused.
+change the same failure may have caused. A local commit rejection returns an error to the
+owning standalone write or explicit transaction and also dispatches one `on_error`
+notification; these are two delivery paths for the same failure.
 
 **Dispatch.** No callback ever runs on the stack that triggered the notification. Dispatch
 snapshots the registry, spawns one task onto the client runtime, and returns; the callbacks

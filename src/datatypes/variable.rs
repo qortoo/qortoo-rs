@@ -73,10 +73,10 @@ impl Variable {
     ///
     /// # Returns
     ///
-    /// The previous JSON value, [`DatatypeError::ValueConversion`] if the value
-    /// cannot be encoded to JSON, or [`DatatypeError::NotWritable`] /
-    /// [`DatatypeError::ReadonlyViolation`] if writes are not allowed. The
-    /// variable is left unchanged on every error.
+    /// The previous JSON value, or an error if the value cannot be encoded,
+    /// writes are not allowed, or the change cannot be applied locally.
+    /// On error, the variable is unchanged. For writes inside a transaction,
+    /// see [`transaction`](Self::transaction).
     pub fn set<T: Serialize + ?Sized>(
         &self,
         value: &T,
@@ -94,9 +94,9 @@ impl Variable {
     /// entry point a non-Rust binding forwards its own JSON encoder's output to.
     ///
     /// Returns the previous value's JSON bytes (the first set returns `b"null"`),
-    /// or [`DatatypeError::ValueConversion`] if `json` is not one JSON value, or
-    /// [`DatatypeError::NotWritable`] / [`DatatypeError::ReadonlyViolation`] if
-    /// writes are not allowed. The variable is left unchanged on every error.
+    /// or an error if the JSON is invalid, writes are not allowed, or the change
+    /// cannot be applied locally. On error, the variable is unchanged.
+    /// For writes inside a transaction, see [`transaction`](Self::transaction).
     pub fn set_raw(&self, json: &[u8]) -> Result<Box<[u8]>, DatatypeError> {
         let previous = self.set_encoded(validate_json_value(json)?)?;
         Ok(Box::from(&*previous))
@@ -160,9 +160,7 @@ impl Variable {
     datatype_instrument! {
     /// Executes multiple operations atomically within a transaction.
     ///
-    /// If the transaction function returns an error, every [`set`](Self::set)
-    /// within the transaction is rolled back, restoring the value and its
-    /// timestamp from before the transaction.
+    /// Writes inside the callback are kept only if this method succeeds.
     ///
     /// # Arguments
     ///
@@ -171,10 +169,11 @@ impl Variable {
     ///
     /// # Returns
     ///
-    /// `Ok(())` if the transaction committed,
-    /// [`DatatypeError::TransactionFailed`] if `tx_func` returned an error, or
-    /// [`DatatypeError::NotWritable`] / [`DatatypeError::ReadonlyViolation`] if
-    /// writes are not allowed
+    /// `Ok(())` when all changes are applied locally. On failure, the changes
+    /// made by this transaction are undone and an error is returned.
+    /// Success does not mean the changes have reached the server.
+    ///
+    /// See [transaction guarantees](https://github.com/qortoo/qortoo-rs/blob/main/docs/transaction-and-rollback.md#rules-and-guarantees).
     pub fn transaction<T>(
         &self,
         tag: impl IntoString,

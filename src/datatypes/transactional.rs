@@ -84,19 +84,26 @@ struct TransactionGuard<'a> {
     datatype: &'a TransactionalDatatype,
     context: Arc<TransactionContext>,
     mutex_guard: Option<MutexGuard<'a, ()>>,
-    committed: bool,
+    finished: bool,
 }
 
 impl TransactionGuard<'_> {
-    fn commit(&mut self) {
-        self.committed = true;
+    fn commit(&mut self) -> Result<(), DatatypeError> {
+        let result = self
+            .datatype
+            .end_transaction(self.context.tag.clone(), true);
+        self.finished = true;
+        result
     }
 }
 
 impl Drop for TransactionGuard<'_> {
     fn drop(&mut self) {
-        self.datatype
-            .end_transaction(self.context.tag.clone(), self.committed);
+        if !self.finished {
+            let _ = self
+                .datatype
+                .end_transaction(self.context.tag.clone(), false);
+        }
         // Cleanup clears the context before fair handoff. If cleanup unwinds,
         // the remaining MutexGuard field still releases the mutex.
         if let Some(guard) = self.mutex_guard.take() {
@@ -277,7 +284,7 @@ impl TransactionalDatatype {
         })
     }
 
-    /// Runs local work and marks an owned transaction for commit only on success.
+    /// Runs local work and explicitly commits an owned transaction before returning success.
     /// Joined work leaves commit and rollback to its enclosing transaction.
     fn with_local_transaction<R>(
         &self,
@@ -285,13 +292,17 @@ impl TransactionalDatatype {
         action: impl FnOnce() -> Result<R, DatatypeError>,
     ) -> Result<R, DatatypeError> {
         match admission {
-            TransactionAdmission::Started(mut guard) => action().inspect(|_| guard.commit()),
+            TransactionAdmission::Started(mut guard) => {
+                let result = action()?;
+                guard.commit()?;
+                Ok(result)
+            }
             TransactionAdmission::JoinedExisting => action(),
         }
     }
 
     #[instrument(skip_all)]
-    fn end_transaction(&self, tag: Option<String>, committed: bool) {
+    fn end_transaction(&self, tag: Option<String>, committed: bool) -> Result<(), DatatypeError> {
         let error = {
             let mut mutable = self.mutable.write();
             match mutable.end_transaction(tag, committed) {
@@ -301,20 +312,21 @@ impl TransactionalDatatype {
                 }
                 Ok(false) => None,
                 Err(dewa) => {
-                    // Transaction cleanup runs before the API returns, but after its Result
-                    // has been selected. This path does not go through the event loop:
-                    // only RollbackTransaction is expected, and on_error reports it.
+                    // Commit failure rolls back on the owning thread before returning an error.
+                    // This path does not go through event-loop recovery.
                     debug_assert!(matches!(dewa.recovery, RecoveryAction::RollbackTransaction));
                     mutable.apply_action(dewa.recovery);
                     Some(dewa.error)
                 }
             }
         };
-        if let Some(err) = error {
-            // Notify after releasing the write lock; handlers may re-enter the datatype.
-            self.mutable.read().call_error_handler(err);
-        }
         self.active_tx_ctx.write().take();
+        if let Some(err) = error {
+            // Enqueue one handler notification in addition to the caller's Result.
+            self.mutable.read().call_error_handler(err.clone());
+            return Err(err);
+        }
+        Ok(())
     }
 
     fn begin_transaction(&self, tx_ctx: Arc<TransactionContext>) -> TransactionAdmission<'_> {
@@ -357,7 +369,7 @@ impl TransactionalDatatype {
             datatype: self,
             context: current,
             mutex_guard: Some(mutex_guard),
-            committed: false,
+            finished: false,
         })
     }
 
@@ -551,7 +563,7 @@ mod tests_transactional {
             .write()
             .execute_local_operation(Operation::new_counter_increase(10))
             .unwrap();
-        owner.commit();
+        owner.commit().unwrap();
         drop(owner);
 
         finished_rx.recv_timeout(WAIT_TIMEOUT).unwrap();
@@ -659,9 +671,10 @@ mod tests_transactional {
         }));
         match outcome {
             TransactionOutcome::Panic => assert!(result.is_err()),
-            TransactionOutcome::CallbackError => assert!(result.unwrap().is_err()),
-            // Commit-time enqueue rejection still uses the current S6 error-handler contract.
-            _ => assert!(result.unwrap().is_ok()),
+            TransactionOutcome::CallbackError | TransactionOutcome::EnqueueError => {
+                assert!(result.unwrap().is_err());
+            }
+            TransactionOutcome::Commit => assert!(result.unwrap().is_ok()),
         }
         let committed = matches!(outcome, TransactionOutcome::Commit);
         {
@@ -758,11 +771,10 @@ mod tests_transactional {
             }));
             match outcome {
                 TransactionOutcome::Panic => assert!(result.is_err()),
-                TransactionOutcome::CallbackError => assert!(result.unwrap().is_err()),
-                // Enqueue rejection is reported through the error handler.
-                TransactionOutcome::Commit | TransactionOutcome::EnqueueError => {
-                    assert!(result.unwrap().is_ok())
+                TransactionOutcome::CallbackError | TransactionOutcome::EnqueueError => {
+                    assert!(result.unwrap().is_err());
                 }
+                TransactionOutcome::Commit => assert!(result.unwrap().is_ok()),
             }
             owner_done_tx.send(()).unwrap();
         });
@@ -824,6 +836,144 @@ mod tests_transactional {
         );
     }
 
+    #[rstest]
+    #[case(false, false)]
+    #[case(false, true)]
+    #[case(true, false)]
+    #[case(true, true)]
+    fn can_return_commit_failure_and_resume_writes(
+        #[case] explicit: bool,
+        #[case] sequence_failure: bool,
+    ) {
+        let attr = new_attribute!(DataType::Counter);
+        let datatype =
+            TransactionalDatatype::new_arc(attr, DatatypeState::Subscribed, Default::default());
+        datatype
+            .execute_local_operation_as_tx(Default::default(), Operation::new_counter_increase(3))
+            .unwrap();
+        let (buffer_size, option) = {
+            let mut mutable = datatype.mutable.write();
+            let baseline = (
+                mutable.push_buffer.mem_size,
+                mutable.push_buffer.option.clone(),
+            );
+            if sequence_failure {
+                mutable.push_buffer.last_cseq = 42;
+            } else {
+                mutable.push_buffer.option = Arc::new(DatatypeOption {
+                    max_mem_size_of_push_buffer: mutable.push_buffer.mem_size,
+                });
+            }
+            baseline
+        };
+        let context = Arc::new(TransactionContext::new("rejected"));
+        let operation = || {
+            datatype
+                .execute_local_operation_as_tx(context.clone(), Operation::new_counter_increase(5))
+        };
+        let result = if explicit {
+            datatype.do_transaction(context.clone(), || {
+                assert!(matches!(operation()?, ReturnType::Counter(8)));
+                Ok(())
+            })
+        } else {
+            operation().map(|_| ())
+        };
+        if sequence_failure {
+            assert!(matches!(result, Err(DatatypeError::Internal(_))));
+        } else {
+            assert_eq!(result, Err(DatatypeError::PushBufferExceededMaxMemSize));
+        }
+        assert!(datatype.active_tx_ctx.read().is_none());
+        {
+            let mut mutable = datatype.mutable.write();
+            assert_eq!(mutable.crdt.as_counter().unwrap().value(), 3);
+            assert_eq!(mutable.op_id.cseq, 1);
+            assert_eq!(mutable.op_id.lamport, 1);
+            assert_eq!(mutable.get_state(), DatatypeState::Subscribed);
+            assert!(mutable.is_transaction_record_empty());
+            assert_eq!(mutable.push_buffer.mem_size, buffer_size);
+            assert_eq!(mutable.push_buffer.iter().count(), 1);
+            // Repair the injected rejection before checking subsequent progress.
+            mutable.push_buffer.option = option;
+            mutable.push_buffer.last_cseq = 1;
+        }
+        assert!(matches!(
+            datatype
+                .execute_local_operation_as_tx(
+                    Default::default(),
+                    Operation::new_counter_increase(2),
+                )
+                .unwrap(),
+            ReturnType::Counter(5)
+        ));
+        let mutable = datatype.mutable.read();
+        assert_eq!(mutable.op_id.cseq, 2);
+        assert_eq!(mutable.op_id.lamport, 2);
+        assert_eq!(mutable.push_buffer.iter().count(), 2);
+    }
+
+    #[rstest]
+    #[case(true)]
+    #[case(false)]
+    fn can_resolve_transaction_after_operation_error(#[case] propagate: bool) {
+        let attr = new_attribute!(DataType::Counter);
+        let datatype = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
+        let context = Arc::new(TransactionContext::new("operation_error"));
+        let result = datatype.do_transaction(context.clone(), || {
+            datatype.execute_local_operation_as_tx(
+                context.clone(),
+                Operation::new_counter_increase(3),
+            )?;
+            let failed = datatype.execute_local_operation_as_tx(
+                context.clone(),
+                Operation::new_snapshot(Vec::new().into_boxed_slice()),
+            );
+            if propagate {
+                failed?;
+            } else {
+                assert!(failed.is_err());
+            }
+            Ok(())
+        });
+        assert_eq!(result.is_err(), propagate);
+        let mutable = datatype.mutable.read();
+        assert_eq!(
+            mutable.crdt.as_counter().unwrap().value(),
+            if propagate { 0 } else { 3 }
+        );
+        assert_eq!(mutable.op_id.cseq, u64::from(!propagate));
+        assert!(mutable.is_transaction_record_empty());
+        drop(mutable);
+        assert!(datatype.active_tx_ctx.read().is_none());
+        datatype
+            .execute_local_operation_as_tx(Default::default(), Operation::new_counter_increase(1))
+            .unwrap();
+    }
+
+    #[test]
+    fn can_finish_empty_transaction_without_enqueue() {
+        let attr = new_attribute!(DataType::Counter);
+        let datatype = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
+        datatype.mutable.write().push_buffer.option = Arc::new(DatatypeOption {
+            max_mem_size_of_push_buffer: 0,
+        });
+        datatype
+            .do_transaction(Arc::new(TransactionContext::new("empty")), || Ok(()))
+            .unwrap();
+        assert!(datatype.active_tx_ctx.read().is_none());
+        let mut mutable = datatype.mutable.write();
+        assert_eq!(mutable.op_id.cseq, 0);
+        assert_eq!(mutable.op_id.lamport, 0);
+        assert!(mutable.is_transaction_record_empty());
+        assert_eq!(mutable.push_buffer.iter().count(), 0);
+        mutable.push_buffer.option = Default::default();
+        drop(mutable);
+        datatype
+            .execute_local_operation_as_tx(Default::default(), Operation::new_counter_increase(1))
+            .unwrap();
+    }
+
     #[test]
     #[instrument]
     fn can_rollback_on_enqueue_failure() {
@@ -843,8 +993,7 @@ mod tests_transactional {
             tx_dt_in_tx.mutable.write().push_buffer.last_cseq = 42;
             Ok(())
         });
-        // tx_func itself succeeded; the enqueue failure is routed to Normal + Rollback.
-        assert!(result.is_ok());
+        assert!(matches!(result, Err(DatatypeError::Internal(_))));
 
         let mutable = tx_dt.mutable.read();
         let c = mutable.crdt.as_counter().expect("expected a counter crdt");

@@ -169,7 +169,8 @@ attempt count; a disabled datatype refuses further sync requests. See
 **The commit path.** Undoing a transaction never travels through the event loop, because the
 thread that committed is still the one that has to undo it. When enqueuing a committed
 transaction fails, the pending transaction is restored so its undo actions still match, the
-undo is applied, and the error is reported to the handler.
+undo is applied before the owning standalone write or explicit transaction returns the enqueue
+error. The handler receives one additional notification.
 
 **Creation-site routing.** An internal error erases its cause into a message. A cause that
 needs a routing other than the internal default must therefore choose its action before the
@@ -179,11 +180,9 @@ erasure, at the point the error is created. Every other cause defers to the sing
 local state, which discards transactions still waiting in the push buffer. No producer routes
 to them until that data-loss policy is decided.
 
-**Limits on the guarantees.** A commit-path failure does not change what the call returns: the
-value was determined when the operation succeeded, so the caller receives success while the
-transaction is undone, and the handler is the only notification. An application that must know
-a write survived its commit has to register one — see
-[`docs/handler-system.md`](handler-system.md). Stack traces attached to internal errors are
+**Limits on the guarantees.** Results of operations inside a transaction callback are
+tentative until the enclosing transaction returns success. A standalone write or explicit
+transaction returning `Ok` confirms local commit, not server acknowledgement. Stack traces attached to internal errors are
 diagnostic only; a platform that cannot produce one omits the trace and preserves the typed
 error, and trace formatting never replaces an application error or escapes as a panic across a
 language boundary.

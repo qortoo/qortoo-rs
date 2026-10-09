@@ -55,6 +55,11 @@ impl MutableDatatype {
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn is_transaction_record_empty(&self) -> bool {
+        self.tx_record.pending.is_none() && self.tx_record.rollback_action_count() == 0
+    }
+
     pub(crate) fn reset(&mut self) {
         self.push_buffer = MemoryPushBuffer::new(self.attr.option.clone());
         self.tx_record = TxRecord::new(self.state, self.op_id.clone());
