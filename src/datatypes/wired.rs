@@ -134,6 +134,10 @@ impl WiredDatatype {
         #[cfg(test)]
         self.interceptor.before_push(&mut pushing_ppp);
 
+        // Local writes can finish during network exchange. Only transactions included
+        // in this request may be acknowledged by its response.
+        let sent_cseq = pushing_ppp.checkpoint.cseq;
+
         add_span_event!("send PUSH PushPullPack", "ppp"=> pushing_ppp.to_string());
         metrics::emit_pushed_transactions(&self.attr, pushing_ppp.transactions.len());
         #[cfg_attr(not(test), allow(unused_mut))]
@@ -148,7 +152,7 @@ impl WiredDatatype {
         add_span_event!("recv PULL PushPullPack", "ppp"=> pulled_ppp.to_string());
 
         self.with_transaction_gate(|mutable| {
-            let mut pull_handler = PullHandler::new(&mut pulled_ppp, mutable);
+            let mut pull_handler = PullHandler::new(&mut pulled_ppp, mutable, sent_cseq);
             pull_handler.apply()
         })
     }
@@ -202,13 +206,114 @@ mod tests_wired {
     };
 
     use crate::{
-        DataType, DatatypeState,
+        DataType, DatatypeError, DatatypeState,
         datatypes::{
             common::new_attribute, wired::WiredDatatype, wired_interceptor::WiredInterceptor,
         },
         operations::{Operation, transaction::Transaction},
         types::uid::Cuid,
     };
+
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
+    fn can_preserve_writes_not_included_in_the_request(#[case] invalid_ack: bool) {
+        let interceptor = WiredInterceptor::new_arc();
+        let wired = WiredDatatype::new_arc_for_test(
+            new_attribute!(DataType::Counter),
+            DatatypeState::Subscribed,
+            interceptor.clone(),
+        );
+        wired.with_transaction_gate(|mutable| {
+            mutable
+                .execute_local_operation(Operation::new_counter_increase(1))
+                .unwrap();
+            mutable.end_transaction(None, true).unwrap();
+        });
+        let requests = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let observed = requests.clone();
+        interceptor.set_before_push(move |push| {
+            observed.lock().push(
+                push.transactions
+                    .iter()
+                    .map(|tx| tx.cseq)
+                    .collect::<Vec<_>>(),
+            );
+        });
+        let weak = Arc::downgrade(&wired);
+        interceptor.set_after_pull(move |pull| {
+            // This write finishes after the request was built and cannot be acknowledged
+            // by that request's response, even though it is now locally committed.
+            weak.upgrade().unwrap().with_transaction_gate(|mutable| {
+                mutable
+                    .execute_local_operation(Operation::new_counter_increase(1))
+                    .unwrap();
+                mutable.end_transaction(None, true).unwrap();
+            });
+            if invalid_ack {
+                pull.checkpoint.cseq = 2;
+                pull.checkpoint.sseq = 2;
+            }
+            Ok(())
+        });
+        let result = wired.push_pull();
+        assert_eq!(result.is_err(), invalid_ack);
+        {
+            let mutable = wired.mutable.read();
+            assert_eq!(mutable.op_id.cseq, 2);
+            assert_eq!(mutable.crdt.as_counter().unwrap().value(), 2);
+            assert_eq!(mutable.checkpoint.cseq, if invalid_ack { 0 } else { 1 });
+            assert_eq!(
+                mutable
+                    .push_buffer
+                    .iter()
+                    .map(|tx| tx.cseq)
+                    .collect::<Vec<_>>(),
+                if invalid_ack { vec![1, 2] } else { vec![2] }
+            );
+        }
+        interceptor.set_after_pull(|_| Ok(()));
+        wired.push_pull().unwrap();
+        assert_eq!(
+            *requests.lock(),
+            vec![vec![1], if invalid_ack { vec![1, 2] } else { vec![2] }]
+        );
+        let mutable = wired.mutable.read();
+        assert_eq!(mutable.checkpoint.cseq, 2);
+        assert_eq!(mutable.push_buffer.mem_size, 0);
+        assert_eq!(mutable.crdt.as_counter().unwrap().value(), 2);
+    }
+
+    #[test]
+    fn can_retry_after_a_response_is_lost_without_reclaiming_its_batch() {
+        let interceptor = WiredInterceptor::new_arc();
+        let wired = WiredDatatype::new_arc_for_test(
+            new_attribute!(DataType::Counter),
+            DatatypeState::Subscribed,
+            interceptor.clone(),
+        );
+        wired.with_transaction_gate(|mutable| {
+            mutable
+                .execute_local_operation(Operation::new_counter_increase(1))
+                .unwrap();
+            mutable.end_transaction(None, true).unwrap();
+        });
+        let size = wired.mutable.read().push_buffer.mem_size;
+        interceptor
+            .set_after_pull(|_| Err(DatatypeError::SyncFailed("response lost".into()).mapping()));
+        assert!(wired.push_pull().is_err());
+        assert_eq!(wired.mutable.read().checkpoint.cseq, 0);
+        assert_eq!(wired.mutable.read().push_buffer.mem_size, size);
+        interceptor.set_before_push(|push| {
+            assert_eq!(push.transactions.len(), 1);
+            assert_eq!(push.transactions[0].cseq, 1);
+        });
+        interceptor.set_after_pull(|_| Ok(()));
+        wired.push_pull().unwrap();
+        assert_eq!(wired.mutable.read().checkpoint.cseq, 1);
+        assert_eq!(wired.mutable.read().push_buffer.mem_size, 0);
+        assert_eq!(wired.mutable.read().crdt.as_counter().unwrap().value(), 1);
+    }
 
     #[test]
     fn can_push_unsubscribing() {

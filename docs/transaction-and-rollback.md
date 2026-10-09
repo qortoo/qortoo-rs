@@ -96,8 +96,11 @@ applied, so an operation is undone before anything it depended on.
 
 **Enqueue.** A committed transaction is enqueued for synchronization only if it originated on
 this client. Transactions are enqueued in sequence, and a gap in that sequence is rejected
-rather than accepted out of order. Buffered transactions stay in the buffer until the backend
-acknowledges them; see [`docs/connectivity.md`](connectivity.md).
+rather than accepted out of order. After a backend response is successfully applied,
+transactions up to its acknowledged client sequence are removed, releasing buffer capacity.
+Unacknowledged transactions remain available for retry. An empty buffer retains the last
+accepted sequence so the next enqueue must still be contiguous; see
+[`docs/connectivity.md`](connectivity.md).
 
 **Success and tentative results.** A standalone write returns `Ok` only after its local
 transaction commits. An explicit `transaction` returns `Ok(())` only after all recorded
@@ -256,7 +259,7 @@ flowchart TD
     F --> G["WiredDatatype: release mutable.write"]:::other
     G --> H["Connectivity::push_pull()<br/>Network exchange without<br/>tx_mutex or mutable locks"]:::other
     H --> I["WiredDatatype::with_transaction_gate()<br/>Acquire tx_mutex or wait<br/>Then acquire mutable.write"]:::other
-    I --> J["PullHandler::apply()<br/>Apply response to MutableDatatype"]:::other
+    I --> J["PullHandler::apply()<br/>Validate progress and apply response<br/>Advance checkpoint and reclaim acknowledged batches"]:::other
     J --> K["with_transaction_gate() returns<br/>Release mutable.write, then tx_mutex"]:::other
     K --> L["sync() returns its result"]:::td
 
@@ -329,6 +332,7 @@ because a remote transaction is never rolled back locally.
 | Waiting to apply remote responses, recovery, and subscriber snapshot generation after local transaction cleanup | `src/datatypes/wired.rs` (`with_transaction_gate`) |
 | The public `transaction(tag, closure)` entry point | `src/datatypes/counter.rs`, `src/datatypes/variable.rs` |
 | Sequence checks and capacity limits on enqueue | `src/datatypes/push_buffer.rs` |
+| Response checkpoint validation and reclamation after successful application | `src/datatypes/pull_handler.rs` (`validate_checkpoint`, `apply`) |
 | Undo action families and the wrapper that routes them | `src/datatypes/crdts/` |
 | Counter arithmetic and its inverse | `src/datatypes/crdts/counter_crdt.rs` |
 
@@ -346,6 +350,9 @@ because a remote transaction is never rolled back locally.
 | Capacity and sequence rejections return errors, restore state, and permit subsequent writes | `can_return_commit_failure_and_resume_writes` in `src/datatypes/transactional.rs` |
 | Propagated operation errors roll back; handled errors permit earlier writes to commit | `can_resolve_transaction_after_operation_error` in `src/datatypes/transactional.rs` |
 | An empty transaction succeeds without adding a batch | `can_finish_empty_transaction_without_enqueue` in `src/datatypes/transactional.rs` |
+| A small buffer permits repeated write/sync cycles after acknowledged batches are reclaimed | `can_continue_writing_after_sync_reclaims_a_small_buffer` in `src/datatypes/counter.rs` |
+| Partial and duplicate acknowledgements retain only retry data; failed application preserves it | `can_reclaim_partial_and_duplicate_acknowledgements`, `can_keep_retry_data_when_response_application_fails` in `src/datatypes/pull_handler.rs` |
+| A response cannot acknowledge writes absent from its request | `can_preserve_writes_not_included_in_the_request` in `src/datatypes/wired.rs` |
 | A remote Variable set waits for local rollback and remains the winner afterward | `can_preserve_remote_variable_set_after_local_transaction_rollback` in `src/datatypes/wired.rs` |
 | Sync on the owner thread is rejected through both callback and original handles | `can_reject_sync_on_the_local_transaction_owner_thread`, `can_reject_sync_from_both_handles_inside_a_transaction_callback` in `src/datatypes/transactional.rs` |
 | Sync from another thread exchanges during the callback and completes after rollback | `can_complete_sync_from_another_thread_after_local_rollback` in `src/datatypes/transactional.rs` |

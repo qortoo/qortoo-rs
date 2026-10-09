@@ -285,6 +285,58 @@ mod tests_counter {
     }
 
     #[test]
+    fn can_continue_writing_after_sync_reclaims_a_small_buffer() {
+        let connectivity = crate::LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .with_connectivity(connectivity)
+            .build()
+            .unwrap();
+        let counter = client
+            .create_datatype(get_test_func_name!())
+            .build_counter()
+            .unwrap();
+        counter.sync().unwrap();
+        counter.increase_by(1).unwrap();
+        let capacity = {
+            let mut mutable = counter.datatype.mutable.write();
+            let capacity = mutable.push_buffer.mem_size;
+            mutable.push_buffer.option = Arc::new(DatatypeOption {
+                max_mem_size_of_push_buffer: capacity,
+            });
+            capacity
+        };
+        assert_eq!(
+            counter.increase_by(100),
+            Err(DatatypeError::PushBufferExceededMaxMemSize)
+        );
+        assert_eq!(counter.get_value(), 1);
+        for expected in 1..=20 {
+            counter.sync().unwrap();
+            {
+                let mutable = counter.datatype.mutable.read();
+                assert_eq!(mutable.push_buffer.mem_size, 0);
+                assert_eq!(mutable.push_buffer.iter().count(), 0);
+                assert_eq!(mutable.push_buffer.first_cseq, 0);
+                assert_eq!(mutable.push_buffer.last_cseq, expected);
+            }
+            assert_eq!(counter.get_value(), expected as i64);
+            assert_eq!(counter.get_client_version(), expected);
+            assert_eq!(counter.get_synced_client_version(), expected);
+            assert_eq!(counter.get_server_version(), expected);
+            counter.sync().unwrap();
+            assert_eq!(counter.get_server_version(), expected);
+            if expected < 20 {
+                assert_eq!(counter.increase_by(1).unwrap(), (expected + 1) as i64);
+                assert_eq!(
+                    counter.datatype.mutable.read().push_buffer.mem_size,
+                    capacity
+                );
+            }
+        }
+    }
+
+    #[test]
     #[instrument]
     fn can_call_public_blanket_trait_methods() {
         let counter = Counter::new_for_test(DatatypeState::Subscribed);

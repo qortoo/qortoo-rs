@@ -57,6 +57,21 @@ defined in [`docs/datatype-state.md`](datatype-state.md).
 backend has not acknowledged, and the backend returns those the client has not seen. A
 transaction the client already applied is skipped rather than applied twice.
 
+**The push buffer holds unacknowledged work.** After the response is successfully applied,
+the client advances its checkpoint and removes whole buffered transactions up to the
+acknowledged `cseq`, freeing their accounted buffer capacity. Partial acknowledgements
+retain the remaining transactions for the next request; repeated acknowledgements remove
+nothing twice. A lost response or failed response application does not advance the
+checkpoint or reclaim the batches. Snapshot replacement and error recovery retain their
+own reset policies; this rule does not make remote CRDT application atomic on failure.
+
+An acknowledgement cannot exceed the client sequence sent in that request, including when
+new local writes finish during network exchange. Response checkpoints must not regress,
+and server progress must cover the newly acknowledged client transactions. Invalid progress
+is rejected before applying the response and follows the protocol-error recovery policy in
+[`docs/error-handling.md`](error-handling.md). The buffer retains its last accepted `cseq`
+when empty, so sequence checks still apply to the next enqueue.
+
 **Registration is what makes notification possible.** A datatype registers with the backend
 when its event loop starts, handing over the channel the backend can use to tell it that work
 has arrived. A backend that is not realtime never uses it.

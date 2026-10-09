@@ -181,7 +181,8 @@ transactions and the datatype's acknowledged progress, and releases the lock. It
 the backend. On a response it waits for any open local transaction to finish, takes the mutable
 lock again, validates the response, applies a state snapshot if one is present, skips
 transactions it has already seen, executes the rest against the CRDT, and updates the
-acknowledged progress and lifecycle state.
+acknowledged progress and lifecycle state. Only after successful application does it remove
+acknowledged transactions from the push buffer, releasing capacity for later writes.
 
 ```mermaid
 sequenceDiagram

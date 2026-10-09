@@ -421,14 +421,33 @@ mod tests_transactional {
 
     use crate::{
         Client, DataType, Datatype, DatatypeError, DatatypeState, LocalConnectivity,
+        clients::common::ClientCommon,
         datatypes::{
-            common::{ReturnType, new_attribute},
+            common::{Attribute, ReturnType, new_attribute},
             option::DatatypeOption,
             transactional::{TransactionAdmission, TransactionContext, TransactionalDatatype},
         },
         operations::{MemoryMeasurable, Operation, transaction::Transaction},
         utils::test_utils::{get_test_collection_name, get_test_func_name},
     };
+
+    // Tests inspecting unacknowledged batches must not race automatic synchronization.
+    fn manual_counter_attribute() -> Arc<Attribute> {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let common = ClientCommon::new_arc(
+            get_test_collection_name!().into(),
+            get_test_func_name!().into(),
+            connectivity,
+        );
+        Arc::new(Attribute::new(
+            get_test_func_name!().into(),
+            DataType::Counter,
+            common,
+            Default::default(),
+            false,
+        ))
+    }
 
     const WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -514,7 +533,7 @@ mod tests_transactional {
     fn can_hold_standalone_transaction_until_commit_before_admitting_waiters(
         #[case] explicit_waiter: bool,
     ) {
-        let attr = new_attribute!(DataType::Counter);
+        let attr = manual_counter_attribute();
         let datatype = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
         let context = Arc::new(TransactionContext::default());
         let TransactionAdmission::Started(mut owner) = datatype.begin_transaction(context.clone())
@@ -597,7 +616,7 @@ mod tests_transactional {
         const WORKERS: usize = 4;
         const OPERATIONS_PER_WORKER: usize = 16;
         const TOTAL_OPERATIONS: usize = WORKERS * OPERATIONS_PER_WORKER;
-        let attr = new_attribute!(DataType::Counter);
+        let attr = manual_counter_attribute();
         let datatype = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
         let context = Arc::new(TransactionContext::new("shared"));
         let result = catch_unwind(AssertUnwindSafe(|| {
@@ -718,7 +737,7 @@ mod tests_transactional {
     fn can_finish_transaction_cleanup_before_releasing_waiters(
         #[case] outcome: TransactionOutcome,
     ) {
-        let attr = new_attribute!(DataType::Counter);
+        let attr = manual_counter_attribute();
         let datatype = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
         let (entered_tx, entered_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
@@ -845,7 +864,7 @@ mod tests_transactional {
         #[case] explicit: bool,
         #[case] sequence_failure: bool,
     ) {
-        let attr = new_attribute!(DataType::Counter);
+        let attr = manual_counter_attribute();
         let datatype =
             TransactionalDatatype::new_arc(attr, DatatypeState::Subscribed, Default::default());
         datatype
@@ -977,7 +996,7 @@ mod tests_transactional {
     #[test]
     #[instrument]
     fn can_rollback_on_enqueue_failure() {
-        let attr = new_attribute!(DataType::Counter);
+        let attr = manual_counter_attribute();
         let tx_dt = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
         let tx_ctx = Arc::new(TransactionContext::new("non_sequential_cseq"));
 

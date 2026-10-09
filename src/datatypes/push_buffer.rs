@@ -7,7 +7,6 @@ use crate::{
     operations::{MemoryMeasurable, transaction::Transaction},
 };
 
-#[allow(dead_code)]
 pub trait PushBuffer {
     /// Enqueues a committed transaction.
     ///
@@ -21,6 +20,7 @@ pub trait PushBuffer {
         cseq: u64,
         max_mem_size: u64,
     ) -> Result<(Vec<Arc<Transaction>>, u64), DatatypeError>;
+    /// Removes acknowledged transactions, preserving the last accepted sequence number.
     fn deque(&mut self, upto_cseq: u64) -> Vec<Arc<Transaction>>;
 }
 
@@ -29,7 +29,9 @@ pub struct MemoryPushBuffer {
     transaction: VecDeque<Arc<Transaction>>,
     pub mem_size: u64,
     pub option: Arc<DatatypeOption>,
+    /// First buffered cseq, or zero when no transactions remain.
     pub first_cseq: u64,
+    /// Last accepted cseq, retained even when all buffered transactions are removed.
     pub last_cseq: u64,
 }
 
@@ -49,7 +51,6 @@ impl MemoryPushBuffer {
         self.transaction.iter()
     }
 
-    #[allow(dead_code)]
     fn need_to_deque(tx: Option<&Arc<Transaction>>, cseq: u64) -> bool {
         if let Some(tx) = tx {
             if tx.cseq <= cseq {
@@ -113,7 +114,6 @@ impl PushBuffer for MemoryPushBuffer {
             ret = self.transaction.drain(..).collect();
             self.mem_size = 0;
             self.first_cseq = 0;
-            self.last_cseq = 0;
             return ret;
         }
         loop {
@@ -127,7 +127,6 @@ impl PushBuffer for MemoryPushBuffer {
             self.first_cseq = if let Some(front) = self.transaction.front() {
                 front.cseq
             } else {
-                self.last_cseq = 0;
                 0
             };
         }
@@ -265,6 +264,12 @@ mod tests_push_buffer {
 
         assert_eq!(push_buffer.mem_size, 0);
         assert_eq!(push_buffer.first_cseq, 0);
-        assert_eq!(push_buffer.last_cseq, 0);
+        assert_eq!(push_buffer.last_cseq, 100);
+        let duplicate = Arc::new(Transaction::new(&op_id.cuid, 100));
+        assert!(push_buffer.enqueue(duplicate).is_err());
+        let next = Arc::new(Transaction::new(&op_id.cuid, 101));
+        assert!(push_buffer.enqueue(next).is_ok());
+        assert_eq!(push_buffer.first_cseq, 101);
+        assert_eq!(push_buffer.last_cseq, 101);
     }
 }

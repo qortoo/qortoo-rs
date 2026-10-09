@@ -278,7 +278,11 @@ mod tests_datatype_builder {
     #[test]
     #[instrument]
     fn can_check_read_only_state() {
+        // Inspect builder states before synchronization can advance them.
+        let connectivity = crate::LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .with_connectivity(connectivity)
             .build()
             .unwrap();
 
