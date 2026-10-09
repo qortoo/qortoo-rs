@@ -96,9 +96,11 @@ for shared access and create no operations.
 
 The transactional layer gives each local transaction a transaction mutex guard and records its
 active context. Tagged operations with that same context join the local transaction and acquire
-the mutable-state write lock for each operation. Every competing local call waits for the
-transaction guard and uses it directly to own the next local transaction after cleanup; there is no release-and-retry
-admission step. These guards do not extend the mutable-state lock across network calls, and only
+the mutable-state write lock for each operation. Calls on the owning thread that would start
+another local transaction return `DatatypeError::Disallowed`; this includes nested transactions
+and writes through a captured original handle. Competing calls from other threads wait for the
+transaction guard and use it directly to own the next local transaction after cleanup; there
+is no release-and-retry admission step. These guards do not extend the mutable-state lock across network calls, and only
 the transaction guard spans a user callback. The wired layer shares that transaction guard: a
 remote response may arrive while local work is open, but applying its transactions, snapshot, or
 lifecycle change waits until the local commit or rollback finishes. Error recovery and snapshots

@@ -47,13 +47,14 @@ the transaction. The batch is enqueued whole or not at all.
 
 **Concurrency.** A thread that asks to start a local transaction while another thread owns one
 waits until the active transaction finishes, then proceeds. Admission does not reject a
-caller merely because another transaction is active. Writes within one local transaction are serialized against each other, so operations
-accumulate in a defined order.
+caller merely because another thread owns an active transaction. Writes within one local
+transaction are serialized against each other, so operations accumulate in a defined order.
 
 **Local transaction ownership and waiting.** Every local transaction, including a standalone
 write, owns a transaction mutex guard. A tagged operation first checks whether its context is
-already active and joins it if so. Every other caller waits for the transaction guard, then uses
-the acquired guard directly to register and own the next local transaction. It does not release
+already active and joins it if so. A caller on the owning thread with a different context
+receives `DatatypeError::Disallowed` before attempting to acquire the mutex. Other callers
+wait for the transaction guard, then use the acquired guard directly to register and own the next local transaction. It does not release
 the mutex and race through a separate context check. The guard explicitly commits successful
 local work; its Drop rolls back unfinished work.
 Both paths clear the active context before releasing the mutex, so the same wait covers the gaps
@@ -75,11 +76,134 @@ Synchronous `sync()` is rejected on the thread that owns the active local transa
 calls through a captured original handle, because its response cannot be applied until the
 callback finishes. Calls from other threads can exchange with the backend and wait for the gate
 before applying the response. The owner thread must not wait for another thread to finish
-`sync()` on the same datatype: that indirect circular wait is not detected.
+a standalone write, a new transaction, or `sync()` on the same datatype: those calls may
+wait for the owner's transaction to finish, and indirect circular waits are not detected.
 
 Reads do not acquire the transaction mutex. The mutable-state lock protects each individual
 state access and is released between local operations and across the user closure's own work, so
 another handle can observe values written by a transaction that has not committed yet.
+
+**Calls during a transaction callback.**
+
+A **handle** is a `Counter` or `Variable` value used to access a datatype. Cloning it
+shares the same local value and state. Each handle also carries a transaction context,
+which determines whether a write joins the active transaction.
+
+The diagram distinguishes handles by how they were obtained:
+
+| Diagram term | Example | Relation to the active transaction |
+| --- | --- | --- |
+| Original handle | `counter`, or `original = counter.clone()` before the call | Keeps its existing context; starting a transaction does not attach these handles to it |
+| Callback handle | The `callback` argument in `counter.transaction("batch", move \|callback\| { ... })` | Supplied by the SDK with the new transaction's context; writes join that transaction |
+| Callback-handle clone | `callback_clone = callback.clone()` inside the callback | Shares both the datatype and the callback's transaction context; writes join even from another thread |
+
+For example, given a writable `counter`:
+
+```rust
+use qortoo::DatatypeError;
+
+let original = counter.clone();
+counter.transaction("batch", move |callback| {
+    let callback_clone = callback.clone();
+    callback.increase()?;       // Joins the active transaction.
+    callback_clone.increase()?; // Joins the same transaction.
+    assert!(matches!(
+        original.increase(),    // Cannot join; rejected on the owner thread.
+        Err(DatatypeError::Disallowed(_))
+    ));
+    Ok(())
+})?;
+```
+
+All three handles access the same datatype; the difference is the transaction context
+carried by the handle, not a separate copy of the value. Reads through any of them can
+observe the current uncommitted value. Moving a handle to another thread preserves its
+context.
+
+The **owner thread** is the thread calling `transaction()` and running its callback.
+The reader and writer lanes represent other threads. The writer lane shows both joined
+and independent work as separate cases.
+
+```mermaid
+sequenceDiagram
+    participant O as Owner thread
+    participant R as Reader thread
+    participant W as Writer thread
+    participant D as Datatype
+    participant B as Backend
+
+    O->>D: Start transaction
+    Note over O,D: Owner holds the transaction lock
+
+    rect rgb(235, 245, 255)
+        Note over O,D: 1. Callback-handle writes join
+        O->>D: Write through callback handle
+        D-->>O: Return tentative result
+        O->>W: Pass a callback-handle clone
+        W->>D: Write through callback handle
+        D-->>W: Join the same transaction
+        W-->>O: Joined work complete
+    end
+
+    rect rgb(240, 250, 240)
+        Note over R,D: 2. Reads return current local state
+        R->>D: Read through another handle
+        D-->>R: May return uncommitted values and counters
+    end
+
+    rect rgb(255, 240, 240)
+        Note over O,D: 3. Reentrant calls on the owner thread reject
+        O->>D: Nested transaction / original-handle write / sync()
+        D-->>O: DatatypeError::Disallowed
+        Note over O,D: Enclosing transaction stays active
+    end
+
+    rect rgb(255, 248, 230)
+        Note over W,D: 4. Independent work on another thread waits
+        alt Original-handle write or new transaction
+            W->>D: Request independent local work
+            Note over W,D: Wait for the active transaction to finish
+        else sync()
+            W->>D: Request sync
+            D->>B: Network request
+            B-->>D: Response
+            Note over W,D: Response application waits for transaction end
+        end
+    end
+
+    alt Callback returns Ok
+        O->>D: Request commit
+        Note over D: Keep writes if commit succeeds<br/>Roll back if commit fails
+    else Callback returns Err
+        O->>D: Propagate callback error
+        Note over D: Roll back earlier writes
+    end
+    Note over D: Release transaction lock
+    D-->>O: Return transaction result
+
+    alt Waiting local work
+        Note over W,D: Execute in a separate transaction
+        D-->>W: Return local work result
+    else Waiting sync
+        Note over D: Apply remote response
+        D-->>W: Return sync result
+    end
+```
+
+The waiting-request and completion alternatives describe the same selected request:
+local work resumes in its own transaction, while sync resumes by applying its response.
+The owner must not wait for that independent request to complete inside the callback;
+otherwise both threads wait for each other. Indirect circular waits are not detected.
+
+A tag is a label, not an identity: using the same tag for a nested transaction does not
+make it join. Rejection leaves the enclosing transaction intact. The callback can handle
+the error and continue, or propagate it; the public wrapper reports a propagated callback
+error as `DatatypeError::TransactionFailed` and rolls back earlier writes.
+
+All work sharing the callback handle must finish before the callback returns. Cloning the
+handle does not extend the enclosing transaction's lifetime. Transactions on different
+datatype instances have independent guards and commits; they do not provide atomicity across
+datatypes. Applications must avoid circular waits across threads or datatype instances.
 
 **Progress counters.** A datatype's operation counters advance only after an operation
 succeeds. A failed operation leaves them untouched, and the next operation takes the slot the
@@ -179,7 +303,9 @@ flowchart TD
     A["execute_local_operation_as_tx()<br/>check_writable()"]:::td --> C
     B["do_transaction()"]:::td --> C
     C["begin_transaction()<br/>Read active_tx_ctx"]:::td --> D{"Same tagged context<br/>already active?"}:::td
-    D -- No --> E["Acquire tx_mutex or wait<br/>Register active_tx_ctx"]:::td
+    D -- No --> O{"On the active transaction<br/>owner's thread?"}:::td
+    O -- Yes --> P["Return Disallowed<br/>Keep enclosing transaction intact"]:::other
+    O -- No --> E["Acquire tx_mutex or wait<br/>Register active_tx_ctx"]:::td
     E --> F["Create TransactionGuard<br/>finished = false"]:::other
     F --> G["with_local_transaction()<br/>Started: execute action"]:::td
     G --> H{"Standalone write<br/>or explicit transaction?"}:::other
@@ -187,7 +313,9 @@ flowchart TD
     H -- Explicit --> J["do_transaction(): execute callback<br/>Keep tx_mutex; acquire mutable<br/>only for individual state access"]:::td
     I --> K["Release mutable.write<br/>Owner commits or rolls back"]:::td
     J --> K
-    D -- Yes --> L["with_local_transaction()<br/>JoinedExisting: execute action<br/>Do not reacquire tx_mutex"]:::td
+    D -- Yes --> Q{"Operation entry?"}:::td
+    Q -- No --> P
+    Q -- Yes --> L["with_local_transaction()<br/>JoinedExisting: execute action<br/>Do not reacquire tx_mutex"]:::td
     L --> M["execute_local_operation()<br/>Hold mutable.write for execution and recording"]:::md
     M --> N["Release mutable.write<br/>Return tentative result<br/>Leave active_tx_ctx unchanged"]:::td
 
@@ -354,6 +482,8 @@ because a remote transaction is never rolled back locally.
 | Partial and duplicate acknowledgements retain only retry data; failed application preserves it | `can_reclaim_partial_and_duplicate_acknowledgements`, `can_keep_retry_data_when_response_application_fails` in `src/datatypes/pull_handler.rs` |
 | A response cannot acknowledge writes absent from its request | `can_preserve_writes_not_included_in_the_request` in `src/datatypes/wired.rs` |
 | A remote Variable set waits for local rollback and remains the winner afterward | `can_preserve_remote_variable_set_after_local_transaction_rollback` in `src/datatypes/wired.rs` |
+| Reentrant writes and nested transactions reject without losing ownership; propagated errors roll back | `can_reject_reentrant_calls_without_losing_transaction_ownership`, `can_reject_nested_entry_with_the_active_context` in `src/datatypes/transactional.rs` |
+| Another thread reads tentative state and joins writes with the callback context before rollback | `can_read_uncommitted_values_and_join_callback_writes_from_another_thread` in `src/datatypes/transactional.rs` |
 | Sync on the owner thread is rejected through both callback and original handles | `can_reject_sync_on_the_local_transaction_owner_thread`, `can_reject_sync_from_both_handles_inside_a_transaction_callback` in `src/datatypes/transactional.rs` |
 | Sync from another thread exchanges during the callback and completes after rollback | `can_complete_sync_from_another_thread_after_local_rollback` in `src/datatypes/transactional.rs` |
 | Counter undo, including the self-inverse extreme | `can_return_and_apply_a_counter_rollback_action` in `src/datatypes/crdts/counter_crdt.rs` |

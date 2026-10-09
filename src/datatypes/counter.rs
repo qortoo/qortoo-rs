@@ -141,6 +141,10 @@ impl Counter {
     /// Executes multiple operations atomically within a transaction.
     ///
     /// Writes inside the callback are kept only if this method succeeds.
+    /// Use the callback handle for writes. On the callback thread, starting another
+    /// transaction on this datatype or writing through a captured original handle
+    /// returns [`DatatypeError::Disallowed`]. Reads may observe uncommitted writes.
+    /// Complete any work sharing the callback handle before returning.
     ///
     /// # Arguments
     ///

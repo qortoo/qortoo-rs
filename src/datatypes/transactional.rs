@@ -26,6 +26,12 @@ use crate::{
     operations::Operation,
 };
 
+const ERR_SYNC_DISABLED: &str = "sync is not allowed in Disabled state";
+const ERR_SYNC_ON_TRANSACTION_OWNER: &str =
+    "sync is not allowed on the thread that owns the active local transaction";
+const ERR_REENTRANT_TRANSACTION: &str = "cannot start another local transaction on the thread that owns the active transaction; use the callback handle for writes";
+const ERR_NESTED_TRANSACTION: &str = "nested transactions on the same datatype are not allowed";
+
 #[derive(Debug, Default)]
 pub struct TransactionContext {
     tag: Option<String>,
@@ -241,9 +247,7 @@ impl TransactionalDatatype {
 
     fn check_sync_allowed(&self) -> Result<(), DatatypeError> {
         if self.mutable.read().get_state() == DatatypeState::Disabled {
-            return Err(DatatypeError::NotWritable(
-                "sync is not allowed in Disabled state".to_owned(),
-            ));
+            return Err(DatatypeError::NotWritable(ERR_SYNC_DISABLED.to_owned()));
         }
         // Response application uses the local transaction gate. Waiting for a
         // synchronous response from inside that transaction would form a cycle.
@@ -254,8 +258,7 @@ impl TransactionalDatatype {
             .is_some_and(|active| active.owner_thread == thread::current().id())
         {
             return Err(DatatypeError::Disallowed(
-                "sync is not allowed on the thread that owns the active local transaction"
-                    .to_owned(),
+                ERR_SYNC_ON_TRANSACTION_OWNER.to_owned(),
             ));
         }
         Ok(())
@@ -278,7 +281,7 @@ impl TransactionalDatatype {
         op: Operation,
     ) -> Result<ReturnType, DatatypeError> {
         self.check_writable()?;
-        self.with_local_transaction(self.begin_transaction(tx_ctx), || {
+        self.with_local_transaction(self.begin_transaction(tx_ctx)?, || {
             // Release the mutable write lock before the transaction guard performs cleanup.
             self.mutable.write().execute_local_operation(op)
         })
@@ -329,16 +332,26 @@ impl TransactionalDatatype {
         Ok(())
     }
 
-    fn begin_transaction(&self, tx_ctx: Arc<TransactionContext>) -> TransactionAdmission<'_> {
-        // Only tagged contexts can join an explicit transaction. Standalone
-        // handles share a default context but must always open distinct local transactions.
-        if tx_ctx.has_tag() {
+    fn begin_transaction(
+        &self,
+        tx_ctx: Arc<TransactionContext>,
+    ) -> Result<TransactionAdmission<'_>, DatatypeError> {
+        // Only the callback context can join. Check ownership before waiting so
+        // a captured standalone handle cannot wait for its own transaction to finish.
+        {
             let active = self.active_tx_ctx.read();
-            if active.as_ref().map(|active| &active.context) == Some(&tx_ctx) {
-                let tag = tx_ctx.tag.clone().unwrap_or("NONE".to_owned());
-                drop(active);
-                add_span_event!("JoinedLocalTransaction", "tag" => tag);
-                return TransactionAdmission::JoinedExisting;
+            if let Some(active_context) = active.as_ref() {
+                if tx_ctx.has_tag() && active_context.context == tx_ctx {
+                    let tag = tx_ctx.tag.clone().unwrap_or("NONE".to_owned());
+                    drop(active);
+                    add_span_event!("JoinedLocalTransaction", "tag" => tag);
+                    return Ok(TransactionAdmission::JoinedExisting);
+                }
+                if active_context.owner_thread == thread::current().id() {
+                    return Err(DatatypeError::Disallowed(
+                        ERR_REENTRANT_TRANSACTION.to_owned(),
+                    ));
+                }
             }
         }
 
@@ -365,12 +378,12 @@ impl TransactionalDatatype {
         });
         drop(active);
         add_span_event!("StartedLocalTransaction", "tag" => tag);
-        TransactionAdmission::Started(TransactionGuard {
+        Ok(TransactionAdmission::Started(TransactionGuard {
             datatype: self,
             context: current,
             mutex_guard: Some(mutex_guard),
             finished: false,
-        })
+        }))
     }
 
     pub fn do_transaction<F>(
@@ -381,10 +394,9 @@ impl TransactionalDatatype {
     where
         F: FnOnce() -> Result<(), DatatypeError>,
     {
-        let admission = self.begin_transaction(tx_ctx);
+        let admission = self.begin_transaction(tx_ctx)?;
         if matches!(admission, TransactionAdmission::JoinedExisting) {
-            // Public transaction entry points always create a fresh context.
-            unreachable!("do_transaction cannot join its own active context");
+            return Err(DatatypeError::Disallowed(ERR_NESTED_TRANSACTION.to_owned()));
         }
         self.with_local_transaction(admission, || {
             let tx_func_span = info_span!("tx_func");
@@ -455,8 +467,9 @@ mod tests_transactional {
     fn can_reject_sync_on_the_local_transaction_owner_thread() {
         let attr = new_attribute!(DataType::Counter);
         let datatype = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
-        let TransactionAdmission::Started(_transaction) =
-            datatype.begin_transaction(Arc::new(TransactionContext::new("active")))
+        let TransactionAdmission::Started(_transaction) = datatype
+            .begin_transaction(Arc::new(TransactionContext::new("active")))
+            .unwrap()
         else {
             panic!("a new context must start a local transaction");
         };
@@ -487,6 +500,127 @@ mod tests_transactional {
             })
             .unwrap();
         counter.sync().unwrap();
+        assert_eq!(counter.get_value(), 1);
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum ReentrantCall {
+        CallbackTransaction,
+        OriginalTransaction,
+        OriginalWrite,
+    }
+
+    #[rstest]
+    #[case(ReentrantCall::CallbackTransaction, false)]
+    #[case(ReentrantCall::OriginalTransaction, false)]
+    #[case(ReentrantCall::OriginalWrite, false)]
+    #[case(ReentrantCall::CallbackTransaction, true)]
+    #[case(ReentrantCall::OriginalTransaction, true)]
+    #[case(ReentrantCall::OriginalWrite, true)]
+    fn can_reject_reentrant_calls_without_losing_transaction_ownership(
+        #[case] call: ReentrantCall,
+        #[case] propagate: bool,
+    ) {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .with_connectivity(connectivity)
+            .build()
+            .unwrap();
+        let counter = client.create_datatype("counter").build_counter().unwrap();
+        let original = counter.clone();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let captured = original.clone();
+            let result = original.transaction("outer", move |callback| {
+                callback.increase()?;
+                let error = match call {
+                    ReentrantCall::CallbackTransaction => callback
+                        .transaction("outer", |_| panic!("nested callback must not execute"))
+                        .unwrap_err(),
+                    ReentrantCall::OriginalTransaction => captured
+                        .transaction("outer", |_| panic!("nested callback must not execute"))
+                        .unwrap_err(),
+                    ReentrantCall::OriginalWrite => captured.increase().unwrap_err(),
+                };
+                assert!(matches!(error, DatatypeError::Disallowed(_)));
+                assert_eq!(callback.get_value(), 1);
+                assert_eq!(captured.get_value(), 1);
+                assert_eq!(captured.get_client_version(), 1);
+                if propagate {
+                    return Err(error.into());
+                }
+                callback.increase_by(2)?;
+                Ok(())
+            });
+            finished_tx.send(result).unwrap();
+        });
+        let result = finished_rx.recv_timeout(WAIT_TIMEOUT).unwrap();
+        worker.join().unwrap();
+        if propagate {
+            assert!(matches!(result, Err(DatatypeError::TransactionFailed(_))));
+        } else {
+            result.unwrap();
+        }
+        assert_eq!(counter.get_value(), if propagate { 0 } else { 3 });
+        assert_eq!(counter.get_client_version(), u64::from(!propagate));
+        counter.increase().unwrap();
+        assert_eq!(counter.get_value(), if propagate { 1 } else { 4 });
+        assert_eq!(counter.get_client_version(), if propagate { 1 } else { 2 });
+    }
+
+    #[test]
+    fn can_reject_nested_entry_with_the_active_context() {
+        let datatype = TransactionalDatatype::new_arc(
+            manual_counter_attribute(),
+            Default::default(),
+            Default::default(),
+        );
+        let context = Arc::new(TransactionContext::new("outer"));
+        datatype
+            .do_transaction(context.clone(), || {
+                assert!(matches!(
+                    datatype.do_transaction(context.clone(), || panic!("must not execute")),
+                    Err(DatatypeError::Disallowed(_))
+                ));
+                datatype.execute_local_operation_as_tx(
+                    context.clone(),
+                    Operation::new_counter_increase(1),
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(datatype.mutable.read().op_id.cseq, 1);
+        assert!(datatype.active_tx_ctx.read().is_none());
+    }
+
+    #[test]
+    fn can_read_uncommitted_values_and_join_callback_writes_from_another_thread() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .with_connectivity(connectivity)
+            .build()
+            .unwrap();
+        let counter = client.create_datatype("counter").build_counter().unwrap();
+        let reader = counter.clone();
+        let result = counter.transaction("shared", move |callback| {
+            callback.increase_by(10)?;
+            let (finished_tx, finished_rx) = mpsc::channel();
+            let worker = thread::spawn(move || {
+                assert_eq!(reader.get_value(), 10);
+                assert_eq!(reader.get_client_version(), 1);
+                assert_eq!(callback.increase().unwrap(), 11);
+                finished_tx.send(()).unwrap();
+            });
+            finished_rx.recv_timeout(WAIT_TIMEOUT).unwrap();
+            worker.join().unwrap();
+            Err("rollback joined writes".into())
+        });
+        assert!(matches!(result, Err(DatatypeError::TransactionFailed(_))));
+        assert_eq!(counter.get_value(), 0);
+        assert_eq!(counter.get_client_version(), 0);
+        counter.increase().unwrap();
         assert_eq!(counter.get_value(), 1);
     }
 
@@ -536,7 +670,8 @@ mod tests_transactional {
         let attr = manual_counter_attribute();
         let datatype = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
         let context = Arc::new(TransactionContext::default());
-        let TransactionAdmission::Started(mut owner) = datatype.begin_transaction(context.clone())
+        let TransactionAdmission::Started(mut owner) =
+            datatype.begin_transaction(context.clone()).unwrap()
         else {
             panic!("a standalone write must own a new local transaction");
         };
