@@ -40,6 +40,12 @@ wired layer both hold the same mutable state and both write to it: local operati
 through one, synchronization through the other. Understanding a datatype means knowing that
 one state has two writers, not that each layer wraps the next.
 
+The transactional and wired layers share one `Arc<DatatypeCore>`. The core owns the
+shared attributes, mutable-state `RwLock`, transaction mutex (`tx_mutex`), and effects
+mutex (`effects_mutex`). The transaction context and event loop belong to the transactional
+layer; synchronization and its transport belong to the wired layer. `DatatypeCore` groups
+shared ownership and synchronization, while each layer keeps its own execution policy.
+
 ```mermaid
 flowchart TD
     subgraph Client["Client (one collection)"]
@@ -131,9 +137,25 @@ if the table still holds that same instance.
 
 **Client table lock order.** The client table lock protects key membership and the datatype
 handle stored for each key. Code holding that lock does not inspect mutable datatype state.
-A transition to `Disabled` already holds the mutable-state lock when it takes the client table
-lock to detach the matching instance; keeping client-table operations independent of mutable
-state prevents the opposite client-table-to-mutable order and its circular wait.
+A transition to `Disabled` records a detach effect under mutable state, then releases that
+lock before taking the client table lock. The effect captures the instance identity, so it
+cannot remove a replacement registered under the same key.
+
+**State effects.** State transitions and recovery snapshot their handler registrations and
+reserve effects under the mutable-state write lock. A shared `effects_mutex` covers that
+mutation and the subsequent effect dispatch; it preserves dispatch order across concurrent
+state changes. `DatatypeCore::prepare_state_effects` runs mutation under mutable state,
+extracts the batch, and releases the mutable lock. It returns a `StateEffectsGuard` that
+keeps the effects gate held until the caller finishes dispatch and follow-up work.
+Transaction cleanup clears its active context before dispatch; transmission requests run
+afterward. Dispatch consumes the batch while retaining the gate; dropping the guard
+releases the gate without automatically dispatching pending effects.
+The lock order is `tx_mutex` (when needed), then `effects_mutex`, then mutable
+state. Mutable state is released before detaching, spawning handler tasks, or requesting
+transmission. Reads, ordinary joined writes, and handler registration use only mutable
+state. Handler replacement and removal drop the old registration after releasing it.
+Callbacks run asynchronously and never run under the effects gate on the triggering stack;
+different notifications can still overlap. See [`docs/handler-system.md`](handler-system.md).
 
 **Limits on the guarantees.** Convergence is a property of the CRDT layer and holds for
 datatypes that actually exchange operations; the default backend exchanges with no one, so
@@ -251,12 +273,14 @@ in return.
 | `ClientCommon` — collection, client identity, runtime handle, backend | `src/clients/common.rs` |
 | `DatatypeManager` — key-to-datatype table, subscribe-or-create, detach | `src/clients/datatype_manager.rs` |
 | Shared runtimes keyed by group | `src/utils/runtime.rs` |
+| `DatatypeCore` — shared attributes, mutable state, transaction gate, and effects gate | `src/datatypes/core.rs` |
 | `TransactionalDatatype` — local transaction, write-access checks, construction of the layers, event-loop start | `src/datatypes/transactional.rs` |
 | `MutableDatatype` — the per-datatype state behind the lock | `src/datatypes/mutable.rs` |
 | `WiredDatatype` — package assembly and the backend call | `src/datatypes/wired.rs` |
 | `PullHandler` — validating and applying a response | `src/datatypes/pull_handler.rs` |
 | `Attribute` — shared attributes and the weak back-reference | `src/datatypes/common.rs` |
 | `Crdt` and its per-datatype implementations | `src/datatypes/crdts/` |
+| `DatatypeTarget` — weak instance reference for deferred notification and detach | `src/datatypes/target.rs` |
 | Public datatype handles | `src/datatypes/counter.rs`, `src/datatypes/variable.rs` |
 
 | Verified by | Tests |

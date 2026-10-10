@@ -129,7 +129,7 @@ impl Counter {
     /// assert_eq!(counter.get_value(), 1);
     /// ```
     pub fn get_value(&self) -> i64 {
-        let mutable = self.datatype.mutable.read();
+        let mutable = self.datatype.core.mutable.read();
         mutable
             .crdt
             .as_counter()
@@ -251,7 +251,7 @@ mod tests_counter {
 
         let reject_enqueue = |c: &Counter| {
             // Bypass the clamp in DatatypeOption::new to inject a capacity rejection.
-            c.datatype.mutable.write().push_buffer.option = Arc::new(DatatypeOption {
+            c.datatype.core.mutable.write().push_buffer.option = Arc::new(DatatypeOption {
                 max_mem_size_of_push_buffer: 0,
             });
         };
@@ -278,7 +278,7 @@ mod tests_counter {
             *received.lock(),
             vec![DatatypeError::PushBufferExceededMaxMemSize]
         );
-        counter.datatype.mutable.write().push_buffer.option = Default::default();
+        counter.datatype.core.mutable.write().push_buffer.option = Default::default();
         assert_eq!(counter.increase_by(1).unwrap(), 4);
     }
 
@@ -303,7 +303,7 @@ mod tests_counter {
         counter.sync().unwrap();
         counter.increase_by(1).unwrap();
         let capacity = {
-            let mut mutable = counter.datatype.mutable.write();
+            let mut mutable = counter.datatype.core.mutable.write();
             let capacity = mutable.push_buffer.mem_size;
             mutable.push_buffer.option = Arc::new(DatatypeOption {
                 max_mem_size_of_push_buffer: capacity,
@@ -318,7 +318,7 @@ mod tests_counter {
         for expected in 1..=20 {
             counter.sync().unwrap();
             {
-                let mutable = counter.datatype.mutable.read();
+                let mutable = counter.datatype.core.mutable.read();
                 assert_eq!(mutable.push_buffer.mem_size, 0);
                 assert_eq!(mutable.push_buffer.iter().count(), 0);
                 assert_eq!(mutable.push_buffer.first_cseq, 0);
@@ -333,7 +333,7 @@ mod tests_counter {
             if expected < 20 {
                 assert_eq!(counter.increase_by(1).unwrap(), (expected + 1) as i64);
                 assert_eq!(
-                    counter.datatype.mutable.read().push_buffer.mem_size,
+                    counter.datatype.core.mutable.read().push_buffer.mem_size,
                     capacity
                 );
             }

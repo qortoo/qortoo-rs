@@ -158,7 +158,10 @@ disabling a datatype while leaving its synchronization scheduled.
 
 **One dispatch point for lifecycle effects.** Both consumer paths apply the lifecycle half of
 an action through the same code, so a rollback or a disable means the same thing regardless of
-which path decided it.
+which path decided it. Recovery and the error-handler snapshot share one mutable-state
+boundary. Detach and handler task scheduling execute after that lock is released, with
+detach before the Disabled notification and state-change dispatch before error dispatch.
+Dispatch order does not guarantee callback completion order across notifications.
 
 **The sync path.** A failed exchange is routed, the event loop takes its scheduling mode from
 the action, the lifecycle effect is applied, and the error is reported to the datatype's

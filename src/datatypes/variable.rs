@@ -149,6 +149,7 @@ impl Variable {
     /// Clones the stored JSON bytes out from under the datatype read lock.
     fn shared_value(&self) -> Arc<[u8]> {
         self.datatype
+            .core
             .mutable
             .read()
             .crdt
@@ -333,13 +334,27 @@ mod tests_variable {
         variable.set(&sample_profile()).unwrap();
         let state = variable.get_state();
         let version = variable.get_client_version();
-        let buffered_transactions = variable.datatype.mutable.read().push_buffer.iter().count();
+        let buffered_transactions = variable
+            .datatype
+            .core
+            .mutable
+            .read()
+            .push_buffer
+            .iter()
+            .count();
 
         assert_eq!(variable.get::<Profile>().unwrap(), sample_profile());
         assert_eq!(variable.get_state(), state);
         assert_eq!(variable.get_client_version(), version);
         assert_eq!(
-            variable.datatype.mutable.read().push_buffer.iter().count(),
+            variable
+                .datatype
+                .core
+                .mutable
+                .read()
+                .push_buffer
+                .iter()
+                .count(),
             buffered_transactions
         );
     }

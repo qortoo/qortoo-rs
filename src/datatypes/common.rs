@@ -6,10 +6,10 @@ use std::{
 use parking_lot::RwLock;
 
 use crate::{
-    Counter, DataType, Variable,
+    DataType,
     clients::common::ClientCommon,
     datatypes::{
-        datatype_set::DatatypeSet, option::DatatypeOption, transactional::TransactionalDatatype,
+        option::DatatypeOption, target::DatatypeTarget, transactional::TransactionalDatatype,
     },
     types::{
         common::{ArcStr, ResourceID},
@@ -22,11 +22,11 @@ macro_rules! datatype_instrument {
         $(#[$attr])*
         #[tracing::instrument(skip_all,
             fields(
-                collection=%self.datatype.attr.client_common.collection,
-                client=%self.datatype.attr.client_common.alias,
-                cuid=%self.datatype.attr.client_common.cuid,
-                data_key=%self.datatype.attr.key,
-                duid=%self.datatype.attr.get_duid(),
+                collection=%self.datatype.core.attr.client_common.collection,
+                client=%self.datatype.core.attr.client_common.alias,
+                cuid=%self.datatype.core.attr.client_common.cuid,
+                data_key=%self.datatype.core.attr.key,
+                duid=%self.datatype.core.attr.get_duid(),
             )
         )]
         $vis fn $name $($rest)*
@@ -39,11 +39,11 @@ macro_rules! internal_datatype_instrument {
         #[tracing::instrument(skip_all,
             name = $span_name,
             fields(
-                collection=%self.attr.client_common.collection,
-                client=%self.attr.client_common.alias,
-                cuid=%self.attr.client_common.cuid,
-                data_key=%self.attr.key,
-                duid=%self.attr.get_duid(),
+                collection=%self.core.attr.client_common.collection,
+                client=%self.core.attr.client_common.alias,
+                cuid=%self.core.attr.client_common.cuid,
+                data_key=%self.core.attr.key,
+                duid=%self.core.attr.get_duid(),
             )
         )]
         $vis fn $name $($rest)*
@@ -144,27 +144,10 @@ impl Attribute {
         *self.weak_transactional.write() = Some(weak);
     }
 
-    pub fn get_datatype_set(&self) -> Option<DatatypeSet> {
-        let transactional = self.weak_transactional.read().as_ref()?.upgrade()?;
-        match self.r#type {
-            DataType::Counter => Some(DatatypeSet::Counter(Counter::new(transactional))),
-            DataType::Variable => Some(DatatypeSet::Variable(Variable::new(transactional))),
-            DataType::Map => None,
-        }
-    }
-
-    pub(crate) fn detach_datatype_if_same_instance(&self) {
-        let Some(transactional) = self
-            .weak_transactional
-            .read()
-            .as_ref()
-            .and_then(Weak::upgrade)
-        else {
-            return;
-        };
-        let core_id = Arc::as_ptr(&transactional) as usize;
-        self.client_common
-            .detach_datatype_if_same_instance(&self.key, core_id);
+    pub(crate) fn datatype_target(&self) -> Option<DatatypeTarget> {
+        Some(DatatypeTarget::new(
+            self.weak_transactional.read().as_ref()?.clone(),
+        ))
     }
 }
 

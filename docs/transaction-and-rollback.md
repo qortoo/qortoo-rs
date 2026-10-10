@@ -335,29 +335,29 @@ finished, including rollback after a commit rejection, rather than that commit s
 flowchart TD
     A["with_local_transaction()<br/>Execute the owner's action"]:::td --> B{"Action outcome"}:::other
     B -- Success --> C["TransactionGuard::commit()"]:::other
-    C --> D["end_transaction(..., true)<br/>Acquire mutable.write"]:::td
+    C --> D["end_transaction(..., true)<br/>Acquire effects_mutex, then mutable.write"]:::td
     D --> E["MutableDatatype::end_transaction()<br/>Try adding the operation batch<br/>to the outbound push buffer"]:::md
     E --> F{"Enqueue succeeded?"}:::other
-    F -- Yes --> G["Discard rollback actions"]:::md
-    G --> G2["Request synchronization"]:::td
-    F -- No --> H["apply_action() → do_rollback()<br/>Restore value, counters, lifecycle<br/>Clear pending operations and undo records"]:::md
-    G2 --> I["Release mutable.write<br/>active_tx_ctx.take(): clear registration"]:::td
+    F -- Yes --> G["Discard rollback actions<br/>Remember whether to request synchronization"]:::md
+    F -- No --> H["apply_action() → do_rollback()<br/>Restore value, counters, lifecycle<br/>Reserve state effects and error notification"]:::md
+    G --> I["Take reserved effects; release mutable.write<br/>active_tx_ctx.take(): clear registration"]:::td
     H --> I
-    I --> J{"Commit error?"}:::other
-    J -- Yes --> K["call_error_handler(err.clone())<br/>Under a brief mutable.read lock"]:::md
-    K --> L["HandlersManager::dispatch()<br/>Schedule callbacks on the runtime"]:::other
-    L --> M["end_transaction() returns Err"]:::td
-    J -- No --> M2["end_transaction() returns Ok"]:::td
+    I --> L["DatatypeEffectBatch::dispatch()<br/>Detach matching instance and schedule callbacks<br/>without mutable state"]:::other
+    L --> J{"Commit error?"}:::other
+    J -- Yes --> M["Release effects_mutex<br/>end_transaction() returns Err"]:::td
+    J -- No --> G2["Request synchronization if needed<br/>without mutable state"]:::td
+    G2 --> M2["Release effects_mutex<br/>end_transaction() returns Ok"]:::td
     M --> N["TransactionGuard::commit()<br/>finished = true"]:::other
     M2 --> N
     N --> O["TransactionGuard::drop()<br/>Skip rollback; fair-unlock tx_mutex"]:::other
     O --> P["Return Ok or the commit error"]:::other
 
     B -- "Err or panic unwind" --> Q["TransactionGuard::drop()<br/>finished = false"]:::other
-    Q --> R["end_transaction(..., false)<br/>Acquire mutable.write"]:::td
+    Q --> R["end_transaction(..., false)<br/>Acquire effects_mutex, then mutable.write"]:::td
     R --> S["MutableDatatype::end_transaction()<br/>do_rollback()"]:::md
-    S --> U["Release mutable.write<br/>active_tx_ctx.take(): clear registration"]:::td
-    U --> V["TransactionGuard::drop()<br/>Fair-unlock tx_mutex"]:::other
+    S --> U["Take effects; release mutable.write<br/>active_tx_ctx.take(): clear registration"]:::td
+    U --> U2["Dispatch effects without mutable state<br/>Release effects_mutex"]:::td
+    U2 --> V["TransactionGuard::drop()<br/>Fair-unlock tx_mutex"]:::other
     V --> W["Return the action error<br/>or continue unwinding"]:::other
 
     classDef td fill:#e7f0ff,stroke:#2563eb,color:#172033;
@@ -365,8 +365,10 @@ flowchart TD
     classDef other fill:#f3f4f6,stroke:#64748b,color:#172033;
 ```
 
-Commit-error callbacks are scheduled after context cleanup but before the guard releases
-`tx_mutex`. Their actual execution can begin before or after that release. A callback
+Lifecycle effects and error recipients are reserved under the same mutable guard as commit
+recovery. The effects gate serializes that mutation through dispatch. Commit-error callbacks
+are scheduled after releasing mutable state and clearing the active context, but before
+the guard releases `tx_mutex`. Their actual execution can begin before or after that release. A callback
 starting a new write waits for the gate if necessary. Callback and operation errors retain
 their existing caller-return policy; this notification path is for commit rejection.
 
@@ -386,9 +388,9 @@ flowchart TD
     E --> F["MutableDatatype::create_push_pull_pack()<br/>Build the outbound pack"]:::md
     F --> G["WiredDatatype: release mutable.write"]:::other
     G --> H["Connectivity::push_pull()<br/>Network exchange without<br/>tx_mutex or mutable locks"]:::other
-    H --> I["WiredDatatype::with_transaction_gate()<br/>Acquire tx_mutex or wait<br/>Then acquire mutable.write"]:::other
+    H --> I["WiredDatatype::with_transaction_gate()<br/>Acquire tx_mutex or wait<br/>Then acquire effects_mutex<br/>and mutable.write"]:::other
     I --> J["PullHandler::apply()<br/>Validate progress and apply response<br/>Advance checkpoint and reclaim acknowledged batches"]:::other
-    J --> K["with_transaction_gate() returns<br/>Release mutable.write, then tx_mutex"]:::other
+    J --> K["Release mutable.write<br/>Dispatch effects<br/>Release effects_mutex, then tx_mutex"]:::other
     K --> L["sync() returns its result"]:::td
 
     classDef td fill:#e7f0ff,stroke:#2563eb,color:#172033;
@@ -457,6 +459,7 @@ because a remote transaction is never rolled back locally.
 | Closing a local transaction: enqueue on commit, undo on abort | `src/datatypes/mutable.rs` (`end_transaction`, `do_rollback`) |
 | Opening and joining local transactions, waiting for a local transaction held elsewhere | `src/datatypes/transactional.rs` (`begin_transaction`, `execute_local_operation_as_tx`, `do_transaction`) |
 | Success handling for owned or joined local work, cleanup, and active-context ownership | `src/datatypes/transactional.rs` (`with_local_transaction`, `TransactionGuard`) |
+| Shared mutable-state boundary and the effects gate held through dispatch and follow-up work | `src/datatypes/core.rs` (`prepare_state_effects`, `StateEffectsGuard`) |
 | Waiting to apply remote responses, recovery, and subscriber snapshot generation after local transaction cleanup | `src/datatypes/wired.rs` (`with_transaction_gate`) |
 | The public `transaction(tag, closure)` entry point | `src/datatypes/counter.rs`, `src/datatypes/variable.rs` |
 | Sequence checks and capacity limits on enqueue | `src/datatypes/push_buffer.rs` |

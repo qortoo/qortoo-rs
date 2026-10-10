@@ -6,16 +6,16 @@ use std::{
     thread::{self, ThreadId},
 };
 
-use parking_lot::{Mutex, MutexGuard, RwLock};
+use parking_lot::{MutexGuard, RwLock};
 use tracing::{Span, info_span, instrument};
 
 use crate::{
     DataType, DatatypeHandler, DatatypeState, IntoString,
     datatypes::{
         common::{Attribute, ReturnType, internal_datatype_instrument},
+        core::DatatypeCore,
         datatype::Datatype,
         event_loop::EventLoop,
-        mutable::MutableDatatype,
         wired::WiredDatatype,
     },
     errors::{
@@ -125,10 +125,8 @@ struct ActiveTransactionContext {
 }
 
 pub struct TransactionalDatatype {
-    pub attr: Arc<Attribute>,
-    pub mutable: Arc<RwLock<MutableDatatype>>,
+    pub(crate) core: Arc<DatatypeCore>,
     active_tx_ctx: RwLock<Option<ActiveTransactionContext>>,
-    tx_mutex: Arc<Mutex<()>>,
     #[cfg(test)]
     tx_waiters: AtomicUsize,
     event_loop: Arc<EventLoop>,
@@ -136,27 +134,27 @@ pub struct TransactionalDatatype {
 
 impl Datatype for TransactionalDatatype {
     fn get_key(&self) -> &str {
-        self.attr.key.as_ref()
+        self.core.attr.key.as_ref()
     }
 
     fn get_type(&self) -> DataType {
-        self.attr.r#type
+        self.core.attr.r#type
     }
 
     fn get_state(&self) -> DatatypeState {
-        self.mutable.read().get_state()
+        self.core.mutable.read().get_state()
     }
 
     fn get_server_version(&self) -> u64 {
-        self.mutable.read().checkpoint.sseq
+        self.core.mutable.read().checkpoint.sseq
     }
 
     fn get_client_version(&self) -> u64 {
-        self.mutable.read().op_id.cseq
+        self.core.mutable.read().op_id.cseq
     }
 
     fn get_synced_client_version(&self) -> u64 {
-        self.mutable.read().checkpoint.cseq
+        self.core.mutable.read().checkpoint.cseq
     }
 
     fn sync(&self) -> Result<(), DatatypeError> {
@@ -165,23 +163,30 @@ impl Datatype for TransactionalDatatype {
     }
 
     fn unsubscribe(&self) -> Result<(), DatatypeError> {
-        self.check_subscribed("unsubscribe")?;
-        self.mutable.write().set_state(DatatypeState::Unsubscribing);
+        let (result, mut effects) = self.core.prepare_state_effects(|mutable| {
+            self.check_subscribed_state(mutable.get_state(), "unsubscribe")?;
+            mutable.set_state(DatatypeState::Unsubscribing);
+            Ok::<(), DatatypeError>(())
+        });
+        result?;
+        effects.dispatch();
         self.event_loop.send_push_transaction_with_best_effort();
         Ok(())
     }
 
     fn set_handler(&self, id: usize, handler: DatatypeHandler) {
-        self.mutable.write().set_handler(id, handler)
+        let replaced = self.core.mutable.write().set_handler(id, handler);
+        drop(replaced);
     }
 
     fn unset_handler(&self, id: usize) -> bool {
-        self.mutable.write().unset_handler(id)
+        let removed = self.core.mutable.write().unset_handler(id);
+        removed.is_some()
     }
 
     #[cfg(test)]
     fn get_attr(&self) -> std::sync::Arc<Attribute> {
-        self.attr.clone()
+        self.core.attr.clone()
     }
 }
 
@@ -193,15 +198,9 @@ impl TransactionalDatatype {
     ) -> Arc<Self> {
         let event_loop = EventLoop::new_arc(attr.client_common.connectivity.clone());
         let arc_td = Arc::new(Self {
-            mutable: Arc::new(RwLock::new(MutableDatatype::new(
-                attr.clone(),
-                state,
-                handlers,
-            ))),
-            attr: attr.clone(),
+            core: DatatypeCore::new_arc(attr.clone(), state, handlers),
             event_loop: event_loop.clone(),
             active_tx_ctx: Default::default(),
-            tx_mutex: Default::default(),
             #[cfg(test)]
             tx_waiters: Default::default(),
         });
@@ -215,11 +214,7 @@ impl TransactionalDatatype {
     }
 
     fn get_wired_datatype(&self) -> Arc<WiredDatatype> {
-        Arc::new(WiredDatatype::new(
-            self.mutable.clone(),
-            self.attr.clone(),
-            self.tx_mutex.clone(),
-        ))
+        Arc::new(WiredDatatype::new(self.core.clone()))
     }
 
     /// Checks whether this datatype is writable based on its readonly flag and state.
@@ -234,11 +229,11 @@ impl TransactionalDatatype {
         if !state.is_read_writable() {
             return Err(with_err_out!(DatatypeError::NotWritable(format!(
                 "Datatype '{}' cannot be modified for {:?} state",
-                self.attr.key, state
+                self.core.attr.key, state
             ))));
         }
 
-        if self.attr.is_readonly {
+        if self.core.attr.is_readonly {
             return Err(with_err_out!(DatatypeError::ReadonlyViolation));
         }
 
@@ -246,7 +241,7 @@ impl TransactionalDatatype {
     }
 
     fn check_sync_allowed(&self) -> Result<(), DatatypeError> {
-        if self.mutable.read().get_state() == DatatypeState::Disabled {
+        if self.core.mutable.read().get_state() == DatatypeState::Disabled {
             return Err(DatatypeError::NotWritable(ERR_SYNC_DISABLED.to_owned()));
         }
         // Response application uses the local transaction gate. Waiting for a
@@ -264,8 +259,7 @@ impl TransactionalDatatype {
         Ok(())
     }
 
-    fn check_subscribed(&self, op: &str) -> Result<(), DatatypeError> {
-        let state = self.mutable.read().get_state();
+    fn check_subscribed_state(&self, state: DatatypeState, op: &str) -> Result<(), DatatypeError> {
         if state != DatatypeState::Subscribed {
             return Err(with_err_out!(DatatypeError::NotWritable(format!(
                 "{} is only allowed in Subscribed state, current state is {:?}",
@@ -283,7 +277,7 @@ impl TransactionalDatatype {
         self.check_writable()?;
         self.with_local_transaction(self.begin_transaction(tx_ctx)?, || {
             // Release the mutable write lock before the transaction guard performs cleanup.
-            self.mutable.write().execute_local_operation(op)
+            self.core.mutable.write().execute_local_operation(op)
         })
     }
 
@@ -306,30 +300,24 @@ impl TransactionalDatatype {
 
     #[instrument(skip_all)]
     fn end_transaction(&self, tag: Option<String>, committed: bool) -> Result<(), DatatypeError> {
-        let error = {
-            let mut mutable = self.mutable.write();
+        let (result, mut effects) = self.core.prepare_state_effects(|mutable| {
             match mutable.end_transaction(tag, committed) {
-                Ok(true) => {
-                    self.event_loop.send_push_transaction_with_best_effort();
-                    None
-                }
-                Ok(false) => None,
+                Ok(push) => Ok(push),
                 Err(dewa) => {
-                    // Commit failure rolls back on the owning thread before returning an error.
-                    // This path does not go through event-loop recovery.
+                    // Commit recovery and its handler snapshot share the same mutable boundary.
                     debug_assert!(matches!(dewa.recovery, RecoveryAction::RollbackTransaction));
                     mutable.apply_action(dewa.recovery);
-                    Some(dewa.error)
+                    mutable.reserve_error_notification(dewa.error.clone());
+                    Err(dewa.error)
                 }
             }
-        };
+        });
         self.active_tx_ctx.write().take();
-        if let Some(err) = error {
-            // Enqueue one handler notification in addition to the caller's Result.
-            self.mutable.read().call_error_handler(err.clone());
-            return Err(err);
+        effects.dispatch();
+        if matches!(result, Ok(true)) {
+            self.event_loop.send_push_transaction_with_best_effort();
         }
-        Ok(())
+        result.map(|_| ())
     }
 
     fn begin_transaction(
@@ -360,7 +348,7 @@ impl TransactionalDatatype {
         // rather than releasing it and racing through begin_transaction again.
         #[cfg(test)]
         self.tx_waiters.fetch_add(1, Ordering::SeqCst);
-        let mutex_guard = self.tx_mutex.lock();
+        let mutex_guard = self.core.tx_mutex.lock();
         #[cfg(test)]
         self.tx_waiters.fetch_sub(1, Ordering::SeqCst);
 
@@ -590,7 +578,7 @@ mod tests_transactional {
                 Ok(())
             })
             .unwrap();
-        assert_eq!(datatype.mutable.read().op_id.cseq, 1);
+        assert_eq!(datatype.core.mutable.read().op_id.cseq, 1);
         assert!(datatype.active_tx_ctx.read().is_none());
     }
 
@@ -678,7 +666,7 @@ mod tests_transactional {
 
         // Pause the standalone path after its local transaction begins. Its mutex guard and
         // active context must already exclude competing local transactions.
-        assert!(datatype.tx_mutex.try_lock().is_none());
+        assert!(datatype.core.tx_mutex.try_lock().is_none());
         assert!(datatype.active_tx_ctx.read().is_some());
 
         let (waiting_tx, waiting_rx) = mpsc::channel();
@@ -713,6 +701,7 @@ mod tests_transactional {
         assert!(finished_rx.try_recv().is_err());
 
         datatype
+            .core
             .mutable
             .write()
             .execute_local_operation(Operation::new_counter_increase(10))
@@ -722,7 +711,7 @@ mod tests_transactional {
 
         finished_rx.recv_timeout(WAIT_TIMEOUT).unwrap();
         waiter.join().unwrap();
-        let mutable = datatype.mutable.read();
+        let mutable = datatype.core.mutable.read();
         assert_eq!(mutable.crdt.as_counter().unwrap().value(), 11);
         assert_eq!(mutable.op_id.cseq, 2);
         let values: Vec<_> = mutable
@@ -807,7 +796,7 @@ mod tests_transactional {
                     ReturnType::Counter(value) if value == (TOTAL_OPERATIONS + 1) as i64
                 ));
                 if matches!(outcome, TransactionOutcome::EnqueueError) {
-                    let mut mutable = datatype.mutable.write();
+                    let mut mutable = datatype.core.mutable.write();
                     let mut transaction = Transaction::new(&mutable.op_id.cuid, 1);
                     transaction.push_operation(Operation::new_counter_increase(1));
                     mutable.push_buffer.option = Arc::new(DatatypeOption {
@@ -832,7 +821,7 @@ mod tests_transactional {
         }
         let committed = matches!(outcome, TransactionOutcome::Commit);
         {
-            let mutable = datatype.mutable.read();
+            let mutable = datatype.core.mutable.read();
             let operation_count = if committed { TOTAL_OPERATIONS + 1 } else { 0 };
             assert_eq!(
                 mutable.crdt.as_counter().unwrap().value(),
@@ -852,7 +841,7 @@ mod tests_transactional {
         datatype
             .execute_local_operation_as_tx(Default::default(), Operation::new_counter_increase(1))
             .unwrap();
-        let mutable = datatype.mutable.read();
+        let mutable = datatype.core.mutable.read();
         assert_eq!(mutable.op_id.cseq, if committed { 2 } else { 1 });
         assert_eq!(
             mutable.crdt.as_counter().unwrap().value(),
@@ -896,7 +885,7 @@ mod tests_transactional {
                             .map(|active| &active.context),
                         Some(&context)
                     );
-                    assert!(owner_datatype.tx_mutex.try_lock().is_none());
+                    assert!(owner_datatype.core.tx_mutex.try_lock().is_none());
                     if matches!(outcome, TransactionOutcome::EnqueueError) {
                         // Reject this two-operation transaction while leaving
                         // enough capacity for the waiter's single operation.
@@ -904,7 +893,7 @@ mod tests_transactional {
                             context,
                             Operation::new_counter_increase(10),
                         )?;
-                        let mut mutable = owner_datatype.mutable.write();
+                        let mut mutable = owner_datatype.core.mutable.write();
                         let op_id = &mutable.op_id;
                         let mut tx = Transaction::new(&op_id.cuid, 1);
                         tx.push_operation(Operation::new_counter_increase(1));
@@ -955,7 +944,7 @@ mod tests_transactional {
         waiter.join().unwrap();
 
         let committed = matches!(outcome, TransactionOutcome::Commit);
-        let mutable = datatype.mutable.read();
+        let mutable = datatype.core.mutable.read();
         assert_eq!(
             mutable.crdt.as_counter().unwrap().value(),
             if committed { 11 } else { 1 }
@@ -985,7 +974,14 @@ mod tests_transactional {
             .execute_local_operation_as_tx(Default::default(), Operation::new_counter_increase(1))
             .unwrap();
         assert_eq!(
-            datatype.mutable.read().crdt.as_counter().unwrap().value(),
+            datatype
+                .core
+                .mutable
+                .read()
+                .crdt
+                .as_counter()
+                .unwrap()
+                .value(),
             1
         );
     }
@@ -1006,7 +1002,7 @@ mod tests_transactional {
             .execute_local_operation_as_tx(Default::default(), Operation::new_counter_increase(3))
             .unwrap();
         let (buffer_size, option) = {
-            let mut mutable = datatype.mutable.write();
+            let mut mutable = datatype.core.mutable.write();
             let baseline = (
                 mutable.push_buffer.mem_size,
                 mutable.push_buffer.option.clone(),
@@ -1040,7 +1036,7 @@ mod tests_transactional {
         }
         assert!(datatype.active_tx_ctx.read().is_none());
         {
-            let mut mutable = datatype.mutable.write();
+            let mut mutable = datatype.core.mutable.write();
             assert_eq!(mutable.crdt.as_counter().unwrap().value(), 3);
             assert_eq!(mutable.op_id.cseq, 1);
             assert_eq!(mutable.op_id.lamport, 1);
@@ -1061,7 +1057,7 @@ mod tests_transactional {
                 .unwrap(),
             ReturnType::Counter(5)
         ));
-        let mutable = datatype.mutable.read();
+        let mutable = datatype.core.mutable.read();
         assert_eq!(mutable.op_id.cseq, 2);
         assert_eq!(mutable.op_id.lamport, 2);
         assert_eq!(mutable.push_buffer.iter().count(), 2);
@@ -1091,7 +1087,7 @@ mod tests_transactional {
             Ok(())
         });
         assert_eq!(result.is_err(), propagate);
-        let mutable = datatype.mutable.read();
+        let mutable = datatype.core.mutable.read();
         assert_eq!(
             mutable.crdt.as_counter().unwrap().value(),
             if propagate { 0 } else { 3 }
@@ -1109,14 +1105,14 @@ mod tests_transactional {
     fn can_finish_empty_transaction_without_enqueue() {
         let attr = new_attribute!(DataType::Counter);
         let datatype = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
-        datatype.mutable.write().push_buffer.option = Arc::new(DatatypeOption {
+        datatype.core.mutable.write().push_buffer.option = Arc::new(DatatypeOption {
             max_mem_size_of_push_buffer: 0,
         });
         datatype
             .do_transaction(Arc::new(TransactionContext::new("empty")), || Ok(()))
             .unwrap();
         assert!(datatype.active_tx_ctx.read().is_none());
-        let mut mutable = datatype.mutable.write();
+        let mut mutable = datatype.core.mutable.write();
         assert_eq!(mutable.op_id.cseq, 0);
         assert_eq!(mutable.op_id.lamport, 0);
         assert!(mutable.is_transaction_record_empty());
@@ -1144,12 +1140,12 @@ mod tests_transactional {
             )?;
             // Corrupt the buffer sequence so the commit-time enqueue fails with
             // InternalReason::NonSequentialCseq.
-            tx_dt_in_tx.mutable.write().push_buffer.last_cseq = 42;
+            tx_dt_in_tx.core.mutable.write().push_buffer.last_cseq = 42;
             Ok(())
         });
         assert!(matches!(result, Err(DatatypeError::Internal(_))));
 
-        let mutable = tx_dt.mutable.read();
+        let mutable = tx_dt.core.mutable.read();
         let c = mutable.crdt.as_counter().expect("expected a counter crdt");
         assert_eq!(c.value(), 0);
         assert_eq!(mutable.op_id.cseq, 0);

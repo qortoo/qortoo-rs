@@ -47,6 +47,7 @@ impl MemoryPushBuffer {
     }
 
     /// Returns an iterator over the transactions in the push buffer
+    #[cfg(test)]
     pub fn iter(&self) -> impl Iterator<Item = &Arc<Transaction>> {
         self.transaction.iter()
     }

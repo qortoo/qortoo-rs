@@ -150,7 +150,7 @@ where
 
     #[cfg(test)]
     fn get_attr(&self) -> std::sync::Arc<crate::datatypes::common::Attribute> {
-        self.get_core().attr.clone()
+        self.get_core().core.attr.clone()
     }
 }
 

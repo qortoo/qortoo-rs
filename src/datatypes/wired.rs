@@ -1,14 +1,13 @@
 use std::sync::Arc;
 
-use parking_lot::{Mutex, RwLock};
 use tracing::{instrument, trace, warn};
 
 #[cfg(test)]
-use crate::datatypes::wired_interceptor::WiredInterceptor;
+use crate::datatypes::{common::Attribute, wired_interceptor::WiredInterceptor};
 use crate::{
     DatatypeError, DatatypeState,
     datatypes::{
-        common::Attribute, mutable::MutableDatatype, pull_handler::PullHandler,
+        core::DatatypeCore, mutable::MutableDatatype, pull_handler::PullHandler,
         push_buffer::PushBuffer,
     },
     defaults,
@@ -19,25 +18,15 @@ use crate::{
 };
 
 pub struct WiredDatatype {
-    pub mutable: Arc<RwLock<MutableDatatype>>,
-    pub attr: Arc<Attribute>,
-    // Shared with TransactionalDatatype so remote mutations cannot interleave
-    // with a local transaction's commit or rollback.
-    tx_mutex: Arc<Mutex<()>>,
+    pub(crate) core: Arc<DatatypeCore>,
     #[cfg(test)]
     interceptor: Arc<WiredInterceptor>,
 }
 
 impl WiredDatatype {
-    pub fn new(
-        mutable: Arc<RwLock<MutableDatatype>>,
-        attr: Arc<Attribute>,
-        tx_mutex: Arc<Mutex<()>>,
-    ) -> Self {
+    pub(crate) fn new(core: Arc<DatatypeCore>) -> Self {
         Self {
-            mutable,
-            attr,
-            tx_mutex,
+            core,
             #[cfg(test)]
             interceptor: WiredInterceptor::new_arc(),
         }
@@ -50,13 +39,7 @@ impl WiredDatatype {
         interceptor: Arc<WiredInterceptor>,
     ) -> Arc<Self> {
         Arc::new(Self {
-            mutable: Arc::new(RwLock::new(MutableDatatype::new(
-                attr.clone(),
-                state,
-                Default::default(),
-            ))),
-            attr,
-            tx_mutex: Default::default(),
+            core: DatatypeCore::new_arc(attr, state, Default::default()),
             interceptor,
         })
     }
@@ -67,39 +50,44 @@ impl WiredDatatype {
     }
 
     pub fn push_if_needed(&self) -> bool {
-        if !self.attr.client_common.connectivity.is_realtime() || !self.mutable.read().need_push() {
+        if !self.core.attr.client_common.connectivity.is_realtime()
+            || !self.core.mutable.read().need_push()
+        {
             return false;
         }
         true
     }
 
     pub fn handle_error(&self, err: DatatypeError, recovery: RecoveryAction) {
-        self.with_transaction_gate(|mutable| mutable.apply_action(recovery));
-        self.mutable.read().call_error_handler(err);
+        self.with_transaction_gate(|mutable| {
+            mutable.apply_action(recovery);
+            mutable.reserve_error_notification(err);
+        });
     }
 
     /// Runs a state operation under the transaction gate, then the mutable write lock.
-    /// Both guards are released before returning to the caller.
+    /// Effects execute after releasing mutable state, while the effects gate preserves order.
     fn with_transaction_gate<R>(&self, action: impl FnOnce(&mut MutableDatatype) -> R) -> R {
-        let _tx_guard = self.tx_mutex.lock();
-        let mut mutable = self.mutable.write();
-        action(&mut mutable)
+        let _tx_guard = self.core.tx_mutex.lock();
+        let (result, mut effects) = self.core.prepare_state_effects(action);
+        effects.dispatch();
+        result
     }
 
     #[instrument(skip_all)]
     pub fn handle_notification(&self, notify: Notification) -> bool {
-        if self.attr.get_duid() != notify.duid {
+        if self.core.attr.get_duid() != notify.duid {
             warn!(
                 "ignore {notify}: different duid(expected={})",
-                self.attr.get_duid()
+                self.core.attr.get_duid()
             );
             return false;
         }
-        if self.attr.get_cuid() == notify.cuid {
+        if self.core.attr.get_cuid() == notify.cuid {
             trace!("ignore {notify}: self-notification");
             return false;
         }
-        let cp_sseq = self.mutable.read().checkpoint.sseq;
+        let cp_sseq = self.core.mutable.read().checkpoint.sseq;
         if cp_sseq >= notify.sseq {
             trace!(
                 "ignore {notify} due to current sseq({cp_sseq}) >= notification.sseq({})",
@@ -118,16 +106,16 @@ impl WiredDatatype {
     pub fn push_pull(&self) -> Result<(), DatatypeErrorWithAction> {
         let start = std::time::Instant::now();
         let result = self.do_push_pull();
-        metrics::emit_sync(&self.attr, result.is_ok(), start.elapsed());
+        metrics::emit_sync(&self.core.attr, result.is_ok(), start.elapsed());
         result
     }
 
     fn do_push_pull(&self) -> Result<(), DatatypeErrorWithAction> {
-        let connectivity = &self.attr.client_common.connectivity;
+        let connectivity = &self.core.attr.client_common.connectivity;
 
         #[cfg_attr(not(test), allow(unused_mut))]
         let mut pushing_ppp = {
-            let mut mutable = self.mutable.write();
+            let mut mutable = self.core.mutable.write();
             mutable.create_push_pull_pack().map_err(|e| e.mapping())?
         };
 
@@ -139,12 +127,12 @@ impl WiredDatatype {
         let sent_cseq = pushing_ppp.checkpoint.cseq;
 
         add_span_event!("send PUSH PushPullPack", "ppp"=> pushing_ppp.to_string());
-        metrics::emit_pushed_transactions(&self.attr, pushing_ppp.transactions.len());
+        metrics::emit_pushed_transactions(&self.core.attr, pushing_ppp.transactions.len());
         #[cfg_attr(not(test), allow(unused_mut))]
         let mut pulled_ppp = connectivity
             .push_pull(&pushing_ppp)
             .map_err(|e| e.to_datatype_error().mapping())?;
-        metrics::emit_pulled_transactions(&self.attr, pulled_ppp.transactions.len());
+        metrics::emit_pulled_transactions(&self.core.attr, pulled_ppp.transactions.len());
 
         #[cfg(test)]
         self.interceptor.after_pull(&mut pulled_ppp)?;
@@ -158,7 +146,7 @@ impl WiredDatatype {
     }
 
     pub fn cuid(&self) -> Cuid {
-        self.attr.get_cuid()
+        self.core.attr.get_cuid()
     }
 
     pub fn get_subscribe_snapshot(&self) -> Transaction {
@@ -259,7 +247,7 @@ mod tests_wired {
         let result = wired.push_pull();
         assert_eq!(result.is_err(), invalid_ack);
         {
-            let mutable = wired.mutable.read();
+            let mutable = wired.core.mutable.read();
             assert_eq!(mutable.op_id.cseq, 2);
             assert_eq!(mutable.crdt.as_counter().unwrap().value(), 2);
             assert_eq!(mutable.checkpoint.cseq, if invalid_ack { 0 } else { 1 });
@@ -278,7 +266,7 @@ mod tests_wired {
             *requests.lock(),
             vec![vec![1], if invalid_ack { vec![1, 2] } else { vec![2] }]
         );
-        let mutable = wired.mutable.read();
+        let mutable = wired.core.mutable.read();
         assert_eq!(mutable.checkpoint.cseq, 2);
         assert_eq!(mutable.push_buffer.mem_size, 0);
         assert_eq!(mutable.crdt.as_counter().unwrap().value(), 2);
@@ -298,21 +286,24 @@ mod tests_wired {
                 .unwrap();
             mutable.end_transaction(None, true).unwrap();
         });
-        let size = wired.mutable.read().push_buffer.mem_size;
+        let size = wired.core.mutable.read().push_buffer.mem_size;
         interceptor
             .set_after_pull(|_| Err(DatatypeError::SyncFailed("response lost".into()).mapping()));
         assert!(wired.push_pull().is_err());
-        assert_eq!(wired.mutable.read().checkpoint.cseq, 0);
-        assert_eq!(wired.mutable.read().push_buffer.mem_size, size);
+        assert_eq!(wired.core.mutable.read().checkpoint.cseq, 0);
+        assert_eq!(wired.core.mutable.read().push_buffer.mem_size, size);
         interceptor.set_before_push(|push| {
             assert_eq!(push.transactions.len(), 1);
             assert_eq!(push.transactions[0].cseq, 1);
         });
         interceptor.set_after_pull(|_| Ok(()));
         wired.push_pull().unwrap();
-        assert_eq!(wired.mutable.read().checkpoint.cseq, 1);
-        assert_eq!(wired.mutable.read().push_buffer.mem_size, 0);
-        assert_eq!(wired.mutable.read().crdt.as_counter().unwrap().value(), 1);
+        assert_eq!(wired.core.mutable.read().checkpoint.cseq, 1);
+        assert_eq!(wired.core.mutable.read().push_buffer.mem_size, 0);
+        assert_eq!(
+            wired.core.mutable.read().crdt.as_counter().unwrap().value(),
+            1
+        );
     }
 
     #[test]
@@ -347,8 +338,9 @@ mod tests_wired {
         });
         let wired = WiredDatatype::new_arc_for_test(attr, DatatypeState::Creating, interceptor);
         let worker_wired = wired.clone();
-        let local_transaction = wired.tx_mutex.lock();
+        let local_transaction = wired.core.tx_mutex.lock();
         wired
+            .core
             .mutable
             .write()
             .execute_local_operation(Operation::new_variable_set(
@@ -364,7 +356,7 @@ mod tests_wired {
             .recv_timeout(Duration::from_secs(5))
             .expect("the backend response must arrive while the local transaction is active");
         assert!(finished_rx.try_recv().is_err());
-        wired.mutable.write().do_rollback();
+        wired.core.mutable.write().do_rollback();
 
         drop(local_transaction);
         finished_rx
@@ -373,7 +365,7 @@ mod tests_wired {
             .unwrap();
         worker.join().unwrap();
 
-        let mutable = wired.mutable.read();
+        let mutable = wired.core.mutable.read();
         assert_eq!(mutable.crdt.as_variable().unwrap().value(), b"\"remote\"");
         assert_eq!(mutable.op_id.cseq, 0);
         assert_eq!(mutable.op_id.lamport, 2);

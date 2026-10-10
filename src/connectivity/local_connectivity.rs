@@ -158,7 +158,7 @@ impl Debug for LocalConnectivity {
 
 impl Connectivity for LocalConnectivity {
     fn register(&self, wired: Arc<WiredDatatype>, sender: Sender<Event>) {
-        let attr = wired.attr.clone();
+        let attr = wired.core.attr.clone();
         let resource_id = attr.resource_id();
 
         let server = {
