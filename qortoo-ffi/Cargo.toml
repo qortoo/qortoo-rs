@@ -23,16 +23,16 @@ qortoo = { path = "..", features = ["observability"] }
 # Only what the C ABI adapter itself needs: the entry spans it opens and the W3C
 # trace-context bridge. The pipelines live in the core.
 tracing = "^0.1.44"
-tracing-opentelemetry = "^0.33"
-opentelemetry = "^0.32"
-opentelemetry_sdk = { version = "^0.32", features = ["trace"] }
+tracing-opentelemetry = "^0.34.0"
+opentelemetry = "^0.33.1"
+opentelemetry_sdk = { version = "^0.33.1", features = ["trace"] }
 
 [build-dependencies]
-cbindgen = "^0.29"
+cbindgen = "^0.29.4"
 
 [dev-dependencies]
-opentelemetry_sdk = { version = "^0.32", features = ["trace", "testing"] }
+opentelemetry_sdk = { version = "^0.33.1", features = ["trace", "testing"] }
 tracing-subscriber = { version = "^0.3.23", features = ["env-filter"] }
-metrics-util = { version = "^0.20", features = ["debugging"] }
-awaitility = "^0.4"
-rstest = "^0.26"
+metrics-util = { version = "^0.20.4", features = ["debugging"] }
+awaitility = "^0.4.1"
+rstest = "^0.27.0"
