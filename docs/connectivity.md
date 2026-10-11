@@ -110,10 +110,15 @@ between realtime and manual. Its per-resource state tracks which client is the o
 clients count as subscribed, how far each has acknowledged, and every transaction ever pushed,
 each stamped with a backend sequence number.
 
-A subscribe is answered from the origin client's own snapshot when that client is still in the
-process, and by replaying the recorded history when it is not. When the origin unsubscribes, the
-role passes to another in-process subscriber if there is one. The per-resource state is
-discarded once no client holds it.
+A subscribe is answered from the origin's snapshot when its wired instance is still live and
+subscribed, or from another live subscribed instance when the origin is unavailable. If no
+provider remains, the backend replays recorded history. The subscribing instance cannot
+provide its own snapshot. Registrations hold weak wired references; snapshot creation
+temporarily owns its chosen provider. The event loop owns wired state during exchanges.
+When the origin unsubscribes, the role passes to another in-process subscriber if there is
+one. Explicitly removing all subscriptions and registrations discards the resource. Dropping
+client handles alone preserves history while the backend is retained, without retaining client
+runtime ownership. See [Runtime Resources](runtime-resources.md#shutdown-and-backend-ownership).
 
 A test-only interceptor can wrap a single datatype's exchanges, inspecting or altering what goes
 out and injecting an error on what comes back. It is reachable only from test builds.
@@ -134,9 +139,9 @@ datatype looks fully functional and shares nothing.
 synchronization. This is what makes an ordering deterministic in a test — with realtime on, a
 push can happen before a handler is registered.
 
-**An origin that leaves.** The origin client unsubscribes while another in-process client is
-still subscribed; that client becomes the origin. If none remains, a later subscribe is answered
-by replaying the history instead, which is slower but produces the same state.
+**An origin that leaves.** If the origin unsubscribes, another remaining client becomes the
+origin. If its wired instance expires without unsubscribing, a later subscriber uses another
+live subscribed provider. If no provider remains, replaying history produces the same state.
 
 **A refusal.** The backend rejects a push — a type mismatch, a client that is not subscribed, a
 protocol violation — and returns the reason in the package. The client turns it into a typed

@@ -41,13 +41,19 @@ reference disappears, runtime shutdown is requested in the background. Started b
 tasks cannot be forcibly cancelled, and neither runtime shutdown nor handle drop promises
 completion of every queued notification.
 
-Backend ownership matters separately. `LocalConnectivity` holds strong wired references
-for registered subscriptions, and each wired instance retains client common state and
-its connectivity. Dropping external handles without unsubscribing can therefore leave
-this ownership cycle and its runtime workers alive. For orderly local-backend cleanup,
-call `unsubscribe()` and `sync()` while handles remain usable, then drop them. Retaining
-one subscribed datatype can keep a client's runtime alive even if all other datatypes
-were cleaned up. `NullConnectivity` does not store wired instances.
+Backend registration does not own a client's runtime. `LocalConnectivity` holds weak
+wired references; the event loop owns its wired instance until it exits. A snapshot
+exchange temporarily upgrades a live reference, keeping that provider alive for the
+snapshot. If the origin is gone, another live subscribed instance can provide it; if
+none remains, the server replays history. Dropping external handles can release client
+runtime ownership without an explicit unsubscribe. Already dispatched callbacks and
+in-flight exchanges can delay that release under the contracts above.
+
+While the backend itself is retained, dropping client handles preserves server history
+and subscription records for later subscribers. Use `unsubscribe()` and `sync()` to
+remove a subscription explicitly; the resource is removed when all subscriptions and
+registrations have been removed. Dropping the backend releases its stored records.
+`NullConnectivity` does not store wired instances.
 
 ## Reproducible Resource Probe
 
@@ -131,12 +137,15 @@ pauses. Baseline threads were already restored at the first post-release observa
 0.311–0.325 seconds after that checkpoint. Sixteen clients exceeded the thread budget.
 These figures cannot predict large stored values, network stalls, or contention.
 
-The local drop-only control remained at 13 threads after about 11.5 seconds: the eight
-cached blocking threads disappeared, but the twelve runtime workers remained. Null
-drop and explicit local unsubscribe/sync returned to the one-thread baseline. Thus the
-operating profile requires explicit local subscription cleanup. The backend ownership
-cycle remains a separate cleanup defect; these measurements do not establish leak-free
-drop for `LocalConnectivity`.
+An ownership validation run on the same host used default features, 12 cases across
+three rounds, and 500 samples per API path. All release observations returned to the
+one-thread baseline, including local drop-only and Null drop. Local drop-only reached
+baseline at the first observation, 0.315–0.328 seconds after release, and remained there
+at the additional observation about 11.5 seconds later in all three rounds. These are
+observation times, not an exact thread-join deadline. Within the operating envelope,
+idle threads were at most 177, sampled RSS growth at most 6.38 MiB, write+sync p95 at
+most 28.7 microseconds, and normal cleanup API time at most 9.03 ms. Explicit unsubscribe
+removes server subscription records; it is not required to release client runtime ownership.
 
 The runtime structure is retained for this profile. Runtime sharing/injection would
 reduce the per-client worker cost but needs a separate shutdown-ownership design.
@@ -144,8 +153,7 @@ Asynchronous event waiting would address the per-datatype thread cost but requir
 adapting synchronous exchanges. Simply lowering the blocking-pool cap can queue live
 event loops indefinitely, preventing sync and stop progress, so it is not a safe remedy
 for the existing long-running-loop model. Reassess these choices when required client
-or datatype counts exceed the measured envelope; repair backend ownership separately
-from changing worker allocation.
+or datatype counts exceed the measured envelope.
 
 ## Code Map
 
@@ -155,7 +163,7 @@ from changing worker allocation.
 | Runtime ownership | `src/clients/common.rs` |
 | Blocking event loop and stop acknowledgement | `src/datatypes/event_loop.rs` |
 | Notification lifetime and synchronous handler execution | `src/datatypes/handler.rs` |
-| Local backend strong wired references | `src/connectivity/local_datatype_server.rs` |
+| Local backend weak registration and snapshot providers | `src/connectivity/local_datatype_server.rs` |
 | Isolated public API probe and OS sampling | `examples/resource_probe.rs`, `scripts/measure_resources.py` |
 
 See [Performance](performance.md) for the separate fixed-budget Rust/Go comparison
