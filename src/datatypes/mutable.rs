@@ -7,6 +7,7 @@ use crate::{
     datatypes::{
         common::{Attribute, ReturnType},
         crdts::Crdt,
+        effects::{DatatypeEffect, DatatypeEffectBatch},
         handler::HandlersManager,
         push_buffer::{MemoryPushBuffer, PushBuffer},
         tx_record::TxRecord,
@@ -33,6 +34,7 @@ pub struct MutableDatatype {
     state: DatatypeState,
     tx_record: TxRecord,
     handlers_manager: HandlersManager,
+    effects: DatatypeEffectBatch,
 }
 
 impl MutableDatatype {
@@ -48,11 +50,17 @@ impl MutableDatatype {
             tx_record: TxRecord::new(state, op_id.clone()),
             checkpoint: CheckPoint::default(),
             handlers_manager: HandlersManager::new(attr.clone(), handlers),
+            effects: Default::default(),
             attr,
             crdt,
             state,
             op_id,
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_transaction_record_empty(&self) -> bool {
+        self.tx_record.pending.is_none() && self.tx_record.rollback_action_count() == 0
     }
 
     pub(crate) fn reset(&mut self) {
@@ -190,12 +198,16 @@ impl MutableDatatype {
         snap_op
     }
 
-    pub fn set_handler(&mut self, priority: usize, handler: DatatypeHandler) {
-        self.handlers_manager.set_handler(priority, handler);
+    pub fn set_handler(
+        &mut self,
+        priority: usize,
+        handler: DatatypeHandler,
+    ) -> Option<Arc<DatatypeHandler>> {
+        self.handlers_manager.replace_handler(priority, handler)
     }
 
-    pub fn unset_handler(&mut self, priority: usize) -> bool {
-        self.handlers_manager.unset_handler(priority)
+    pub fn unset_handler(&mut self, priority: usize) -> Option<Arc<DatatypeHandler>> {
+        self.handlers_manager.remove_handler(priority)
     }
 
     pub fn get_state(&self) -> DatatypeState {
@@ -206,16 +218,30 @@ impl MutableDatatype {
         let old_state = self.state;
         if old_state != new_state {
             self.state = new_state;
-            self.handlers_manager
-                .notify_state_change(old_state, new_state);
+            // Detach before scheduling callbacks, so a Disabled callback can build
+            // a replacement without observing the old instance in the client table.
             if new_state == DatatypeState::Disabled {
-                self.attr.detach_datatype_if_same_instance();
+                if let Some(target) = self.attr.datatype_target() {
+                    self.effects.push(DatatypeEffect::Detach(target));
+                }
+            }
+            if let Some(notification) = self
+                .handlers_manager
+                .prepare_state_change(old_state, new_state)
+            {
+                self.effects.push(DatatypeEffect::Notify(notification));
             }
         }
     }
 
-    pub fn call_error_handler(&self, err: DatatypeError) {
-        self.handlers_manager.notify_error(err)
+    pub fn reserve_error_notification(&mut self, err: DatatypeError) {
+        if let Some(notification) = self.handlers_manager.prepare_error(err) {
+            self.effects.push(DatatypeEffect::Notify(notification));
+        }
+    }
+
+    pub(crate) fn take_effects(&mut self) -> DatatypeEffectBatch {
+        std::mem::take(&mut self.effects)
     }
 }
 
@@ -236,7 +262,7 @@ mod tests_mutable_datatype {
         let attr = new_attribute!(DataType::Counter);
         let tx_dt = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
         {
-            let mutable = tx_dt.mutable.write();
+            let mutable = tx_dt.core.mutable.write();
             assert_eq!(0, mutable.op_id.cseq);
             assert!(mutable.tx_record.pending.is_none());
             assert_eq!(mutable.tx_record.rollback_action_count(), 0);
@@ -247,7 +273,7 @@ mod tests_mutable_datatype {
         let result1 = tx_dt.execute_local_operation_as_tx(Default::default(), op1);
         assert!(result1.is_ok());
         {
-            let mutable = tx_dt.mutable.write();
+            let mutable = tx_dt.core.mutable.write();
             let counter = mutable.crdt.as_counter().expect("expected a counter crdt");
             assert_eq!(counter.value(), 1);
             assert_eq!(1, mutable.op_id.cseq);
@@ -263,7 +289,7 @@ mod tests_mutable_datatype {
         let result2 = tx_dt.execute_local_operation_as_tx(Default::default(), op2);
         assert!(result2.is_err());
         {
-            let mutable = tx_dt.mutable.write();
+            let mutable = tx_dt.core.mutable.write();
             let counter = mutable.crdt.as_counter().expect("expected a counter crdt");
             assert_eq!(counter.value(), 1);
             assert_eq!(1, mutable.op_id.cseq);

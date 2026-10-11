@@ -7,6 +7,9 @@ of a run is a contract rather than a convenience. This document defines that con
 measurement does and does not tell you, and how to read a result. The cross-repository tooling
 that stores and compares results lives with the Go binding.
 
+For client/datatype scaling, resident memory, idle threads, and shutdown observations,
+see [Runtime Resources](runtime-resources.md) and its separate process-isolated probe.
+
 ## Model
 
 | Term | Meaning |

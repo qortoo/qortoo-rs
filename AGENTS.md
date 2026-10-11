@@ -13,6 +13,13 @@ Shared across all qortoo-* repos (canonical text in [qortoo-harness `AGENTS.md`]
 - All individual plan documents, regardless of the repository they concern, belong in the qortoo-harness repository's gitignored `.local/plans/` directory. Task lists and working notes likewise belong under qortoo-harness's `.local/` — never commit them or propose committing them. Claude Code's project-scoped agent memory (`.claude/agent-memory/`) is likewise personal and gitignored, not shared team knowledge.
 - When work is carried out against a plan document in `.local/plans/`, update that document — status, checklist items, progress log — as part of the same work, not only when separately asked. The plan should reflect what was actually done (including corrections, reverted commits, and scope decisions) closely enough that reading it alone tells the true current state.
 
+## Personal plan lifecycle
+
+- Keep active plan documents in the gitignored `.local/plans/` directory.
+- Before closing a plan, confirm that its checklist and external delivery state match reality. Keep it active if any acceptance condition remains, even when implementation is otherwise complete.
+- Mark a finished plan as complete, record its final outcome, and move it to the gitignored `.local/legacy/` directory. Completed plans are retained as personal history rather than deleted.
+- Do not commit files from either `.local/plans/` or `.local/legacy/`.
+
 ## Project Structure & Module Organization
 - `src/` holds the Rust crate, with modules like `clients/`, `connectivity/`, `datatypes/`, `errors/`, `observability/`, `operations/`, `types/`, and `utils/`, plus shared roots like `constants.rs` and `defaults.rs`.
 - `tests/` contains integration tests (e.g., `tests/datatype_builder.rs`, `tests/datatype_handler.rs`, `tests/metrics.rs`).

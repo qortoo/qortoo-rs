@@ -63,7 +63,7 @@ Returned directly to the caller; never routed.
 | Variant | Code | Trigger |
 |---------|------|---------|
 | `InvalidCollectionName` | 100 | The collection name fails naming validation |
-| `FailedToSubscribeOrCreateDatatype` | 101 | The key is already held by this client, or the requested kind or state does not match what is there |
+| `FailedToSubscribeOrCreateDatatype` | 101 | The datatype key is invalid, or the client already holds that key |
 
 ### Datatype errors (codes 200–)
 
@@ -158,7 +158,10 @@ disabling a datatype while leaving its synchronization scheduled.
 
 **One dispatch point for lifecycle effects.** Both consumer paths apply the lifecycle half of
 an action through the same code, so a rollback or a disable means the same thing regardless of
-which path decided it.
+which path decided it. Recovery and the error-handler snapshot share one mutable-state
+boundary. Detach and handler task scheduling execute after that lock is released, with
+detach before the Disabled notification and state-change dispatch before error dispatch.
+Dispatch order does not guarantee callback completion order across notifications.
 
 **The sync path.** A failed exchange is routed, the event loop takes its scheduling mode from
 the action, the lifecycle effect is applied, and the error is reported to the datatype's
@@ -169,7 +172,8 @@ attempt count; a disabled datatype refuses further sync requests. See
 **The commit path.** Undoing a transaction never travels through the event loop, because the
 thread that committed is still the one that has to undo it. When enqueuing a committed
 transaction fails, the pending transaction is restored so its undo actions still match, the
-undo is applied, and the error is reported to the handler.
+undo is applied before the owning standalone write or explicit transaction returns the enqueue
+error. The handler receives one additional notification.
 
 **Creation-site routing.** An internal error erases its cause into a message. A cause that
 needs a routing other than the internal default must therefore choose its action before the
@@ -179,11 +183,9 @@ erasure, at the point the error is created. Every other cause defers to the sing
 local state, which discards transactions still waiting in the push buffer. No producer routes
 to them until that data-loss policy is decided.
 
-**Limits on the guarantees.** A commit-path failure does not change what the call returns: the
-value was determined when the operation succeeded, so the caller receives success while the
-transaction is undone, and the handler is the only notification. An application that must know
-a write survived its commit has to register one — see
-[`docs/handler-system.md`](handler-system.md). Stack traces attached to internal errors are
+**Limits on the guarantees.** Results of operations inside a transaction callback are
+tentative until the enclosing transaction returns success. A standalone write or explicit
+transaction returning `Ok` confirms local commit, not server acknowledgement. Stack traces attached to internal errors are
 diagnostic only; a platform that cannot produce one omits the trace and preserves the typed
 error, and trace formatting never replaces an application error or escapes as a panic across a
 language boundary.

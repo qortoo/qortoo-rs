@@ -53,11 +53,13 @@ impl DatatypeManager {
         match self.datatypes.entry(arc_key.clone()) {
             Entry::Occupied(entry) => {
                 let existing = entry.get();
+                // This table-locked method checks membership and type only. State effects
+                // detach after releasing mutable state; table operations remain independent
+                // of per-datatype mutable locks.
                 Err(with_err_out!(
                     ClientError::FailedToSubscribeOrCreateDatatype(format!(
-                        "{type:?} '{key}' was demanded as {state:?}, but the client already has {:?} '{key}' as {:?}",
-                        existing.get_type(),
-                        existing.get_state()
+                        "{type:?} '{key}' was demanded as {state:?}, but the client already manages '{key}' as {:?}",
+                        existing.get_type()
                     ))
                 ))
             }

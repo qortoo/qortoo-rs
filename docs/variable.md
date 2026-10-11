@@ -5,7 +5,7 @@ write carries a timestamp, and whichever timestamp is greatest is what every rep
 holding. It is the first Qortoo datatype whose payload is application-defined data rather than
 a fixed numeric state, so it also establishes the SDK's language-neutral value contract —
 exactly one UTF-8 JSON value, carried byte-for-byte. This document owns that contract and the
-LWW rules built on it. Everything a variable shares with other datatypes — transaction scope,
+LWW rules built on it. Everything a variable shares with other datatypes — local transactions,
 the push buffer, synchronization, handlers — is defined in [`docs/architecture.md`](architecture.md)
 and [`docs/transaction-and-rollback.md`](transaction-and-rollback.md).
 
@@ -119,7 +119,7 @@ return bytes without going through Rust's serializer at all, preserving the call
 formatting exactly.
 
 **A transaction of several sets.** `variable.transaction("tag", |v| { v.set(&a)?; v.set(&b)?;
-Ok(()) })` applies both sets as one scope. If the closure returns an error, both are undone and
+Ok(()) })` applies both sets as one local transaction. If the closure returns an error, both are undone and
 the variable is exactly as it was before the transaction opened — including its timestamp.
 
 **Two clients converging.** Client A sets a value and synchronizes; client B, sharing the same

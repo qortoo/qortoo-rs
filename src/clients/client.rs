@@ -199,6 +199,8 @@ impl Client {
 
 #[cfg(test)]
 mod tests_client {
+    use std::{sync::mpsc, time::Duration};
+
     use tracing::instrument;
 
     use crate::{
@@ -220,6 +222,93 @@ mod tests_client {
         let client = Client::builder("collection1", "alias1").build().unwrap();
         assert_eq!(client.get_collection(), "collection1");
         assert_eq!(client.get_alias(), "alias1");
+    }
+
+    #[test]
+    fn can_release_mutable_state_before_waiting_for_registry_detach() {
+        const TIMEOUT: Duration = Duration::from_secs(5);
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .with_connectivity(connectivity)
+            .build()
+            .unwrap();
+        let manager = &client.datatype_manager;
+        let (notify_tx, notify_rx) = mpsc::channel();
+        let callback_manager = std::sync::Arc::downgrade(manager);
+        let handler = crate::DatatypeHandler::new().set_on_state_change(move |ds, _, new| {
+            let manager = callback_manager.upgrade().unwrap();
+            notify_tx
+                .send((
+                    ds.get_state(),
+                    new,
+                    manager.read().get_datatype("missing").is_none(),
+                ))
+                .unwrap();
+        });
+        let counter = client
+            .subscribe_datatype("missing")
+            .with_handler(0, handler)
+            .build_counter()
+            .unwrap();
+        let core = counter.get_core().core.clone();
+        let worker_counter = counter.clone();
+        let table_guard = manager.write();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            finished_tx.send(worker_counter.sync()).unwrap();
+        });
+        // Recovery releases mutable state while the client table blocks detach.
+        awaitility::at_most(TIMEOUT).until(|| {
+            core.mutable
+                .try_write()
+                .is_some_and(|state| state.get_state() == DatatypeState::Disabled)
+        });
+        assert!(finished_rx.try_recv().is_err());
+        assert!(notify_rx.try_recv().is_err());
+        drop(table_guard);
+        assert!(finished_rx.recv_timeout(TIMEOUT).unwrap().is_err());
+        worker.join().unwrap();
+        assert_eq!(
+            notify_rx.recv_timeout(TIMEOUT).unwrap(),
+            (DatatypeState::Disabled, DatatypeState::Disabled, true)
+        );
+        assert!(manager.read().get_datatype("missing").is_none());
+    }
+
+    #[test]
+    fn can_reject_a_duplicate_build_without_reading_mutable_state() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .with_connectivity(connectivity)
+            .build()
+            .unwrap();
+        let key = get_test_func_name!();
+        let counter = client.create_datatype(&key).build_counter().unwrap();
+        let mutable_guard = counter.get_core().core.mutable.write();
+        let (result_tx, result_rx) = mpsc::channel();
+
+        std::thread::scope(|scope| {
+            let duplicate_key = key.clone();
+            let worker = scope.spawn(|| {
+                let result = client
+                    .create_datatype(duplicate_key)
+                    .build_counter()
+                    .map(|_| ());
+                result_tx.send(result).unwrap();
+            });
+
+            let duplicate = result_rx.recv_timeout(Duration::from_secs(5));
+            drop(mutable_guard);
+            worker.join().unwrap();
+
+            assert!(
+                duplicate
+                    .expect("duplicate detection must not wait for mutable datatype state")
+                    .is_err()
+            );
+        });
     }
 
     #[test]

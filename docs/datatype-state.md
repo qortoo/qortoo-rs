@@ -50,8 +50,10 @@ creating, or unsubscribing — or while it holds transactions the backend has no
 A datatype that is settled with nothing outstanding is not pushed.
 
 **Disabling detaches.** A datatype that reaches `Disabled` removes itself from its client's
-table, and only if the table still holds that same instance. The key becomes available for a
-new build at that point, and the new datatype is a distinct instance rather than a revival.
+table, and only if the table still holds that same instance. The state change reserves the
+detach effect under mutable state; the outer operation executes it after releasing that
+lock and before scheduling the Disabled notification. The key becomes available for a new
+build at detach, and the new datatype is a distinct instance rather than a revival.
 
 **Unsubscribing is not immediate.** Asking to unsubscribe records the intent and leaves the
 datatype in the client's table. It becomes disabled, and detaches, only once the backend

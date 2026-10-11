@@ -1,15 +1,21 @@
-use std::{collections::BTreeMap, sync::Arc};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+    collections::BTreeMap,
+    sync::Arc,
+    thread::{self, ThreadId},
+};
 
-use parking_lot::RwLock;
+use parking_lot::{MutexGuard, RwLock};
 use tracing::{Span, info_span, instrument};
 
 use crate::{
     DataType, DatatypeHandler, DatatypeState, IntoString,
     datatypes::{
         common::{Attribute, ReturnType, internal_datatype_instrument},
+        core::DatatypeCore,
         datatype::Datatype,
         event_loop::EventLoop,
-        mutable::MutableDatatype,
         wired::WiredDatatype,
     },
     errors::{
@@ -18,8 +24,13 @@ use crate::{
     },
     observability::trace::add_span_event,
     operations::Operation,
-    utils::{defer_guard::DeferGuard, no_guard_mutex::NoGuardMutex},
 };
+
+const ERR_SYNC_DISABLED: &str = "sync is not allowed in Disabled state";
+const ERR_SYNC_ON_TRANSACTION_OWNER: &str =
+    "sync is not allowed on the thread that owns the active local transaction";
+const ERR_REENTRANT_TRANSACTION: &str = "cannot start another local transaction on the thread that owns the active transaction; use the callback handle for writes";
+const ERR_NESTED_TRANSACTION: &str = "nested transactions on the same datatype are not allowed";
 
 #[derive(Debug, Default)]
 pub struct TransactionContext {
@@ -66,72 +77,116 @@ mod tests_transaction_context {
 }
 
 #[derive(derive_more::Display)]
-pub enum BeginTransactionResult<'a> {
-    #[display("BeginTx")]
-    BeginTx(DeferGuard<'a>),
-    #[display("SameCtx")]
-    SameCtx,
-    #[display("OtherCtx")]
-    OtherCtx,
+enum TransactionAdmission<'a> {
+    #[display("Started")]
+    Started(TransactionGuard<'a>),
+    #[display("JoinedExisting")]
+    JoinedExisting,
+}
+
+/// Owns one local transaction and the mutex guard that admits it.
+/// Joined operations and waiting callers never own this transaction's cleanup.
+struct TransactionGuard<'a> {
+    datatype: &'a TransactionalDatatype,
+    context: Arc<TransactionContext>,
+    mutex_guard: Option<MutexGuard<'a, ()>>,
+    finished: bool,
+}
+
+impl TransactionGuard<'_> {
+    fn commit(&mut self) -> Result<(), DatatypeError> {
+        let result = self
+            .datatype
+            .end_transaction(self.context.tag.clone(), true);
+        self.finished = true;
+        result
+    }
+}
+
+impl Drop for TransactionGuard<'_> {
+    fn drop(&mut self) {
+        if !self.finished {
+            let _ = self
+                .datatype
+                .end_transaction(self.context.tag.clone(), false);
+        }
+        // Cleanup clears the context before fair handoff. If cleanup unwinds,
+        // the remaining MutexGuard field still releases the mutex.
+        if let Some(guard) = self.mutex_guard.take() {
+            MutexGuard::unlock_fair(guard);
+        }
+    }
+}
+
+/// Associates the active context with the thread executing its local transaction.
+struct ActiveTransactionContext {
+    context: Arc<TransactionContext>,
+    owner_thread: ThreadId,
 }
 
 pub struct TransactionalDatatype {
-    pub attr: Arc<Attribute>,
-    pub mutable: Arc<RwLock<MutableDatatype>>,
-    tx_ctx: RwLock<Option<Arc<TransactionContext>>>,
-    op_mutex: NoGuardMutex,
-    tx_mutex: NoGuardMutex,
+    pub(crate) core: Arc<DatatypeCore>,
+    active_tx_ctx: RwLock<Option<ActiveTransactionContext>>,
+    #[cfg(test)]
+    tx_waiters: AtomicUsize,
     event_loop: Arc<EventLoop>,
 }
 
 impl Datatype for TransactionalDatatype {
     fn get_key(&self) -> &str {
-        self.attr.key.as_ref()
+        self.core.attr.key.as_ref()
     }
 
     fn get_type(&self) -> DataType {
-        self.attr.r#type
+        self.core.attr.r#type
     }
 
     fn get_state(&self) -> DatatypeState {
-        self.mutable.read().get_state()
+        self.core.mutable.read().get_state()
     }
 
     fn get_server_version(&self) -> u64 {
-        self.mutable.read().checkpoint.sseq
+        self.core.mutable.read().checkpoint.sseq
     }
 
     fn get_client_version(&self) -> u64 {
-        self.mutable.read().op_id.cseq
+        self.core.mutable.read().op_id.cseq
     }
 
     fn get_synced_client_version(&self) -> u64 {
-        self.mutable.read().checkpoint.cseq
+        self.core.mutable.read().checkpoint.cseq
     }
 
     fn sync(&self) -> Result<(), DatatypeError> {
-        self.check_disabled("sync")?;
+        self.check_sync_allowed()?;
         self.event_loop.send_push_transaction_with_guarantee()
     }
 
     fn unsubscribe(&self) -> Result<(), DatatypeError> {
-        self.check_subscribed("unsubscribe")?;
-        self.mutable.write().set_state(DatatypeState::Unsubscribing);
+        let (result, mut effects) = self.core.prepare_state_effects(|mutable| {
+            self.check_subscribed_state(mutable.get_state(), "unsubscribe")?;
+            mutable.set_state(DatatypeState::Unsubscribing);
+            Ok::<(), DatatypeError>(())
+        });
+        result?;
+        effects.dispatch();
         self.event_loop.send_push_transaction_with_best_effort();
         Ok(())
     }
 
     fn set_handler(&self, id: usize, handler: DatatypeHandler) {
-        self.mutable.write().set_handler(id, handler)
+        let replaced = self.core.mutable.write().set_handler(id, handler);
+        drop(replaced);
     }
 
     fn unset_handler(&self, id: usize) -> bool {
-        self.mutable.write().unset_handler(id)
+        let removed = self.core.mutable.write().unset_handler(id);
+        removed.is_some()
     }
 
     #[cfg(test)]
     fn get_attr(&self) -> std::sync::Arc<Attribute> {
-        self.attr.clone()
+        self.core.attr.clone()
     }
 }
 
@@ -143,16 +198,11 @@ impl TransactionalDatatype {
     ) -> Arc<Self> {
         let event_loop = EventLoop::new_arc(attr.client_common.connectivity.clone());
         let arc_td = Arc::new(Self {
-            mutable: Arc::new(RwLock::new(MutableDatatype::new(
-                attr.clone(),
-                state,
-                handlers,
-            ))),
-            attr: attr.clone(),
+            core: DatatypeCore::new_arc(attr.clone(), state, handlers),
             event_loop: event_loop.clone(),
-            tx_ctx: Default::default(),
-            op_mutex: Default::default(),
-            tx_mutex: Default::default(),
+            active_tx_ctx: Default::default(),
+            #[cfg(test)]
+            tx_waiters: Default::default(),
         });
 
         attr.set_transactional(Arc::downgrade(&arc_td));
@@ -164,7 +214,7 @@ impl TransactionalDatatype {
     }
 
     fn get_wired_datatype(&self) -> Arc<WiredDatatype> {
-        Arc::new(WiredDatatype::new(self.mutable.clone(), self.attr.clone()))
+        Arc::new(WiredDatatype::new(self.core.clone()))
     }
 
     /// Checks whether this datatype is writable based on its readonly flag and state.
@@ -179,29 +229,37 @@ impl TransactionalDatatype {
         if !state.is_read_writable() {
             return Err(with_err_out!(DatatypeError::NotWritable(format!(
                 "Datatype '{}' cannot be modified for {:?} state",
-                self.attr.key, state
+                self.core.attr.key, state
             ))));
         }
 
-        if self.attr.is_readonly {
+        if self.core.attr.is_readonly {
             return Err(with_err_out!(DatatypeError::ReadonlyViolation));
         }
 
         Ok(())
     }
 
-    fn check_disabled(&self, op: &str) -> Result<(), DatatypeError> {
-        if self.mutable.read().get_state() == DatatypeState::Disabled {
-            return Err(DatatypeError::NotWritable(format!(
-                "{} is not allowed in Disabled state",
-                op
-            )));
+    fn check_sync_allowed(&self) -> Result<(), DatatypeError> {
+        if self.core.mutable.read().get_state() == DatatypeState::Disabled {
+            return Err(DatatypeError::NotWritable(ERR_SYNC_DISABLED.to_owned()));
+        }
+        // Response application uses the local transaction gate. Waiting for a
+        // synchronous response from inside that transaction would form a cycle.
+        if self
+            .active_tx_ctx
+            .read()
+            .as_ref()
+            .is_some_and(|active| active.owner_thread == thread::current().id())
+        {
+            return Err(DatatypeError::Disallowed(
+                ERR_SYNC_ON_TRANSACTION_OWNER.to_owned(),
+            ));
         }
         Ok(())
     }
 
-    fn check_subscribed(&self, op: &str) -> Result<(), DatatypeError> {
-        let state = self.mutable.read().get_state();
+    fn check_subscribed_state(&self, state: DatatypeState, op: &str) -> Result<(), DatatypeError> {
         if state != DatatypeState::Subscribed {
             return Err(with_err_out!(DatatypeError::NotWritable(format!(
                 "{} is only allowed in Subscribed state, current state is {:?}",
@@ -217,104 +275,103 @@ impl TransactionalDatatype {
         op: Operation,
     ) -> Result<ReturnType, DatatypeError> {
         self.check_writable()?;
-        let mut _defer_guard = None;
-        let mut retries = 0;
-        loop {
-            match self.begin_transaction(tx_ctx.clone()) {
-                BeginTransactionResult::BeginTx(dg) => {
-                    _defer_guard = Some(dg);
-                    break;
-                }
-                BeginTransactionResult::SameCtx => {
-                    // After the first call inside do_transaction, subsequent execute_local_operation_as_tx calls in tx_func run as SameCtx.
-                    // If execute_local_operation_as_tx is invoked from another thread, the tx_mutex can ensure exclusive execution.
-                    _defer_guard = Some(DeferGuard::new());
-                    break;
-                }
-                BeginTransactionResult::OtherCtx => {
-                    // For OtherCtx, begin_transaction is repeatedly attempted until it transitions to BeginTx.
-                    // If an operation is already running, the tx_mutex is locked, so we wait until we can acquire the tx_mutex lock.
-                    retries += 1;
-                    add_span_event!("OtherCtx", "retries" => retries);
-                    self.wait_for_mutex();
-                }
+        self.with_local_transaction(self.begin_transaction(tx_ctx)?, || {
+            // Release the mutable write lock before the transaction guard performs cleanup.
+            self.core.mutable.write().execute_local_operation(op)
+        })
+    }
+
+    /// Runs local work and explicitly commits an owned transaction before returning success.
+    /// Joined work leaves commit and rollback to its enclosing transaction.
+    fn with_local_transaction<R>(
+        &self,
+        admission: TransactionAdmission<'_>,
+        action: impl FnOnce() -> Result<R, DatatypeError>,
+    ) -> Result<R, DatatypeError> {
+        match admission {
+            TransactionAdmission::Started(mut guard) => {
+                let result = action()?;
+                guard.commit()?;
+                Ok(result)
             }
+            TransactionAdmission::JoinedExisting => action(),
         }
-        let defer_guard = _defer_guard.as_mut().unwrap();
-        self.op_mutex.lock();
-        defer_guard.add_defer_func(move |_committed| {
-            self.op_mutex.unlock();
-        });
-        let mut mutable = self.mutable.write();
-        let ret = mutable.execute_local_operation(op)?;
-        defer_guard.commit();
-        Ok(ret)
     }
 
     #[instrument(skip_all)]
-    fn end_transaction(&self, tag: Option<String>, committed: bool) {
-        let error = {
-            let mut mutable = self.mutable.write();
+    fn end_transaction(&self, tag: Option<String>, committed: bool) -> Result<(), DatatypeError> {
+        let (result, mut effects) = self.core.prepare_state_effects(|mutable| {
             match mutable.end_transaction(tag, committed) {
-                Ok(true) => {
-                    self.event_loop.send_push_transaction_with_best_effort();
-                    None
-                }
-                Ok(false) => None,
+                Ok(push) => Ok(push),
                 Err(dewa) => {
-                    // This path runs in a defer guard, after the API call has returned, and
-                    // does not go through the event loop: only RollbackTransaction is expected
-                    // here, and the on_error handler is the only way to notify the user.
+                    // Commit recovery and its handler snapshot share the same mutable boundary.
                     debug_assert!(matches!(dewa.recovery, RecoveryAction::RollbackTransaction));
                     mutable.apply_action(dewa.recovery);
-                    Some(dewa.error)
+                    mutable.reserve_error_notification(dewa.error.clone());
+                    Err(dewa.error)
                 }
             }
-        };
-        if let Some(err) = error {
-            // Notify after releasing the write lock; handlers may re-enter the datatype.
-            self.mutable.read().call_error_handler(err);
+        });
+        self.active_tx_ctx.write().take();
+        effects.dispatch();
+        if matches!(result, Ok(true)) {
+            self.event_loop.send_push_transaction_with_best_effort();
         }
-        self.tx_ctx.write().take();
-        self.tx_mutex.unlock();
+        result.map(|_| ())
     }
 
-    fn begin_transaction(&self, tx_ctx: Arc<TransactionContext>) -> BeginTransactionResult<'_> {
-        let mut self_tx_ctx = self.tx_ctx.write();
-        // self.tx_ctx defaults to None when no transaction is active.
-        // Once a transaction begins, self.tx_ctx is set to the current transaction context.
-        // After do_transaction gets BeginTx by begin_transaction, this None condition branch won't execute again.
-        if self_tx_ctx.is_none() {
-            let curr_tx_ctx = {
-                if tx_ctx.has_tag() {
-                    tx_ctx.clone()
-                } else {
-                    // If an operation is executed without a transaction, tx_ctx does not have a tag.
-                    // In this case, a new TransactionContext is created,
-                    // so BeginTransactionResult::SameCtx cannot be returned for the execution of the concurrent operations.
-                    Arc::new(TransactionContext::default())
+    fn begin_transaction(
+        &self,
+        tx_ctx: Arc<TransactionContext>,
+    ) -> Result<TransactionAdmission<'_>, DatatypeError> {
+        // Only the callback context can join. Check ownership before waiting so
+        // a captured standalone handle cannot wait for its own transaction to finish.
+        {
+            let active = self.active_tx_ctx.read();
+            if let Some(active_context) = active.as_ref() {
+                if tx_ctx.has_tag() && active_context.context == tx_ctx {
+                    let tag = tx_ctx.tag.clone().unwrap_or("NONE".to_owned());
+                    drop(active);
+                    add_span_event!("JoinedLocalTransaction", "tag" => tag);
+                    return Ok(TransactionAdmission::JoinedExisting);
                 }
-            };
-            *self_tx_ctx = Some(curr_tx_ctx.clone());
-            let tag = curr_tx_ctx.tag.clone().unwrap_or("NONE".to_owned());
-
-            let mut defer_guard = DeferGuard::new();
-            defer_guard.add_defer_func(move |committed| {
-                self.end_transaction(curr_tx_ctx.tag.to_owned(), committed);
-            });
-            add_span_event!("BeginTx", "tag" => tag);
-            BeginTransactionResult::BeginTx(defer_guard)
-        } else if self_tx_ctx.as_ref().unwrap() == &tx_ctx {
-            // When execute_local_op_as_tx is called within tx_func of do_transaction, SameCtx should be returned.
-            // This means self.tx_ctx is not replaced by end_transaction.
-            let tag = tx_ctx.tag.clone().unwrap_or("NONE".to_owned());
-            add_span_event!("SameCtx", "tag" => tag);
-            BeginTransactionResult::SameCtx
-        } else {
-            // When either execute_local_op_as_tx or do_transaction is called from another thread while do_transaction is running, OtherTx is returned.
-            // OtherTx causes begin_transaction to be repeated in a loop until it transitions to BeginTx.
-            BeginTransactionResult::OtherCtx
+                if active_context.owner_thread == thread::current().id() {
+                    return Err(DatatypeError::Disallowed(
+                        ERR_REENTRANT_TRANSACTION.to_owned(),
+                    ));
+                }
+            }
         }
+
+        // The current local transaction keeps this mutex until cleanup is complete.
+        // A waiter that receives the guard becomes the next owner directly,
+        // rather than releasing it and racing through begin_transaction again.
+        #[cfg(test)]
+        self.tx_waiters.fetch_add(1, Ordering::SeqCst);
+        let mutex_guard = self.core.tx_mutex.lock();
+        #[cfg(test)]
+        self.tx_waiters.fetch_sub(1, Ordering::SeqCst);
+
+        let current = if tx_ctx.has_tag() {
+            tx_ctx
+        } else {
+            Arc::new(TransactionContext::default())
+        };
+        let tag = current.tag.clone().unwrap_or("NONE".to_owned());
+        let mut active = self.active_tx_ctx.write();
+        debug_assert!(active.is_none());
+        *active = Some(ActiveTransactionContext {
+            context: current.clone(),
+            owner_thread: thread::current().id(),
+        });
+        drop(active);
+        add_span_event!("StartedLocalTransaction", "tag" => tag);
+        Ok(TransactionAdmission::Started(TransactionGuard {
+            datatype: self,
+            context: current,
+            mutex_guard: Some(mutex_guard),
+            finished: false,
+        }))
     }
 
     pub fn do_transaction<F>(
@@ -325,40 +382,14 @@ impl TransactionalDatatype {
     where
         F: FnOnce() -> Result<(), DatatypeError>,
     {
-        let mut retries = 0;
-        loop {
-            match self.begin_transaction(tx_ctx.clone()) {
-                BeginTransactionResult::BeginTx(mut dg) => {
-                    self.tx_mutex.lock();
-                    let tx_func_span = info_span!("tx_func");
-                    return tx_func_span.in_scope(|| tx_func().inspect(|_x| dg.commit()));
-                }
-                BeginTransactionResult::SameCtx => {
-                    // do_transaction should not / cannot be called with the same tx_ctx from different threads
-                    unreachable!(
-                        "do_transaction should not be called concurrently with same context"
-                    );
-                }
-                BeginTransactionResult::OtherCtx => {
-                    retries += 1;
-                    add_span_event!("OtherCtx", "retries" => retries);
-                    // This can occur when the current transaction cannot begin due to any other concurrent operation or transaction.
-                    self.wait_for_tx_mutex();
-                }
-            }
+        let admission = self.begin_transaction(tx_ctx)?;
+        if matches!(admission, TransactionAdmission::JoinedExisting) {
+            return Err(DatatypeError::Disallowed(ERR_NESTED_TRANSACTION.to_owned()));
         }
-    }
-
-    #[inline]
-    fn wait_for_mutex(&self) {
-        self.op_mutex.lock();
-        self.op_mutex.unlock();
-    }
-
-    #[inline]
-    fn wait_for_tx_mutex(&self) {
-        self.tx_mutex.lock();
-        self.tx_mutex.unlock();
+        self.with_local_transaction(admission, || {
+            let tx_func_span = info_span!("tx_func");
+            tx_func_span.in_scope(tx_func)
+        })
     }
 
     pub fn push_transaction(&self) {
@@ -376,26 +407,727 @@ impl Drop for TransactionalDatatype {
 
 #[cfg(test)]
 mod tests_transactional {
-    use std::sync::Arc;
+    use std::{
+        panic::{AssertUnwindSafe, catch_unwind},
+        sync::{Arc, Barrier, atomic::Ordering, mpsc},
+        thread,
+        time::Duration,
+    };
 
     use parking_lot::Mutex;
+    use rstest::rstest;
     use tracing::{Span, info, info_span, instrument};
     use tracing_opentelemetry::OpenTelemetrySpanExt;
 
     use crate::{
-        Client, DataType, DatatypeState,
+        Client, DataType, Datatype, DatatypeError, DatatypeState, LocalConnectivity,
+        clients::common::ClientCommon,
         datatypes::{
-            common::new_attribute,
-            transactional::{TransactionContext, TransactionalDatatype},
+            common::{Attribute, ReturnType, new_attribute},
+            option::DatatypeOption,
+            transactional::{TransactionAdmission, TransactionContext, TransactionalDatatype},
         },
-        operations::Operation,
+        operations::{MemoryMeasurable, Operation, transaction::Transaction},
         utils::test_utils::{get_test_collection_name, get_test_func_name},
     };
+
+    // Tests inspecting unacknowledged batches must not race automatic synchronization.
+    fn manual_counter_attribute() -> Arc<Attribute> {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let common = ClientCommon::new_arc(
+            get_test_collection_name!().into(),
+            get_test_func_name!().into(),
+            connectivity,
+        );
+        Arc::new(Attribute::new(
+            get_test_func_name!().into(),
+            DataType::Counter,
+            common,
+            Default::default(),
+            false,
+        ))
+    }
+
+    const WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+    #[test]
+    fn can_reject_sync_on_the_local_transaction_owner_thread() {
+        let attr = new_attribute!(DataType::Counter);
+        let datatype = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
+        let TransactionAdmission::Started(_transaction) = datatype
+            .begin_transaction(Arc::new(TransactionContext::new("active")))
+            .unwrap()
+        else {
+            panic!("a new context must start a local transaction");
+        };
+
+        assert!(matches!(
+            datatype.sync(),
+            Err(DatatypeError::Disallowed(message))
+                if message == "sync is not allowed on the thread that owns the active local transaction"
+        ));
+    }
+
+    #[test]
+    fn can_reject_sync_from_both_handles_inside_a_transaction_callback() {
+        let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .build()
+            .unwrap();
+        let counter = client.create_datatype("counter").build_counter().unwrap();
+        let original = counter.clone();
+        counter
+            .transaction("owner", move |transaction_handle| {
+                assert!(matches!(
+                    transaction_handle.sync(),
+                    Err(DatatypeError::Disallowed(_))
+                ));
+                assert!(matches!(original.sync(), Err(DatatypeError::Disallowed(_))));
+                transaction_handle.increase()?;
+                Ok(())
+            })
+            .unwrap();
+        counter.sync().unwrap();
+        assert_eq!(counter.get_value(), 1);
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum ReentrantCall {
+        CallbackTransaction,
+        OriginalTransaction,
+        OriginalWrite,
+    }
+
+    #[rstest]
+    #[case(ReentrantCall::CallbackTransaction, false)]
+    #[case(ReentrantCall::OriginalTransaction, false)]
+    #[case(ReentrantCall::OriginalWrite, false)]
+    #[case(ReentrantCall::CallbackTransaction, true)]
+    #[case(ReentrantCall::OriginalTransaction, true)]
+    #[case(ReentrantCall::OriginalWrite, true)]
+    fn can_reject_reentrant_calls_without_losing_transaction_ownership(
+        #[case] call: ReentrantCall,
+        #[case] propagate: bool,
+    ) {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .with_connectivity(connectivity)
+            .build()
+            .unwrap();
+        let counter = client.create_datatype("counter").build_counter().unwrap();
+        let original = counter.clone();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            let captured = original.clone();
+            let result = original.transaction("outer", move |callback| {
+                callback.increase()?;
+                let error = match call {
+                    ReentrantCall::CallbackTransaction => callback
+                        .transaction("outer", |_| panic!("nested callback must not execute"))
+                        .unwrap_err(),
+                    ReentrantCall::OriginalTransaction => captured
+                        .transaction("outer", |_| panic!("nested callback must not execute"))
+                        .unwrap_err(),
+                    ReentrantCall::OriginalWrite => captured.increase().unwrap_err(),
+                };
+                assert!(matches!(error, DatatypeError::Disallowed(_)));
+                assert_eq!(callback.get_value(), 1);
+                assert_eq!(captured.get_value(), 1);
+                assert_eq!(captured.get_client_version(), 1);
+                if propagate {
+                    return Err(error.into());
+                }
+                callback.increase_by(2)?;
+                Ok(())
+            });
+            finished_tx.send(result).unwrap();
+        });
+        let result = finished_rx.recv_timeout(WAIT_TIMEOUT).unwrap();
+        worker.join().unwrap();
+        if propagate {
+            assert!(matches!(result, Err(DatatypeError::TransactionFailed(_))));
+        } else {
+            result.unwrap();
+        }
+        assert_eq!(counter.get_value(), if propagate { 0 } else { 3 });
+        assert_eq!(counter.get_client_version(), u64::from(!propagate));
+        counter.increase().unwrap();
+        assert_eq!(counter.get_value(), if propagate { 1 } else { 4 });
+        assert_eq!(counter.get_client_version(), if propagate { 1 } else { 2 });
+    }
+
+    #[test]
+    fn can_reject_nested_entry_with_the_active_context() {
+        let datatype = TransactionalDatatype::new_arc(
+            manual_counter_attribute(),
+            Default::default(),
+            Default::default(),
+        );
+        let context = Arc::new(TransactionContext::new("outer"));
+        datatype
+            .do_transaction(context.clone(), || {
+                assert!(matches!(
+                    datatype.do_transaction(context.clone(), || panic!("must not execute")),
+                    Err(DatatypeError::Disallowed(_))
+                ));
+                datatype.execute_local_operation_as_tx(
+                    context.clone(),
+                    Operation::new_counter_increase(1),
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(datatype.core.mutable.read().op_id.cseq, 1);
+        assert!(datatype.active_tx_ctx.read().is_none());
+    }
+
+    #[test]
+    fn can_read_uncommitted_values_and_join_callback_writes_from_another_thread() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .with_connectivity(connectivity)
+            .build()
+            .unwrap();
+        let counter = client.create_datatype("counter").build_counter().unwrap();
+        let reader = counter.clone();
+        let result = counter.transaction("shared", move |callback| {
+            callback.increase_by(10)?;
+            let (finished_tx, finished_rx) = mpsc::channel();
+            let worker = thread::spawn(move || {
+                assert_eq!(reader.get_value(), 10);
+                assert_eq!(reader.get_client_version(), 1);
+                assert_eq!(callback.increase().unwrap(), 11);
+                finished_tx.send(()).unwrap();
+            });
+            finished_rx.recv_timeout(WAIT_TIMEOUT).unwrap();
+            worker.join().unwrap();
+            Err("rollback joined writes".into())
+        });
+        assert!(matches!(result, Err(DatatypeError::TransactionFailed(_))));
+        assert_eq!(counter.get_value(), 0);
+        assert_eq!(counter.get_client_version(), 0);
+        counter.increase().unwrap();
+        assert_eq!(counter.get_value(), 1);
+    }
+
+    #[test]
+    fn can_complete_sync_from_another_thread_after_local_rollback() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let collection = get_test_collection_name!();
+        let client = Client::builder(collection.clone(), get_test_func_name!())
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let counter = client.create_datatype("counter").build_counter().unwrap();
+        counter.sync().unwrap();
+        let (response_tx, response_rx) = crossbeam_channel::unbounded();
+        connectivity
+            .get_wired_interceptor(&format!("{collection}/counter"), &client.get_cuid())
+            .unwrap()
+            .set_after_pull(move |_| {
+                response_tx.send(()).unwrap();
+                Ok(())
+            });
+        let (finished_tx, finished_rx) = crossbeam_channel::unbounded();
+        let callback_finished_rx = finished_rx.clone();
+        let sync_counter = counter.clone();
+        let result = counter.transaction("rollback", move |transaction_handle| {
+            transaction_handle.increase_by(10)?;
+            thread::spawn(move || {
+                finished_tx.send(sync_counter.sync()).unwrap();
+            });
+            response_rx.recv_timeout(WAIT_TIMEOUT).unwrap();
+            // The network exchange finished while this callback still owns the gate.
+            assert!(callback_finished_rx.try_recv().is_err());
+            Err("rollback".into())
+        });
+        assert!(matches!(result, Err(DatatypeError::TransactionFailed(_))));
+        finished_rx.recv_timeout(WAIT_TIMEOUT).unwrap().unwrap();
+        assert_eq!(counter.get_value(), 0);
+    }
+
+    #[rstest]
+    #[case(false)]
+    #[case(true)]
+    fn can_hold_standalone_transaction_until_commit_before_admitting_waiters(
+        #[case] explicit_waiter: bool,
+    ) {
+        let attr = manual_counter_attribute();
+        let datatype = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
+        let context = Arc::new(TransactionContext::default());
+        let TransactionAdmission::Started(mut owner) =
+            datatype.begin_transaction(context.clone()).unwrap()
+        else {
+            panic!("a standalone write must own a new local transaction");
+        };
+
+        // Pause the standalone path after its local transaction begins. Its mutex guard and
+        // active context must already exclude competing local transactions.
+        assert!(datatype.core.tx_mutex.try_lock().is_none());
+        assert!(datatype.active_tx_ctx.read().is_some());
+
+        let (waiting_tx, waiting_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let waiting_datatype = datatype.clone();
+        let waiter = thread::spawn(move || {
+            let context = Arc::new(if explicit_waiter {
+                TransactionContext::new("waiting")
+            } else {
+                TransactionContext::default()
+            });
+            waiting_tx.send(()).unwrap();
+            if explicit_waiter {
+                waiting_datatype
+                    .do_transaction(context.clone(), || {
+                        waiting_datatype.execute_local_operation_as_tx(
+                            context,
+                            Operation::new_counter_increase(1),
+                        )?;
+                        Ok(())
+                    })
+                    .unwrap();
+            } else {
+                waiting_datatype
+                    .execute_local_operation_as_tx(context, Operation::new_counter_increase(1))
+                    .unwrap();
+            }
+            finished_tx.send(()).unwrap();
+        });
+        waiting_rx.recv_timeout(WAIT_TIMEOUT).unwrap();
+        awaitility::at_most(WAIT_TIMEOUT).until(|| datatype.tx_waiters.load(Ordering::SeqCst) == 1);
+        assert!(finished_rx.try_recv().is_err());
+
+        datatype
+            .core
+            .mutable
+            .write()
+            .execute_local_operation(Operation::new_counter_increase(10))
+            .unwrap();
+        owner.commit().unwrap();
+        drop(owner);
+
+        finished_rx.recv_timeout(WAIT_TIMEOUT).unwrap();
+        waiter.join().unwrap();
+        let mutable = datatype.core.mutable.read();
+        assert_eq!(mutable.crdt.as_counter().unwrap().value(), 11);
+        assert_eq!(mutable.op_id.cseq, 2);
+        let values: Vec<_> = mutable
+            .push_buffer
+            .iter()
+            .map(|tx| tx.operations.len())
+            .collect();
+        assert_eq!(values, vec![1, 1]);
+        assert!(datatype.active_tx_ctx.read().is_none());
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum TransactionOutcome {
+        Commit,
+        CallbackError,
+        Panic,
+        EnqueueError,
+    }
+
+    #[rstest]
+    #[case(TransactionOutcome::Commit)]
+    #[case(TransactionOutcome::CallbackError)]
+    #[case(TransactionOutcome::Panic)]
+    #[case(TransactionOutcome::EnqueueError)]
+    fn can_serialize_concurrent_operations_in_one_transaction(#[case] outcome: TransactionOutcome) {
+        const WORKERS: usize = 4;
+        const OPERATIONS_PER_WORKER: usize = 16;
+        const TOTAL_OPERATIONS: usize = WORKERS * OPERATIONS_PER_WORKER;
+        let attr = manual_counter_attribute();
+        let datatype = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
+        let context = Arc::new(TransactionContext::new("shared"));
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            datatype.do_transaction(context.clone(), || {
+                let barrier = Arc::new(Barrier::new(WORKERS));
+                let mut values = thread::scope(|scope| {
+                    let workers: Vec<_> = (0..WORKERS)
+                        .map(|_| {
+                            let datatype = &datatype;
+                            let context = context.clone();
+                            let barrier = barrier.clone();
+                            scope.spawn(move || {
+                                barrier.wait();
+                                (0..OPERATIONS_PER_WORKER)
+                                    .map(|_| {
+                                        let ReturnType::Counter(value) = datatype
+                                            .execute_local_operation_as_tx(
+                                                context.clone(),
+                                                Operation::new_counter_increase(1),
+                                            )
+                                            .unwrap()
+                                        else {
+                                            panic!("expected a counter result");
+                                        };
+                                        value
+                                    })
+                                    .collect::<Vec<_>>()
+                            })
+                        })
+                        .collect();
+                    workers
+                        .into_iter()
+                        .flat_map(|worker| worker.join().unwrap())
+                        .collect::<Vec<_>>()
+                });
+                values.sort_unstable();
+                assert_eq!(values, (1..=TOTAL_OPERATIONS as i64).collect::<Vec<_>>());
+
+                // An operation error leaves earlier operations and their counters intact.
+                assert!(
+                    datatype
+                        .execute_local_operation_as_tx(
+                            context.clone(),
+                            Operation::new_snapshot(Vec::new().into_boxed_slice()),
+                        )
+                        .is_err()
+                );
+                assert!(matches!(
+                    datatype.execute_local_operation_as_tx(
+                        context.clone(),
+                        Operation::new_counter_increase(1),
+                    )?,
+                    ReturnType::Counter(value) if value == (TOTAL_OPERATIONS + 1) as i64
+                ));
+                if matches!(outcome, TransactionOutcome::EnqueueError) {
+                    let mut mutable = datatype.core.mutable.write();
+                    let mut transaction = Transaction::new(&mutable.op_id.cuid, 1);
+                    transaction.push_operation(Operation::new_counter_increase(1));
+                    mutable.push_buffer.option = Arc::new(DatatypeOption {
+                        max_mem_size_of_push_buffer: transaction.size(),
+                    });
+                }
+                match outcome {
+                    TransactionOutcome::Commit | TransactionOutcome::EnqueueError => Ok(()),
+                    TransactionOutcome::CallbackError => {
+                        Err(DatatypeError::TransactionFailed("abort".into()))
+                    }
+                    TransactionOutcome::Panic => panic!("abort concurrent transaction"),
+                }
+            })
+        }));
+        match outcome {
+            TransactionOutcome::Panic => assert!(result.is_err()),
+            TransactionOutcome::CallbackError | TransactionOutcome::EnqueueError => {
+                assert!(result.unwrap().is_err());
+            }
+            TransactionOutcome::Commit => assert!(result.unwrap().is_ok()),
+        }
+        let committed = matches!(outcome, TransactionOutcome::Commit);
+        {
+            let mutable = datatype.core.mutable.read();
+            let operation_count = if committed { TOTAL_OPERATIONS + 1 } else { 0 };
+            assert_eq!(
+                mutable.crdt.as_counter().unwrap().value(),
+                operation_count as i64
+            );
+            assert_eq!(mutable.op_id.lamport, operation_count as u64);
+            assert_eq!(mutable.op_id.cseq, u64::from(committed));
+            let batches: Vec<_> = mutable.push_buffer.iter().collect();
+            assert_eq!(batches.len(), usize::from(committed));
+            if committed {
+                assert_eq!(batches[0].operations.len(), operation_count);
+                assert_eq!(batches[0].cseq, 1);
+                assert_eq!(batches[0].tag.as_deref(), Some("shared"));
+            }
+        }
+        assert!(datatype.active_tx_ctx.read().is_none());
+        datatype
+            .execute_local_operation_as_tx(Default::default(), Operation::new_counter_increase(1))
+            .unwrap();
+        let mutable = datatype.core.mutable.read();
+        assert_eq!(mutable.op_id.cseq, if committed { 2 } else { 1 });
+        assert_eq!(
+            mutable.crdt.as_counter().unwrap().value(),
+            if committed {
+                (TOTAL_OPERATIONS + 2) as i64
+            } else {
+                1
+            }
+        );
+    }
+
+    #[rstest]
+    #[case(TransactionOutcome::Commit)]
+    #[case(TransactionOutcome::CallbackError)]
+    #[case(TransactionOutcome::Panic)]
+    #[case(TransactionOutcome::EnqueueError)]
+    fn can_finish_transaction_cleanup_before_releasing_waiters(
+        #[case] outcome: TransactionOutcome,
+    ) {
+        let attr = manual_counter_attribute();
+        let datatype = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (owner_done_tx, owner_done_rx) = mpsc::channel();
+        let owner_datatype = datatype.clone();
+        let owner = thread::spawn(move || {
+            let context = Arc::new(TransactionContext::new("owner"));
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                owner_datatype.do_transaction(context.clone(), || {
+                    owner_datatype.execute_local_operation_as_tx(
+                        context.clone(),
+                        Operation::new_counter_increase(10),
+                    )?;
+                    // Each operation releases mutable; the enclosing transaction
+                    // retains its transaction guard between operations.
+                    assert_eq!(
+                        owner_datatype
+                            .active_tx_ctx
+                            .read()
+                            .as_ref()
+                            .map(|active| &active.context),
+                        Some(&context)
+                    );
+                    assert!(owner_datatype.core.tx_mutex.try_lock().is_none());
+                    if matches!(outcome, TransactionOutcome::EnqueueError) {
+                        // Reject this two-operation transaction while leaving
+                        // enough capacity for the waiter's single operation.
+                        owner_datatype.execute_local_operation_as_tx(
+                            context,
+                            Operation::new_counter_increase(10),
+                        )?;
+                        let mut mutable = owner_datatype.core.mutable.write();
+                        let op_id = &mutable.op_id;
+                        let mut tx = Transaction::new(&op_id.cuid, 1);
+                        tx.push_operation(Operation::new_counter_increase(1));
+                        mutable.push_buffer.option = Arc::new(DatatypeOption {
+                            max_mem_size_of_push_buffer: tx.size(),
+                        });
+                    }
+                    entered_tx.send(()).unwrap();
+                    release_rx.recv_timeout(WAIT_TIMEOUT).unwrap();
+                    match outcome {
+                        TransactionOutcome::Commit | TransactionOutcome::EnqueueError => Ok(()),
+                        TransactionOutcome::CallbackError => {
+                            Err(DatatypeError::TransactionFailed("abort".into()))
+                        }
+                        TransactionOutcome::Panic => panic!("abort the transaction by unwinding"),
+                    }
+                })
+            }));
+            match outcome {
+                TransactionOutcome::Panic => assert!(result.is_err()),
+                TransactionOutcome::CallbackError | TransactionOutcome::EnqueueError => {
+                    assert!(result.unwrap().is_err());
+                }
+                TransactionOutcome::Commit => assert!(result.unwrap().is_ok()),
+            }
+            owner_done_tx.send(()).unwrap();
+        });
+        entered_rx.recv_timeout(WAIT_TIMEOUT).unwrap();
+
+        let (waiting_tx, waiting_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let waiting_datatype = datatype.clone();
+        let waiter = thread::spawn(move || {
+            let context = Arc::new(TransactionContext::default());
+            waiting_tx.send(()).unwrap();
+            waiting_datatype
+                .execute_local_operation_as_tx(context, Operation::new_counter_increase(1))
+                .unwrap();
+            finished_tx.send(()).unwrap();
+        });
+        waiting_rx.recv_timeout(WAIT_TIMEOUT).unwrap();
+        awaitility::at_most(WAIT_TIMEOUT).until(|| datatype.tx_waiters.load(Ordering::SeqCst) == 1);
+        assert!(finished_rx.try_recv().is_err());
+        release_tx.send(()).unwrap();
+        owner_done_rx.recv_timeout(WAIT_TIMEOUT).unwrap();
+        finished_rx.recv_timeout(WAIT_TIMEOUT).unwrap();
+        owner.join().unwrap();
+        waiter.join().unwrap();
+
+        let committed = matches!(outcome, TransactionOutcome::Commit);
+        let mutable = datatype.core.mutable.read();
+        assert_eq!(
+            mutable.crdt.as_counter().unwrap().value(),
+            if committed { 11 } else { 1 }
+        );
+        assert_eq!(mutable.op_id.cseq, if committed { 2 } else { 1 });
+        assert_eq!(
+            mutable.push_buffer.iter().count(),
+            if committed { 2 } else { 1 }
+        );
+        assert!(datatype.active_tx_ctx.read().is_none());
+    }
+
+    #[test]
+    fn can_release_standalone_locks_after_operation_failure() {
+        let attr = new_attribute!(DataType::Counter);
+        let datatype = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
+        assert!(
+            datatype
+                .execute_local_operation_as_tx(
+                    Default::default(),
+                    Operation::new_snapshot(Vec::new().into_boxed_slice()),
+                )
+                .is_err()
+        );
+        assert!(datatype.active_tx_ctx.read().is_none());
+        datatype
+            .execute_local_operation_as_tx(Default::default(), Operation::new_counter_increase(1))
+            .unwrap();
+        assert_eq!(
+            datatype
+                .core
+                .mutable
+                .read()
+                .crdt
+                .as_counter()
+                .unwrap()
+                .value(),
+            1
+        );
+    }
+
+    #[rstest]
+    #[case(false, false)]
+    #[case(false, true)]
+    #[case(true, false)]
+    #[case(true, true)]
+    fn can_return_commit_failure_and_resume_writes(
+        #[case] explicit: bool,
+        #[case] sequence_failure: bool,
+    ) {
+        let attr = manual_counter_attribute();
+        let datatype =
+            TransactionalDatatype::new_arc(attr, DatatypeState::Subscribed, Default::default());
+        datatype
+            .execute_local_operation_as_tx(Default::default(), Operation::new_counter_increase(3))
+            .unwrap();
+        let (buffer_size, option) = {
+            let mut mutable = datatype.core.mutable.write();
+            let baseline = (
+                mutable.push_buffer.mem_size,
+                mutable.push_buffer.option.clone(),
+            );
+            if sequence_failure {
+                mutable.push_buffer.last_cseq = 42;
+            } else {
+                mutable.push_buffer.option = Arc::new(DatatypeOption {
+                    max_mem_size_of_push_buffer: mutable.push_buffer.mem_size,
+                });
+            }
+            baseline
+        };
+        let context = Arc::new(TransactionContext::new("rejected"));
+        let operation = || {
+            datatype
+                .execute_local_operation_as_tx(context.clone(), Operation::new_counter_increase(5))
+        };
+        let result = if explicit {
+            datatype.do_transaction(context.clone(), || {
+                assert!(matches!(operation()?, ReturnType::Counter(8)));
+                Ok(())
+            })
+        } else {
+            operation().map(|_| ())
+        };
+        if sequence_failure {
+            assert!(matches!(result, Err(DatatypeError::Internal(_))));
+        } else {
+            assert_eq!(result, Err(DatatypeError::PushBufferExceededMaxMemSize));
+        }
+        assert!(datatype.active_tx_ctx.read().is_none());
+        {
+            let mut mutable = datatype.core.mutable.write();
+            assert_eq!(mutable.crdt.as_counter().unwrap().value(), 3);
+            assert_eq!(mutable.op_id.cseq, 1);
+            assert_eq!(mutable.op_id.lamport, 1);
+            assert_eq!(mutable.get_state(), DatatypeState::Subscribed);
+            assert!(mutable.is_transaction_record_empty());
+            assert_eq!(mutable.push_buffer.mem_size, buffer_size);
+            assert_eq!(mutable.push_buffer.iter().count(), 1);
+            // Repair the injected rejection before checking subsequent progress.
+            mutable.push_buffer.option = option;
+            mutable.push_buffer.last_cseq = 1;
+        }
+        assert!(matches!(
+            datatype
+                .execute_local_operation_as_tx(
+                    Default::default(),
+                    Operation::new_counter_increase(2),
+                )
+                .unwrap(),
+            ReturnType::Counter(5)
+        ));
+        let mutable = datatype.core.mutable.read();
+        assert_eq!(mutable.op_id.cseq, 2);
+        assert_eq!(mutable.op_id.lamport, 2);
+        assert_eq!(mutable.push_buffer.iter().count(), 2);
+    }
+
+    #[rstest]
+    #[case(true)]
+    #[case(false)]
+    fn can_resolve_transaction_after_operation_error(#[case] propagate: bool) {
+        let attr = new_attribute!(DataType::Counter);
+        let datatype = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
+        let context = Arc::new(TransactionContext::new("operation_error"));
+        let result = datatype.do_transaction(context.clone(), || {
+            datatype.execute_local_operation_as_tx(
+                context.clone(),
+                Operation::new_counter_increase(3),
+            )?;
+            let failed = datatype.execute_local_operation_as_tx(
+                context.clone(),
+                Operation::new_snapshot(Vec::new().into_boxed_slice()),
+            );
+            if propagate {
+                failed?;
+            } else {
+                assert!(failed.is_err());
+            }
+            Ok(())
+        });
+        assert_eq!(result.is_err(), propagate);
+        let mutable = datatype.core.mutable.read();
+        assert_eq!(
+            mutable.crdt.as_counter().unwrap().value(),
+            if propagate { 0 } else { 3 }
+        );
+        assert_eq!(mutable.op_id.cseq, u64::from(!propagate));
+        assert!(mutable.is_transaction_record_empty());
+        drop(mutable);
+        assert!(datatype.active_tx_ctx.read().is_none());
+        datatype
+            .execute_local_operation_as_tx(Default::default(), Operation::new_counter_increase(1))
+            .unwrap();
+    }
+
+    #[test]
+    fn can_finish_empty_transaction_without_enqueue() {
+        let attr = new_attribute!(DataType::Counter);
+        let datatype = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
+        datatype.core.mutable.write().push_buffer.option = Arc::new(DatatypeOption {
+            max_mem_size_of_push_buffer: 0,
+        });
+        datatype
+            .do_transaction(Arc::new(TransactionContext::new("empty")), || Ok(()))
+            .unwrap();
+        assert!(datatype.active_tx_ctx.read().is_none());
+        let mut mutable = datatype.core.mutable.write();
+        assert_eq!(mutable.op_id.cseq, 0);
+        assert_eq!(mutable.op_id.lamport, 0);
+        assert!(mutable.is_transaction_record_empty());
+        assert_eq!(mutable.push_buffer.iter().count(), 0);
+        mutable.push_buffer.option = Default::default();
+        drop(mutable);
+        datatype
+            .execute_local_operation_as_tx(Default::default(), Operation::new_counter_increase(1))
+            .unwrap();
+    }
 
     #[test]
     #[instrument]
     fn can_rollback_on_enqueue_failure() {
-        let attr = new_attribute!(DataType::Counter);
+        let attr = manual_counter_attribute();
         let tx_dt = TransactionalDatatype::new_arc(attr, Default::default(), Default::default());
         let tx_ctx = Arc::new(TransactionContext::new("non_sequential_cseq"));
 
@@ -408,13 +1140,12 @@ mod tests_transactional {
             )?;
             // Corrupt the buffer sequence so the commit-time enqueue fails with
             // InternalReason::NonSequentialCseq.
-            tx_dt_in_tx.mutable.write().push_buffer.last_cseq = 42;
+            tx_dt_in_tx.core.mutable.write().push_buffer.last_cseq = 42;
             Ok(())
         });
-        // tx_func itself succeeded; the enqueue failure is routed to Normal + Rollback.
-        assert!(result.is_ok());
+        assert!(matches!(result, Err(DatatypeError::Internal(_))));
 
-        let mutable = tx_dt.mutable.read();
+        let mutable = tx_dt.core.mutable.read();
         let c = mutable.crdt.as_counter().expect("expected a counter crdt");
         assert_eq!(c.value(), 0);
         assert_eq!(mutable.op_id.cseq, 0);

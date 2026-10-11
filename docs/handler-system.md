@@ -18,25 +18,32 @@ client runtime rather than on the stack that produced the event.
 | Dispatch | Scheduling a notification onto the client runtime and returning immediately |
 
 A registry belongs to one datatype and reports only that datatype's events; there is no
-process-wide handler registry. It lives on the mutable layer, next to the lifecycle state
-whose transitions it reports, so the code that changes the state also raises the
-notification. Because that code is holding a lock on the mutable layer at the moment it
-raises one, the registry never invokes a callback itself: it snapshots the handlers, hands
-them to a task on the client runtime, and returns to its caller.
+process-wide handler registry. It lives on the mutable layer, next to the lifecycle state.
+Under the mutable lock, a state transition or recovery snapshots the registered handlers,
+the target's weak instance identity, the event payload, the runtime handle, and the current
+span into a `HandlerNotification`. The outer operation releases mutable state before
+executing its effects: detach the matching instance if needed, then dispatch notifications.
+Dispatch resolves the captured target and schedules a task; it never consults the registry
+again. A shared effects gate spans state mutation and effect execution to preserve dispatch
+order without holding mutable state while acquiring the client table lock or spawning tasks.
 
 ```mermaid
 flowchart TD
     Build["build time: .with_handler(priority, handler)"]
     SetAfter["after creation: set_handler(priority, handler)<br/>/ unset_handler(priority)"]
     Registry["Registry (HandlersManager)<br/>priority → handler, owned by MutableDatatype"]
-    Trigger["state transition or reported error,<br/>raised while a lock on mutable is held"]
-    Dispatch["dispatch: snapshot handlers, capture the current span,<br/>spawn onto the client runtime, return"]
+    Trigger["state transition or recovery,<br/>under mutable.write"]
+    Snapshot["snapshot handlers, target, event, runtime, span<br/>Reserve effects"]
+    Unlock["release mutable.write<br/>Detach matching instance if Disabled"]
+    Dispatch["dispatch captured notification<br/>Spawn onto the client runtime"]
     Task["spawned task, ascending priority:<br/>each callback inside the captured span,<br/>each wrapped in catch_unwind"]
 
     Build --> Registry
     SetAfter --> Registry
-    Trigger --> Dispatch
-    Registry --> Dispatch
+    Trigger --> Snapshot
+    Registry --> Snapshot
+    Snapshot --> Unlock
+    Unlock --> Dispatch
     Dispatch --> Task
 ```
 
@@ -55,18 +62,25 @@ datatype the state it already holds notifies nothing. A transition into `Disable
 additionally detaches the datatype from the client's datatype table. An error is reported
 when the datatype's recovery path raises one — after the event loop applies a recovery
 action, or when a transaction fails to commit — and is delivered independently of any state
-change the same failure may have caused.
+change the same failure may have caused. A local commit rejection returns an error to the
+owning standalone write or explicit transaction and also dispatches one `on_error`
+notification; these are two delivery paths for the same failure.
 
-**Dispatch.** No callback ever runs on the stack that triggered the notification. Dispatch
-snapshots the registry, spawns one task onto the client runtime, and returns; the callbacks
-run on a runtime worker thread. A dispatch is skipped in full when the datatype handle
-passed to the callbacks cannot be resolved, which is the case once the transactional layer
-has been dropped.
+**Dispatch.** No callback ever runs on the stack that triggered the notification. The
+handler list and target identity are fixed when the event is reserved under mutable state;
+replacement or removal after reservation affects later events, not the reserved one. After
+unlocking, dispatch spawns one task onto the client runtime and returns. Dispatch is skipped
+when the captured weak target no longer resolves. Preparing a notification does not keep the
+datatype alive; a dispatched task holds a datatype handle until its callbacks finish.
 
-**Ordering.** Within one notification, handlers run sequentially in ascending priority
-order, and each callback completes before the next begins. Handlers are free to re-enter the
-datatype they were notified about; a re-entrant read blocks until the triggering code
-releases its lock.
+**Ordering.** An effects gate serializes lifecycle mutation through dispatch, so notifications
+are scheduled in state-transition order. For recovery, state-change dispatch precedes error
+dispatch. A Disabled transition detaches the matching instance before scheduling its
+notification, so a callback can build a replacement under the same key. Within one
+notification, handlers run sequentially in ascending priority order. Distinct tasks can
+start or finish out of order and overlap; callback completion order across events is not
+guaranteed. A callback's datatype handle refers to the captured instance, whose current
+state may already reflect later transitions.
 
 **Isolation and lifetime.** A panic inside a callback is caught at that callback's boundary
 and logged; it does not propagate, does not abort the remaining handlers in the same
@@ -74,15 +88,13 @@ notification, and does not disturb the event loop. Each in-flight notification h
 reference to every handler it is notifying, so a handler removed or replaced mid-flight
 keeps running to completion and is dropped once the last notification holding it finishes.
 That drop is what releases any resource a language binding attached to the handler, exactly
-once.
+once. Replacement and removal return the old registration to the outer layer, which drops
+it after releasing mutable state; a resource destructor may therefore re-enter the datatype.
 
-**Limits on the guarantees.** Dispatch removes the callback from the triggering stack and
-nothing more. It does not order the callback against the triggering lock: the spawned task
-may start while that lock is still held. Ordering by priority holds inside a single
-notification only — two notifications are two independent tasks and may overlap on different
-worker threads, so callbacks must be safe to run concurrently with themselves. Delivery is
-not guaranteed either: a notification spawned while the datatype or the runtime is being torn
-down may never run, and nothing reports that it was dropped.
+**Limits on the guarantees.** Dispatch occurs after the triggering mutable guard is released.
+Another operation can acquire mutable state before a callback runs, so a callback can still
+wait for unrelated work. Priority order holds inside a single notification only. Delivery is
+not guaranteed during runtime teardown, and nothing reports a dropped notification.
 
 ## Behavior
 
@@ -101,10 +113,11 @@ sequenceDiagram
 
     App->>DT: sync()
     DT->>DT: take mutable.write(), state Creating → Subscribed
-    DT->>Reg: report the transition
-    Reg->>RT: spawn one task with a snapshot of the handlers
-    Reg-->>DT: return (no callback has run)
-    DT-->>App: sync() returns, write lock released
+    DT->>Reg: snapshot transition, handlers, and target
+    Reg-->>DT: prepared notification
+    DT->>DT: release mutable.write()
+    DT->>RT: dispatch captured notification
+    DT-->>App: sync() returns
     RT->>RT: priority 0 callback, then priority 100
 ```
 
@@ -127,14 +140,12 @@ panic.
 
 ## Rationale
 
-**Callbacks run off the triggering stack because inline invocation would deadlock.** The
-code raising a notification holds a lock on the mutable layer, and a handler is expected to
-call back into the datatype it was told about — reading the new value is the obvious thing
-to do. Invoking a callback from under the write lock would make that read block on a lock the
-callback's own caller holds. Spawning removes the callback from that stack, which is the
-whole of what the design promises; it deliberately does not promise that the lock is already
-released when the callback starts, because guaranteeing that would require holding the
-notification until an unrelated caller finishes its work.
+**Effects run after mutable state is released.** A handler is expected to read or write the
+datatype it receives. Preparing immutable effects under the state lock and executing them
+after unlocking keeps task scheduling and client-table cleanup outside that lock. The effects
+gate preserves the mutation-to-dispatch sequence without waiting for user callbacks. It also
+prevents one thread from dispatching a later state change before another thread dispatches
+an earlier change.
 
 **Priority is a map key rather than a list position.** Keying the registry by priority makes
 registering at an occupied priority a replacement rather than a silent duplicate, and makes
@@ -162,22 +173,24 @@ independent of when removal happened.
 they report, so a transition raises its notification in the same place it happens rather than
 through a separate lookup. Per-datatype ownership also means handler state scales with the
 number of datatypes a client manages. The registry keeps a reference to the datatype's
-shared attributes to reach the runtime handle it spawns on and to resolve the datatype handle
-passed to each callback.
+shared attributes to capture the runtime and weak instance identity. Notification dispatch
+uses that captured identity to resolve the datatype handle passed to each callback.
 
 ## Code Map
 
 | Concern | Location |
 |---------|----------|
 | `DatatypeHandler`, its builder methods, and the per-callback `catch_unwind` boundary | `src/datatypes/handler.rs` |
-| `HandlersManager` — the registry, `set_handler` / `unset_handler`, and the shared `dispatch` helper | `src/datatypes/handler.rs` |
+| `HandlersManager` — the registry, `replace_handler` / `remove_handler`, notification preparation; `HandlerNotification::dispatch` | `src/datatypes/handler.rs` |
 | Callback signatures `OnStateChangeFn` and `OnErrorFn` | `src/datatypes/handler.rs` |
-| Registry ownership, `set_state` (transition check and `Disabled` detach), and `call_error_handler` | `src/datatypes/mutable.rs` |
+| Registry ownership, `set_state`, `reserve_error_notification`, and `take_effects` | `src/datatypes/mutable.rs` |
+| Ordered effect values and dispatch | `src/datatypes/effects.rs` |
 | Error reporting on the event-loop path (`WiredDatatype::handle_error`) | `src/datatypes/wired.rs` |
 | Error reporting on the transaction-commit path (`end_transaction`) | `src/datatypes/transactional.rs` |
 | `set_handler` / `unset_handler` on the public `Datatype` trait | `src/datatypes/datatype.rs` |
 | `.with_handler(priority, handler)` at build time | `src/datatypes/builder.rs` |
-| Runtime handle and datatype-handle resolution (`Attribute::get_datatype_set`) | `src/datatypes/common.rs` |
+| Capturing the weak instance reference (`Attribute::datatype_target`) | `src/datatypes/common.rs` |
+| Resolving notification targets and detaching matching instances (`DatatypeTarget`) | `src/datatypes/target.rs` |
 
 | Verified by | Tests |
 |-------------|-------|
@@ -186,6 +199,11 @@ passed to each callback.
 | Error notification ordering and the `Disabled` state observed from the handle | `can_notify_error` in `src/datatypes/handler.rs` |
 | The datatype handle matches the datatype's type | `can_pass_a_variable_datatype_set_to_the_handler` in `src/datatypes/handler.rs` |
 | Re-entrant reads from a callback, one notification per actual transition | `can_use_datatype_handler` in `tests/datatype_handler.rs` |
+| Mutable state is released while registry detach waits; Disabled callbacks see the cleaned table | `can_release_mutable_state_before_waiting_for_registry_detach` in `src/clients/client.rs` |
+| Handler replacement/removal after reservation preserves captured recipients and event payloads | `can_keep_handler_snapshots_across_replacement_and_removal_before_dispatch` in `src/datatypes/effects.rs` |
+| Old-instance effects preserve a replacement under the same key | `can_keep_replacement_registered_when_old_instance_effects_run` in `src/datatypes/effects.rs` |
+| Handler resource destruction occurs outside mutable state | `can_drop_replaced_or_removed_handlers_after_unlocking` in `src/datatypes/effects.rs` |
+| Prepared notifications do not keep the datatype alive | `can_drop_an_instance_with_a_prepared_notification` in `src/datatypes/effects.rs` |
 | Binding-side registration, replacement, and exactly-once userdata release | `qortoo-ffi/tests/handler.rs` |
 
 ## Related Concepts

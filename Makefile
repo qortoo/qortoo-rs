@@ -107,6 +107,16 @@ bench: bench-rust
 bench-rust:
 	cargo bench --bench qortoo_bench
 
+# Informational resource probe, separate from benchmarks and CI gates.
+RESOURCE_OUTPUT ?= target/resource-measurements.json
+RESOURCE_ROUNDS ?= 3
+RESOURCE_ITERATIONS ?= 500
+
+.PHONY: measure-resources
+measure-resources:
+	cargo build --release --locked --example resource_probe
+	python3 scripts/measure_resources.py --output "$(RESOURCE_OUTPUT)" --rounds "$(RESOURCE_ROUNDS)" --iterations "$(RESOURCE_ITERATIONS)"
+
 # ── Observability stack (Prometheus / Grafana / Tempo / Loki / Pyroscope) ───────
 .PHONY: obs-up
 obs-up:

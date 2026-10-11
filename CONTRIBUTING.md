@@ -29,6 +29,7 @@ make lint                             # nightly fmt check, cargo check, clippy -
 make tarpaulin                        # coverage (local: 90% minimum; CI: 80% minimum)
 make doc                              # generate rustdoc
 make bench                            # fixed-budget benchmarks (see docs/performance.md)
+make measure-resources                # release build, then isolated resource probes (macOS/Linux, Python 3 + ps)
 make native-sdk-stage                 # stage the C header, static lib, pkg-config, manifest
 
 make obs-up                           # start the local Grafana/Prometheus/Tempo/Loki/Pyroscope stack

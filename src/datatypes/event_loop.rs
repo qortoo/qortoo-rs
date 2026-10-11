@@ -114,20 +114,20 @@ impl EventLoop {
 
     #[instrument(skip_all, name="datatype_event_loop",
         fields(
-            collection=%wired.attr.client_common.collection,
-            client=%wired.attr.client_common.alias,
-            cuid=%wired.attr.client_common.cuid,
-            data_key=%wired.attr.key,
-            duid=%wired.attr.get_duid(),
+            collection=%wired.core.attr.client_common.collection,
+            client=%wired.core.attr.client_common.alias,
+            cuid=%wired.core.attr.client_common.cuid,
+            data_key=%wired.core.attr.key,
+            duid=%wired.core.attr.get_duid(),
         )
     )]
     pub fn run(&self, wired: Arc<WiredDatatype>) {
         let unbounded_rx = self.unbounded_rx.clone();
         let bounded_rx = self.bounded_rx.clone();
-        let rt_handle = wired.attr.client_common.handle.clone();
+        let rt_handle = wired.core.attr.client_common.handle.clone();
         let unbounded_tx = self.unbounded_tx.clone();
         let bounded_tx = self.bounded_tx.clone();
-        let connectivity = wired.attr.client_common.connectivity.clone();
+        let connectivity = wired.core.attr.client_common.connectivity.clone();
         let span = Span::current();
         connectivity.register(wired.clone(), unbounded_tx);
         rt_handle.spawn_blocking(move || {
@@ -174,7 +174,7 @@ impl EventLoop {
                                         Err(dewa) => {
                                             loop_mode = LoopMode::from(dewa.recovery);
                                             if matches!(loop_mode, LoopMode::BackOff) {
-                                                metrics::emit_backoff(&wired.attr);
+                                                metrics::emit_backoff(&wired.core.attr);
                                             }
                                             wired.handle_error(dewa.error.clone(), dewa.recovery);
                                             Some(dewa.error)

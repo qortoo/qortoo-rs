@@ -2,49 +2,208 @@
 
 A transaction is the unit in which local changes to one datatype become visible and become
 eligible for synchronization. Every local write happens inside one, whether the application
-asks for it or not: a single write runs in a scope of its own, and several writes can be
-grouped into one scope that either takes effect completely or leaves no trace. This document
-defines how a scope is opened, what happens when two threads want one at the same time, and
-how an abandoned scope is undone. It does not describe how a committed transaction reaches
-other clients — see [`docs/event-loop.md`](event-loop.md) and
+asks for it or not: a single write runs in its own local transaction, and several writes can be
+grouped into one local transaction that either takes effect completely or leaves no trace. This
+document defines how a local transaction begins, what happens when two threads want one at the
+same time, and how an aborted local transaction is undone. It does not describe how a committed
+transaction reaches other clients — see [`docs/event-loop.md`](event-loop.md) and
 [`docs/connectivity.md`](connectivity.md) for that.
 
 ## Model
 
 | Term | Meaning |
 |------|---------|
-| Transaction | A group of one or more local operations on a single datatype, committed or undone as a unit |
-| Scope | The span during which a transaction is open; opening and closing it is what commits or undoes the work |
-| Standalone write | A write made outside an explicit transaction, which opens and closes a scope of its own |
-| Transaction context | The token that identifies one scope, so a write can tell whether it belongs to the scope already open |
-| Pending transaction | The operations recorded so far in the open scope, in the form that will be sent to other clients |
+| Transaction | The recorded batch of operations that is enqueued after a successful commit |
+| Local transaction | One unit of local work on a datatype, from admission through commit or rollback |
+| Standalone write | A write made outside an explicit transaction, which opens and closes a local transaction of its own |
+| Transaction context | The token that identifies one local transaction, so a write can tell whether it belongs to the local transaction already open |
+| Pending transaction | The operations recorded so far in the open local transaction, in the form that will be sent to other clients |
 | Rollback action | A local-only instruction that undoes one applied operation; never sent to other clients |
-| Save point | The progress counters and lifecycle state captured when the scope opened, restored if it is undone |
+| Save point | The progress counters and lifecycle state captured when the local transaction opened, restored if it is undone |
 
-A datatype has at most one open scope at a time. Operations accumulate into the pending
-transaction as they succeed, each paired with the action that would undo it. Closing the
-scope resolves both: a commit hands the pending transaction to the push buffer and throws the
-undo actions away, an abort runs the undo actions and throws the pending transaction away.
+A datatype has at most one open local transaction at a time. Operations accumulate into the
+pending transaction as they succeed, each paired with the action that would undo it. Finishing
+the local transaction resolves both: a commit hands the pending transaction to the push buffer
+and throws the undo actions away, while a rollback runs the undo actions and throws the pending
+transaction away.
 
 Rollback is by recorded inverse, not by snapshot. Nothing keeps a copy of the CRDT value, and
 nothing about undoing is ever serialized — a rollback action exists only on the client that
-created it, and only until its scope closes.
+created it, and only until its local transaction closes.
 
 ## Rules and Guarantees
 
-**Scope.** A write outside an explicit transaction opens a scope, applies its operation, and
-closes the scope before returning. An explicit transaction opens one scope around a closure;
-writes made through the handle the closure receives join it rather than opening their own. The
-scope closes when the closure returns.
+**Local transaction.** A write outside an explicit transaction starts a local transaction,
+applies its operation, and finishes the transaction before returning. An explicit transaction
+starts one local transaction around a closure; writes made through the handle the closure
+receives join it rather than starting their own. The local transaction finishes when the
+closure returns.
 
-**Atomicity.** A scope commits only if the closure returns success. If it returns an error, or
-if any operation inside it fails, every operation already applied in that scope is undone and
-the datatype is left as it was when the scope opened. A committed transaction is enqueued whole
-or not at all.
+**Atomicity.** A local transaction commits only if the closure returns success. If it returns
+an error, every operation already applied in that local transaction is undone and the
+datatype is restored to its save point. A failed operation that the callback handles does
+not automatically abort earlier successful operations. A commit rejection also rolls back
+the transaction. The batch is enqueued whole or not at all.
 
-**Concurrency.** A thread that asks for a scope while another thread holds one waits until the
-open scope closes, then proceeds. It is not refused and no error is returned. Writes within one
-open scope are serialized against each other, so operations accumulate in a defined order.
+**Concurrency.** A thread that asks to start a local transaction while another thread owns one
+waits until the active transaction finishes, then proceeds. Admission does not reject a
+caller merely because another thread owns an active transaction. Writes within one local
+transaction are serialized against each other, so operations accumulate in a defined order.
+
+**Local transaction ownership and waiting.** Every local transaction, including a standalone
+write, owns a transaction mutex guard. A tagged operation first checks whether its context is
+already active and joins it if so. A caller on the owning thread with a different context
+receives `DatatypeError::Disallowed` before attempting to acquire the mutex. Other callers
+wait for the transaction guard, then use the acquired guard directly to register and own the next local transaction. It does not release
+the mutex and race through a separate context check. The guard explicitly commits successful
+local work; its Drop rolls back unfinished work.
+Both paths clear the active context before releasing the mutex, so the same wait covers the gaps
+between operations as well as cleanup. Fair mutex handoff reduces barging but does not promise
+FIFO admission of local transactions.
+
+An operation joining the active context acquires the mutable-state write lock for its value
+change, rollback record, and counter update. Concurrent operations sharing that context execute
+one at a time under this lock. A standalone handle's default context is replaced with a fresh
+identity for each new local transaction, so concurrent standalone writes cannot accidentally
+join each other. Unwinding releases the mutable-state lock before transaction rollback and
+context cleanup release the transaction guard.
+
+The wired layer shares the transaction mutex. Network exchange remains outside it, but applying
+a remote response waits until the open local transaction has committed or rolled back. The same
+gate covers response snapshots, lifecycle changes, error recovery, and snapshots served to new
+subscribers, so local rollback cannot erase a remote change applied during the transaction.
+Synchronous `sync()` is rejected on the thread that owns the active local transaction, including
+calls through a captured original handle, because its response cannot be applied until the
+callback finishes. Calls from other threads can exchange with the backend and wait for the gate
+before applying the response. The owner thread must not wait for another thread to finish
+a standalone write, a new transaction, or `sync()` on the same datatype: those calls may
+wait for the owner's transaction to finish, and indirect circular waits are not detected.
+
+Reads do not acquire the transaction mutex. The mutable-state lock protects each individual
+state access and is released between local operations and across the user closure's own work, so
+another handle can observe values written by a transaction that has not committed yet.
+
+**Calls during a transaction callback.**
+
+A **handle** is a `Counter` or `Variable` value used to access a datatype. Cloning it
+shares the same local value and state. Each handle also carries a transaction context,
+which determines whether a write joins the active transaction.
+
+The diagram distinguishes handles by how they were obtained:
+
+| Diagram term | Example | Relation to the active transaction |
+| --- | --- | --- |
+| Original handle | `counter`, or `original = counter.clone()` before the call | Keeps its existing context; starting a transaction does not attach these handles to it |
+| Callback handle | The `callback` argument in `counter.transaction("batch", move \|callback\| { ... })` | Supplied by the SDK with the new transaction's context; writes join that transaction |
+| Callback-handle clone | `callback_clone = callback.clone()` inside the callback | Shares both the datatype and the callback's transaction context; writes join even from another thread |
+
+For example, given a writable `counter`:
+
+```rust
+use qortoo::DatatypeError;
+
+let original = counter.clone();
+counter.transaction("batch", move |callback| {
+    let callback_clone = callback.clone();
+    callback.increase()?;       // Joins the active transaction.
+    callback_clone.increase()?; // Joins the same transaction.
+    assert!(matches!(
+        original.increase(),    // Cannot join; rejected on the owner thread.
+        Err(DatatypeError::Disallowed(_))
+    ));
+    Ok(())
+})?;
+```
+
+All three handles access the same datatype; the difference is the transaction context
+carried by the handle, not a separate copy of the value. Reads through any of them can
+observe the current uncommitted value. Moving a handle to another thread preserves its
+context.
+
+The **owner thread** is the thread calling `transaction()` and running its callback.
+The reader and writer lanes represent other threads. The writer lane shows both joined
+and independent work as separate cases.
+
+```mermaid
+sequenceDiagram
+    participant O as Owner thread
+    participant R as Reader thread
+    participant W as Writer thread
+    participant D as Datatype
+    participant B as Backend
+
+    O->>D: Start transaction
+    Note over O,D: Owner holds the transaction lock
+
+    rect rgb(235, 245, 255)
+        Note over O,D: 1. Callback-handle writes join
+        O->>D: Write through callback handle
+        D-->>O: Return tentative result
+        O->>W: Pass a callback-handle clone
+        W->>D: Write through callback handle
+        D-->>W: Join the same transaction
+        W-->>O: Joined work complete
+    end
+
+    rect rgb(240, 250, 240)
+        Note over R,D: 2. Reads return current local state
+        R->>D: Read through another handle
+        D-->>R: May return uncommitted values and counters
+    end
+
+    rect rgb(255, 240, 240)
+        Note over O,D: 3. Reentrant calls on the owner thread reject
+        O->>D: Nested transaction / original-handle write / sync()
+        D-->>O: DatatypeError::Disallowed
+        Note over O,D: Enclosing transaction stays active
+    end
+
+    rect rgb(255, 248, 230)
+        Note over W,D: 4. Independent work on another thread waits
+        alt Original-handle write or new transaction
+            W->>D: Request independent local work
+            Note over W,D: Wait for the active transaction to finish
+        else sync()
+            W->>D: Request sync
+            D->>B: Network request
+            B-->>D: Response
+            Note over W,D: Response application waits for transaction end
+        end
+    end
+
+    alt Callback returns Ok
+        O->>D: Request commit
+        Note over D: Keep writes if commit succeeds<br/>Roll back if commit fails
+    else Callback returns Err
+        O->>D: Propagate callback error
+        Note over D: Roll back earlier writes
+    end
+    Note over D: Release transaction lock
+    D-->>O: Return transaction result
+
+    alt Waiting local work
+        Note over W,D: Execute in a separate transaction
+        D-->>W: Return local work result
+    else Waiting sync
+        Note over D: Apply remote response
+        D-->>W: Return sync result
+    end
+```
+
+The waiting-request and completion alternatives describe the same selected request:
+local work resumes in its own transaction, while sync resumes by applying its response.
+The owner must not wait for that independent request to complete inside the callback;
+otherwise both threads wait for each other. Indirect circular waits are not detected.
+
+A tag is a label, not an identity: using the same tag for a nested transaction does not
+make it join. Rejection leaves the enclosing transaction intact. The callback can handle
+the error and continue, or propagate it; the public wrapper reports a propagated callback
+error as `DatatypeError::TransactionFailed` and rolls back earlier writes.
+
+All work sharing the callback handle must finish before the callback returns. Cloning the
+handle does not extend the enclosing transaction's lifetime. Transactions on different
+datatype instances have independent guards and commits; they do not provide atomicity across
+datatypes. Applications must avoid circular waits across threads or datatype instances.
 
 **Progress counters.** A datatype's operation counters advance only after an operation
 succeeds. A failed operation leaves them untouched, and the next operation takes the slot the
@@ -52,46 +211,51 @@ failed one would have used. Committing a transaction advances the transaction se
 however many operations it contained; each successful operation advances the logical clock.
 
 **Save point.** The counters and lifecycle state are captured when the first operation of a
-scope is recorded, not when the scope is requested. An undo restores exactly that snapshot, so
-a datatype that rolls back is indistinguishable from one where the scope never opened.
+local transaction is recorded, rather than when the transaction is requested. An undo restores
+exactly that snapshot, so a datatype that rolls back is indistinguishable from one where the
+local transaction never began.
 
 **Undo order.** Rollback actions are applied in reverse of the order their operations were
 applied, so an operation is undone before anything it depended on.
 
 **Enqueue.** A committed transaction is enqueued for synchronization only if it originated on
 this client. Transactions are enqueued in sequence, and a gap in that sequence is rejected
-rather than accepted out of order. Buffered transactions stay in the buffer until the backend
-acknowledges them; see [`docs/connectivity.md`](connectivity.md).
+rather than accepted out of order. After a backend response is successfully applied,
+transactions up to its acknowledged client sequence are removed, releasing buffer capacity.
+Unacknowledged transactions remain available for retry. An empty buffer retains the last
+accepted sequence so the next enqueue must still be contiguous; see
+[`docs/connectivity.md`](connectivity.md).
 
-**Limits on the guarantees.** The value a write returns is determined when the operation
-succeeds, which is before its scope closes. If the commit then fails — the push buffer is full,
-or the sequence is not contiguous — the transaction is rolled back and the failure is reported
-through the datatype's error handler, but the value already returned to the caller does not
-change and the call does not report an error. An application that must know a write survived
-its commit has to register an error handler; see
-[`docs/handler-system.md`](handler-system.md). Atomicity is also per datatype: there is no
-scope spanning two datatypes.
+**Success and tentative results.** A standalone write returns `Ok` only after its local
+transaction commits. An explicit `transaction` returns `Ok(())` only after all recorded
+operations are accepted into the push buffer. A capacity or sequence rejection rolls back
+the transaction and returns its `DatatypeError`; the error handler also receives one
+notification. Values returned by operations inside a transaction callback are tentative
+until the enclosing `transaction` returns success. Local commit does not mean the server
+has acknowledged the transaction. Atomicity is per datatype: there is no local transaction
+spanning two datatypes.
 
 ## Behavior
 
-**A standalone write.** `counter.increase_by(1)` opens a scope, applies the operation to the
-CRDT, records the operation and its undo action, advances the counters, and returns the new
-value. The scope then closes as a commit, and the transaction — holding that one operation —
-is enqueued.
+**A standalone write.** `counter.increase_by(1)` starts a local transaction, applies the
+operation to the CRDT, records the operation and its undo action, advances the counters, and
+attempts to enqueue the recorded transaction holding that one operation. Only after local
+commit succeeds does the write return the new value; a commit rejection rolls it back and
+returns an error.
 
 **An explicit transaction that commits.** `counter.transaction("tag", |c| { … })` opens one
-scope and hands the closure a handle carrying that scope's context. Each write through that
-handle joins the open scope instead of opening its own. When the closure returns success, the
-scope closes as a commit and all the operations are enqueued as one transaction with one
-sequence number.
+local transaction and hands the closure a handle carrying that transaction's context. Each write
+through that handle joins the active local transaction instead of starting its own. When the
+closure returns success, the local transaction commits and all the operations are enqueued as
+one transaction with one sequence number.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Open: first write in the scope
+    [*] --> Open: first write in the local transaction
     Open --> Open: further writes append<br/>operation + undo action
-    Open --> Committed: closure returned success
-    Open --> Aborted: closure returned an error<br/>or an operation failed
-    Committed --> [*]: enqueue the transaction,<br/>discard the undo actions
+    Open --> Committed: closure succeeded<br/>and enqueue succeeded
+    Open --> Aborted: closure returned an error,<br/>panic unwound, or enqueue failed
+    Committed --> [*]: discard the undo actions
     Aborted --> [*]: run the undo actions in reverse,<br/>restore the save point
 ```
 
@@ -102,27 +266,144 @@ closure ran, and the call reports the error.
 
 **An operation that fails mid-transaction.** A write inside the closure returns an error — an
 invalid value, or a state that does not permit writes. That operation applied nothing, so no
-undo action is recorded for it and the counters do not advance. Whether the scope survives is
-the closure's decision: if it propagates the error, the scope aborts and the earlier writes are
-undone; if it handles the error and returns success, the scope commits with the operations that
-did succeed.
+undo action is recorded for it and the counters do not advance. The closure decides whether the
+local transaction continues: if it propagates the error, the transaction rolls back and the
+earlier writes are undone; if it handles the error and returns success, the transaction commits
+with the operations that did succeed.
 
 **A commit that fails to enqueue.** The closure returned success, but the push buffer rejects
-the transaction. The transaction is restored so its undo actions still match, the scope is
-undone as if it had aborted, and the error reaches the application through the error handler.
-Callers that already received values from writes in that scope are not notified individually.
+the transaction. The transaction is restored so its undo actions still match, the local
+transaction rolls back, and the owning standalone write or explicit transaction returns
+the enqueue error. The error handler receives one additional notification. Results observed
+inside the callback remain tentative until its enclosing transaction commits.
 
 **A datatype that is disabled or unsubscribed with work pending.** Buffered transactions are
 not discarded by a lifecycle change on their own; what happens to them is decided by the
 recovery action for the triggering error, described in
 [`docs/error-handling.md`](error-handling.md).
 
+## Execution and Lock Flow
+
+The diagrams name the functions responsible for each step. Blue nodes belong to
+`TransactionalDatatype`, orange nodes to `MutableDatatype`, and gray nodes to other
+types or caller outcomes. Color identifies the executing type, not the owner of a lock.
+`TransactionGuard` owns the local transaction's `tx_mutex` guard; `active_tx_ctx` records
+its context and owning thread. The `active_tx_ctx` read/write locks are brief and do not
+span the callback.
+
+### Entry and joining
+
+Public transaction wrappers check writability before `do_transaction`. Only operations
+sharing the same tagged context object can join; matching tag strings alone do not suffice.
+A joined operation releases its mutable-state lock and returns a tentative result without
+finishing the enclosing transaction.
+
+```mermaid
+flowchart TD
+    A["execute_local_operation_as_tx()<br/>check_writable()"]:::td --> C
+    B["do_transaction()"]:::td --> C
+    C["begin_transaction()<br/>Read active_tx_ctx"]:::td --> D{"Same tagged context<br/>already active?"}:::td
+    D -- No --> O{"On the active transaction<br/>owner's thread?"}:::td
+    O -- Yes --> P["Return Disallowed<br/>Keep enclosing transaction intact"]:::other
+    O -- No --> E["Acquire tx_mutex or wait<br/>Register active_tx_ctx"]:::td
+    E --> F["Create TransactionGuard<br/>finished = false"]:::other
+    F --> G["with_local_transaction()<br/>Started: execute action"]:::td
+    G --> H{"Standalone write<br/>or explicit transaction?"}:::other
+    H -- Standalone --> I["execute_local_operation()<br/>Hold mutable.write for value change,<br/>pending operations, undo records, counters"]:::md
+    H -- Explicit --> J["do_transaction(): execute callback<br/>Keep tx_mutex; acquire mutable<br/>only for individual state access"]:::td
+    I --> K["Release mutable.write<br/>Owner commits or rolls back"]:::td
+    J --> K
+    D -- Yes --> Q{"Operation entry?"}:::td
+    Q -- No --> P
+    Q -- Yes --> L["with_local_transaction()<br/>JoinedExisting: execute action<br/>Do not reacquire tx_mutex"]:::td
+    L --> M["execute_local_operation()<br/>Hold mutable.write for execution and recording"]:::md
+    M --> N["Release mutable.write<br/>Return tentative result<br/>Leave active_tx_ctx unchanged"]:::td
+
+    classDef td fill:#e7f0ff,stroke:#2563eb,color:#172033;
+    classDef md fill:#fff0dc,stroke:#d97706,color:#172033;
+    classDef other fill:#f3f4f6,stroke:#64748b,color:#172033;
+```
+
+### Commit, rollback, and notification
+
+Both completion paths clear `active_tx_ctx` before releasing `tx_mutex`. Removing that
+registration drops its `ActiveTransactionContext`; other `Arc` references can keep the
+underlying `TransactionContext` alive. `finished = true` means explicit completion has
+finished, including rollback after a commit rejection, rather than that commit succeeded.
+
+```mermaid
+flowchart TD
+    A["with_local_transaction()<br/>Execute the owner's action"]:::td --> B{"Action outcome"}:::other
+    B -- Success --> C["TransactionGuard::commit()"]:::other
+    C --> D["end_transaction(..., true)<br/>Acquire effects_mutex, then mutable.write"]:::td
+    D --> E["MutableDatatype::end_transaction()<br/>Try adding the operation batch<br/>to the outbound push buffer"]:::md
+    E --> F{"Enqueue succeeded?"}:::other
+    F -- Yes --> G["Discard rollback actions<br/>Remember whether to request synchronization"]:::md
+    F -- No --> H["apply_action() → do_rollback()<br/>Restore value, counters, lifecycle<br/>Reserve state effects and error notification"]:::md
+    G --> I["Take reserved effects; release mutable.write<br/>active_tx_ctx.take(): clear registration"]:::td
+    H --> I
+    I --> L["DatatypeEffectBatch::dispatch()<br/>Detach matching instance and schedule callbacks<br/>without mutable state"]:::other
+    L --> J{"Commit error?"}:::other
+    J -- Yes --> M["Release effects_mutex<br/>end_transaction() returns Err"]:::td
+    J -- No --> G2["Request synchronization if needed<br/>without mutable state"]:::td
+    G2 --> M2["Release effects_mutex<br/>end_transaction() returns Ok"]:::td
+    M --> N["TransactionGuard::commit()<br/>finished = true"]:::other
+    M2 --> N
+    N --> O["TransactionGuard::drop()<br/>Skip rollback; fair-unlock tx_mutex"]:::other
+    O --> P["Return Ok or the commit error"]:::other
+
+    B -- "Err or panic unwind" --> Q["TransactionGuard::drop()<br/>finished = false"]:::other
+    Q --> R["end_transaction(..., false)<br/>Acquire effects_mutex, then mutable.write"]:::td
+    R --> S["MutableDatatype::end_transaction()<br/>do_rollback()"]:::md
+    S --> U["Take effects; release mutable.write<br/>active_tx_ctx.take(): clear registration"]:::td
+    U --> U2["Dispatch effects without mutable state<br/>Release effects_mutex"]:::td
+    U2 --> V["TransactionGuard::drop()<br/>Fair-unlock tx_mutex"]:::other
+    V --> W["Return the action error<br/>or continue unwinding"]:::other
+
+    classDef td fill:#e7f0ff,stroke:#2563eb,color:#172033;
+    classDef md fill:#fff0dc,stroke:#d97706,color:#172033;
+    classDef other fill:#f3f4f6,stroke:#64748b,color:#172033;
+```
+
+Lifecycle effects and error recipients are reserved under the same mutable guard as commit
+recovery. The effects gate serializes that mutation through dispatch. Commit-error callbacks
+are scheduled after releasing mutable state and clearing the active context, but before
+the guard releases `tx_mutex`. Their actual execution can begin before or after that release. A callback
+starting a new write waits for the gate if necessary. Callback and operation errors retain
+their existing caller-return policy; this notification path is for commit rejection.
+
+### Sync and remote response application
+
+`sync()` does not register an active local context. The wired layer shares `tx_mutex` but
+holds it only for response application, recovery, or subscriber snapshot generation, not
+network exchange. This diagram shows the successful response path; a failed exchange uses
+`WiredDatatype::handle_error` and the same gate for recovery.
+
+```mermaid
+flowchart TD
+    A["sync() → check_sync_allowed()"]:::td --> B{"Disabled or on the active<br/>transaction owner's thread?"}:::td
+    B -- Yes --> C["Return Err"]:::td
+    B -- No --> D["EventLoop::send_push_transaction_with_guarantee()<br/>Request sync and wait for completion"]:::other
+    D --> E["WiredDatatype::do_push_pull()<br/>Acquire mutable.write"]:::other
+    E --> F["MutableDatatype::create_push_pull_pack()<br/>Build the outbound pack"]:::md
+    F --> G["WiredDatatype: release mutable.write"]:::other
+    G --> H["Connectivity::push_pull()<br/>Network exchange without<br/>tx_mutex or mutable locks"]:::other
+    H --> I["WiredDatatype::with_transaction_gate()<br/>Acquire tx_mutex or wait<br/>Then acquire effects_mutex<br/>and mutable.write"]:::other
+    I --> J["PullHandler::apply()<br/>Validate progress and apply response<br/>Advance checkpoint and reclaim acknowledged batches"]:::other
+    J --> K["Release mutable.write<br/>Dispatch effects<br/>Release effects_mutex, then tx_mutex"]:::other
+    K --> L["sync() returns its result"]:::td
+
+    classDef td fill:#e7f0ff,stroke:#2563eb,color:#172033;
+    classDef md fill:#fff0dc,stroke:#d97706,color:#172033;
+    classDef other fill:#f3f4f6,stroke:#64748b,color:#172033;
+```
+
 ## Rationale
 
-**Undo is recorded, not snapshotted.** Keeping a copy of the CRDT value before each scope would
-cost memory proportional to the value rather than to the change, and for a datatype that is
-mostly read and rarely rolled back that cost is paid on every write. Recording one action per
-applied operation costs only what the scope actually changed.
+**Undo is recorded, not snapshotted.** Keeping a copy of the CRDT value before each local
+transaction would cost memory proportional to the value rather than to the change. For a
+datatype that is mostly read and rarely rolled back, that cost is paid on every write. Recording one action per
+applied operation costs only what the local transaction actually changed.
 
 **Undo actions never reach the wire.** A rollback is a local decision about work that no other
 client ever saw. Putting undo information into the operation would grow every message with data
@@ -134,9 +415,15 @@ a correct revert path for every failure mode, including ones that occur between 
 detecting the failure. Advancing after success means a failed operation needs no cleanup at all:
 the state it would have changed was never changed.
 
-**The save point is captured at the first recorded operation, not when the scope opens.** A
-scope that opens and closes without applying anything has nothing to restore, and capturing at
-scope entry would make every read-only scope carry a snapshot it never uses.
+**A guard carries the right to finish the local transaction.** The local transaction owns the
+transaction guard, while each operation holds the mutable-state write lock. A waiter becomes
+the next owner only after acquiring the previous local transaction's mutex guard. Transaction
+cleanup never infers ownership from whether a mutex happens to be locked. Each operation
+releases its mutable-state lock before transaction cleanup takes it again to commit or roll back.
+
+**The save point is captured at the first recorded operation, not when the local transaction
+begins.** A local transaction that finishes without applying anything has nothing to restore,
+and capturing at admission would make every empty transaction carry a snapshot it never uses.
 
 **Each CRDT owns its own action type.** The top-level rollback action has one variant per CRDT
 rather than one per operation, and only the CRDT wrapper matches an action family to a CRDT
@@ -145,8 +432,9 @@ instance. Adding a datatype adds one variant and touches no existing rollback co
 **Some operations restore rather than invert.** An increment can be undone by adding its
 inverse, but a last-writer-wins assignment cannot: the new value carries no trace of what it
 replaced. Those operations capture the previous state in their undo action instead. Both shapes
-satisfy the same rule — the action restores what the operation changed — so the scope logic does
-not need to know which shape it holds. See [`docs/variable.md`](variable.md).
+satisfy the same rule — the action restores what the operation changed — so the local
+transaction logic does not need to know which shape it holds. See
+[`docs/variable.md`](variable.md).
 
 ## Extending: adding a local operation
 
@@ -168,22 +456,39 @@ because a remote transaction is never rolled back locally.
 |---------|----------|
 | `TxRecord` — pending transaction, undo actions, and the save point | `src/datatypes/tx_record.rs` |
 | Applying an operation, recording it, and advancing the counters | `src/datatypes/mutable.rs` (`execute_local_operation`) |
-| Closing a scope: enqueue on commit, undo on abort | `src/datatypes/mutable.rs` (`end_transaction`, `do_rollback`) |
-| Opening and joining scopes, waiting for a scope held elsewhere | `src/datatypes/transactional.rs` (`begin_transaction`, `execute_local_operation_as_tx`, `do_transaction`) |
-| Scope-exit handling that commits or undoes | `src/utils/defer_guard.rs` |
+| Closing a local transaction: enqueue on commit, undo on abort | `src/datatypes/mutable.rs` (`end_transaction`, `do_rollback`) |
+| Opening and joining local transactions, waiting for a local transaction held elsewhere | `src/datatypes/transactional.rs` (`begin_transaction`, `execute_local_operation_as_tx`, `do_transaction`) |
+| Success handling for owned or joined local work, cleanup, and active-context ownership | `src/datatypes/transactional.rs` (`with_local_transaction`, `TransactionGuard`) |
+| Shared mutable-state boundary and the effects gate held through dispatch and follow-up work | `src/datatypes/core.rs` (`prepare_state_effects`, `StateEffectsGuard`) |
+| Waiting to apply remote responses, recovery, and subscriber snapshot generation after local transaction cleanup | `src/datatypes/wired.rs` (`with_transaction_gate`) |
 | The public `transaction(tag, closure)` entry point | `src/datatypes/counter.rs`, `src/datatypes/variable.rs` |
 | Sequence checks and capacity limits on enqueue | `src/datatypes/push_buffer.rs` |
+| Response checkpoint validation and reclamation after successful application | `src/datatypes/pull_handler.rs` (`validate_checkpoint`, `apply`) |
 | Undo action families and the wrapper that routes them | `src/datatypes/crdts/` |
 | Counter arithmetic and its inverse | `src/datatypes/crdts/counter_crdt.rs` |
 
 | Verified by | Tests |
 |-------------|-------|
 | A transaction commits as a unit; an aborted one leaves no trace | `can_use_transaction` in `src/datatypes/counter.rs` |
+| Concurrent operations sharing one context preserve values, counters, batch boundaries, rollback, and subsequent progress | `can_serialize_concurrent_operations_in_one_transaction` in `src/datatypes/transactional.rs` |
 | Concurrent transactions from several threads all complete | `can_run_transactions_concurrently` in `src/datatypes/counter.rs` |
+| A standalone local transaction excludes competing writes and transactions until commit | `can_hold_standalone_transaction_until_commit_before_admitting_waiters` in `src/datatypes/transactional.rs` |
+| Commit, callback error, panic, and enqueue rejection finish cleanup before the next write | `can_finish_transaction_cleanup_before_releasing_waiters` in `src/datatypes/transactional.rs` |
+| An invalid standalone operation releases its mutable-state lock and transaction guard | `can_release_standalone_locks_after_operation_failure` in `src/datatypes/transactional.rs` |
 | Operations and undo actions accumulate and are taken together | `can_record_and_take_rollback_actions` in `src/datatypes/tx_record.rs` |
-| A failed operation leaves the scope and counters unchanged | `can_preserve_transaction_state_when_operation_execution_fails` in `src/datatypes/mutable.rs` |
-| Undo actions live exactly as long as their scope | `can_manage_rollback_action_lifetimes` in `src/datatypes/mutable.rs` |
-| A commit that fails to enqueue is rolled back | `can_rollback_on_enqueue_failure` in `src/datatypes/transactional.rs` |
+| A failed operation leaves the local transaction and counters unchanged | `can_preserve_transaction_state_when_operation_execution_fails` in `src/datatypes/mutable.rs` |
+| Undo actions live exactly as long as their local transaction | `can_manage_rollback_action_lifetimes` in `src/datatypes/mutable.rs` |
+| Capacity and sequence rejections return errors, restore state, and permit subsequent writes | `can_return_commit_failure_and_resume_writes` in `src/datatypes/transactional.rs` |
+| Propagated operation errors roll back; handled errors permit earlier writes to commit | `can_resolve_transaction_after_operation_error` in `src/datatypes/transactional.rs` |
+| An empty transaction succeeds without adding a batch | `can_finish_empty_transaction_without_enqueue` in `src/datatypes/transactional.rs` |
+| A small buffer permits repeated write/sync cycles after acknowledged batches are reclaimed | `can_continue_writing_after_sync_reclaims_a_small_buffer` in `src/datatypes/counter.rs` |
+| Partial and duplicate acknowledgements retain only retry data; failed application preserves it | `can_reclaim_partial_and_duplicate_acknowledgements`, `can_keep_retry_data_when_response_application_fails` in `src/datatypes/pull_handler.rs` |
+| A response cannot acknowledge writes absent from its request | `can_preserve_writes_not_included_in_the_request` in `src/datatypes/wired.rs` |
+| A remote Variable set waits for local rollback and remains the winner afterward | `can_preserve_remote_variable_set_after_local_transaction_rollback` in `src/datatypes/wired.rs` |
+| Reentrant writes and nested transactions reject without losing ownership; propagated errors roll back | `can_reject_reentrant_calls_without_losing_transaction_ownership`, `can_reject_nested_entry_with_the_active_context` in `src/datatypes/transactional.rs` |
+| Another thread reads tentative state and joins writes with the callback context before rollback | `can_read_uncommitted_values_and_join_callback_writes_from_another_thread` in `src/datatypes/transactional.rs` |
+| Sync on the owner thread is rejected through both callback and original handles | `can_reject_sync_on_the_local_transaction_owner_thread`, `can_reject_sync_from_both_handles_inside_a_transaction_callback` in `src/datatypes/transactional.rs` |
+| Sync from another thread exchanges during the callback and completes after rollback | `can_complete_sync_from_another_thread_after_local_rollback` in `src/datatypes/transactional.rs` |
 | Counter undo, including the self-inverse extreme | `can_return_and_apply_a_counter_rollback_action` in `src/datatypes/crdts/counter_crdt.rs` |
 | Restore-shaped undo is routed to the right CRDT | `can_dispatch_local_variable_execution_and_rollback` in `src/datatypes/crdts/crdt.rs` |
 | Restoring the save point returns the counters exactly | `can_next_rollback_compare_operation_ids` in `src/types/operation_id.rs` |

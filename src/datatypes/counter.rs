@@ -60,9 +60,9 @@ impl Counter {
     ///
     /// # Returns
     ///
-    /// The new counter-value after applying the increment, or
-    /// [`DatatypeError::NotWritable`] when the datatype's state forbids writes
-    /// and [`DatatypeError::ReadonlyViolation`] when it is readonly
+    /// The new counter value, or an error if writes are not allowed or the
+    /// change cannot be applied locally. On error, the counter is unchanged.
+    /// For writes inside a transaction, see [`transaction`](Self::transaction).
     ///
     /// # Examples
     ///
@@ -129,7 +129,7 @@ impl Counter {
     /// assert_eq!(counter.get_value(), 1);
     /// ```
     pub fn get_value(&self) -> i64 {
-        let mutable = self.datatype.mutable.read();
+        let mutable = self.datatype.core.mutable.read();
         mutable
             .crdt
             .as_counter()
@@ -140,8 +140,11 @@ impl Counter {
     datatype_instrument! {
     /// Executes multiple operations atomically within a transaction.
     ///
-    /// If `tx_func` returns an error, every [`increase_by`](Self::increase_by)
-    /// within the transaction is rolled back, leaving the counter unchanged.
+    /// Writes inside the callback are kept only if this method succeeds.
+    /// Use the callback handle for writes. On the callback thread, starting another
+    /// transaction on this datatype or writing through a captured original handle
+    /// returns [`DatatypeError::Disallowed`]. Reads may observe uncommitted writes.
+    /// Complete any work sharing the callback handle before returning.
     ///
     /// # Arguments
     ///
@@ -150,10 +153,11 @@ impl Counter {
     ///
     /// # Returns
     ///
-    /// `Ok(())` if the transaction committed,
-    /// [`DatatypeError::TransactionFailed`] if `tx_func` returned an error, or
-    /// [`DatatypeError::NotWritable`] / [`DatatypeError::ReadonlyViolation`] if
-    /// writes are not allowed
+    /// `Ok(())` when all changes are applied locally. On failure, the changes
+    /// made by this transaction are undone and an error is returned.
+    /// Success does not mean the changes have reached the server.
+    ///
+    /// See [transaction guarantees](https://github.com/qortoo/qortoo-rs/blob/main/docs/transaction-and-rollback.md#rules-and-guarantees).
     ///
     /// # Examples
     ///
@@ -222,9 +226,11 @@ mod tests_counter {
         utils::test_utils::{get_test_collection_name, get_test_func_name},
     };
 
-    #[test]
+    #[rstest::rstest]
+    #[case(false)]
+    #[case(true)]
     #[instrument]
-    fn can_notify_on_error_when_enqueue_fails() {
+    fn can_notify_on_error_when_enqueue_fails(#[case] explicit: bool) {
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .build()
             .unwrap();
@@ -234,26 +240,32 @@ mod tests_counter {
             .unwrap();
         counter.increase_by(3).unwrap();
 
-        let received = Arc::new(Mutex::new(None));
+        let received = Arc::new(Mutex::new(Vec::new()));
         let received_in_handler = received.clone();
         counter.set_handler(
             1,
             DatatypeHandler::new().set_on_error(move |_ds, err| {
-                *received_in_handler.lock() = Some(err);
+                received_in_handler.lock().push(err);
             }),
         );
 
-        let result = counter.transaction("oversize", |c| {
-            c.increase_by(100).unwrap();
-            // Shrink the buffer limit so the commit-time enqueue fails with
-            // PushBufferExceededMaxMemSize (bypassing the clamp in DatatypeOption::new).
-            c.datatype.mutable.write().push_buffer.option = Arc::new(DatatypeOption {
+        let reject_enqueue = |c: &Counter| {
+            // Bypass the clamp in DatatypeOption::new to inject a capacity rejection.
+            c.datatype.core.mutable.write().push_buffer.option = Arc::new(DatatypeOption {
                 max_mem_size_of_push_buffer: 0,
             });
-            Ok(())
-        });
-        // tx_func itself succeeded; the enqueue failure is routed to Normal + Rollback.
-        assert!(result.is_ok());
+        };
+        let result = if explicit {
+            counter.transaction("oversize", move |c| {
+                c.increase_by(100).unwrap();
+                reject_enqueue(&c);
+                Ok(())
+            })
+        } else {
+            reject_enqueue(&counter);
+            counter.increase_by(100).map(|_| ())
+        };
+        assert_eq!(result, Err(DatatypeError::PushBufferExceededMaxMemSize));
 
         // The failed transaction was rolled back and the datatype stays alive.
         assert_eq!(counter.get_value(), 3);
@@ -261,18 +273,71 @@ mod tests_counter {
 
         awaitility::at_most(Duration::from_secs(1))
             .poll_interval(Duration::from_millis(1))
-            .until(|| {
-                matches!(
-                    *received.lock(),
-                    Some(DatatypeError::PushBufferExceededMaxMemSize)
-                )
-            });
+            .until(|| !received.lock().is_empty());
+        assert_eq!(
+            *received.lock(),
+            vec![DatatypeError::PushBufferExceededMaxMemSize]
+        );
+        counter.datatype.core.mutable.write().push_buffer.option = Default::default();
+        assert_eq!(counter.increase_by(1).unwrap(), 4);
     }
 
     #[test]
     fn can_assert_send_and_sync_traits() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<Counter>();
+    }
+
+    #[test]
+    fn can_continue_writing_after_sync_reclaims_a_small_buffer() {
+        let connectivity = crate::LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .with_connectivity(connectivity)
+            .build()
+            .unwrap();
+        let counter = client
+            .create_datatype(get_test_func_name!())
+            .build_counter()
+            .unwrap();
+        counter.sync().unwrap();
+        counter.increase_by(1).unwrap();
+        let capacity = {
+            let mut mutable = counter.datatype.core.mutable.write();
+            let capacity = mutable.push_buffer.mem_size;
+            mutable.push_buffer.option = Arc::new(DatatypeOption {
+                max_mem_size_of_push_buffer: capacity,
+            });
+            capacity
+        };
+        assert_eq!(
+            counter.increase_by(100),
+            Err(DatatypeError::PushBufferExceededMaxMemSize)
+        );
+        assert_eq!(counter.get_value(), 1);
+        for expected in 1..=20 {
+            counter.sync().unwrap();
+            {
+                let mutable = counter.datatype.core.mutable.read();
+                assert_eq!(mutable.push_buffer.mem_size, 0);
+                assert_eq!(mutable.push_buffer.iter().count(), 0);
+                assert_eq!(mutable.push_buffer.first_cseq, 0);
+                assert_eq!(mutable.push_buffer.last_cseq, expected);
+            }
+            assert_eq!(counter.get_value(), expected as i64);
+            assert_eq!(counter.get_client_version(), expected);
+            assert_eq!(counter.get_synced_client_version(), expected);
+            assert_eq!(counter.get_server_version(), expected);
+            counter.sync().unwrap();
+            assert_eq!(counter.get_server_version(), expected);
+            if expected < 20 {
+                assert_eq!(counter.increase_by(1).unwrap(), (expected + 1) as i64);
+                assert_eq!(
+                    counter.datatype.core.mutable.read().push_buffer.mem_size,
+                    capacity
+                );
+            }
+        }
     }
 
     #[test]

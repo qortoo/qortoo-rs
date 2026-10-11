@@ -158,7 +158,7 @@ impl Debug for LocalConnectivity {
 
 impl Connectivity for LocalConnectivity {
     fn register(&self, wired: Arc<WiredDatatype>, sender: Sender<Event>) {
-        let attr = wired.attr.clone();
+        let attr = wired.core.attr.clone();
         let resource_id = attr.resource_id();
 
         let server = {
@@ -216,7 +216,10 @@ impl Connectivity for LocalConnectivity {
 
 #[cfg(test)]
 mod tests_local_connectivity {
-    use std::time::Duration;
+    use std::{
+        sync::{Arc, mpsc},
+        time::Duration,
+    };
 
     use tracing::instrument;
 
@@ -225,6 +228,104 @@ mod tests_local_connectivity {
         connectivity::local_connectivity::LocalConnectivity,
         utils::test_utils::{get_test_collection_name, get_test_func_name, get_test_ids},
     };
+
+    struct DropSignal(mpsc::Sender<()>);
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+
+    #[rstest::rstest]
+    #[case::registered(false)]
+    #[case::subscribed(true)]
+    fn can_release_local_client_ownership_without_unsubscribing(#[case] sync: bool) {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let (collection, key, resource_id) = get_test_ids!();
+        let client = Client::builder(collection, "drop-only")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let counter = client.create_datatype(key).build_counter().unwrap();
+        if sync {
+            counter.increase_by(7).unwrap();
+            counter.sync().unwrap();
+        }
+        let wired = connectivity
+            .get_local_datatype_server(&resource_id)
+            .unwrap()
+            .read()
+            .get_wired_datatype(&client.get_cuid())
+            .unwrap();
+        let weak_wired = Arc::downgrade(&wired);
+        let weak_common = Arc::downgrade(&wired.core.attr.client_common);
+        let weak_backend = Arc::downgrade(&connectivity);
+        let (dropped_tx, dropped_rx) = mpsc::channel();
+        let lifetime = DropSignal(dropped_tx);
+        wired.get_wired_interceptor().set_before_push(move |_| {
+            let _keep_alive = &lifetime;
+        });
+        drop(wired);
+        drop(client);
+        drop(counter);
+        // Stop acknowledgement precedes loop exit. Wait for wired destruction, not a sleep.
+        dropped_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(weak_wired.upgrade().is_none());
+        assert!(weak_common.upgrade().is_none());
+        // Backend history can outlive clients without retaining their runtime owners.
+        assert!(
+            connectivity
+                .get_local_datatype_server(&resource_id)
+                .is_some()
+        );
+        drop(connectivity);
+        assert!(weak_backend.upgrade().is_none());
+    }
+
+    #[test]
+    fn can_keep_an_in_flight_exchange_alive_until_stop_is_processed() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let (collection, key, resource_id) = get_test_ids!();
+        let client = Client::builder(collection, "in-flight-drop")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let counter = client.create_datatype(key).build_counter().unwrap();
+        counter.sync().unwrap();
+        let wired = connectivity
+            .get_local_datatype_server(&resource_id)
+            .unwrap()
+            .read()
+            .get_wired_datatype(&client.get_cuid())
+            .unwrap();
+        let weak_wired = Arc::downgrade(&wired);
+        let weak_common = Arc::downgrade(&wired.core.attr.client_common);
+        let (entered_tx, entered_rx) = crossbeam_channel::bounded(1);
+        let (release_tx, release_rx) = crossbeam_channel::bounded(1);
+        let (dropped_tx, dropped_rx) = mpsc::channel();
+        let lifetime = DropSignal(dropped_tx);
+        wired.get_wired_interceptor().set_before_push(move |_| {
+            let _keep_alive = &lifetime;
+            entered_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        });
+        drop(wired);
+        connectivity.set_realtime(true);
+        counter.increase().unwrap();
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        drop(client);
+        // Drop's bounded stop wait can finish while the exchange is blocked.
+        drop(counter);
+        assert!(weak_wired.upgrade().is_some());
+        assert!(dropped_rx.try_recv().is_err());
+        release_tx.send(()).unwrap();
+        dropped_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(weak_wired.upgrade().is_none());
+        assert!(weak_common.upgrade().is_none());
+    }
 
     #[test]
     #[instrument]

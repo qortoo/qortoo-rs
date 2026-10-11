@@ -54,7 +54,12 @@ pub trait Datatype {
     ///
     /// # Errors
     ///
-    /// Returns [`DatatypeError`] if the synchronization fails.
+    /// Returns [`DatatypeError`] if synchronization fails, or
+    /// [`DatatypeError::Disallowed`] when called on the thread that owns this
+    /// datatype's active local transaction. This includes calls through a
+    /// captured original handle inside the callback. Calls from other threads
+    /// exchange with the backend and wait to apply the response until the local
+    /// transaction finishes.
     ///
     /// # Examples
     ///
@@ -145,7 +150,7 @@ where
 
     #[cfg(test)]
     fn get_attr(&self) -> std::sync::Arc<crate::datatypes::common::Attribute> {
-        self.get_core().attr.clone()
+        self.get_core().core.attr.clone()
     }
 }
 

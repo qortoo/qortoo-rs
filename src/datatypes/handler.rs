@@ -1,9 +1,11 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use tracing::{Span, error, instrument};
+use tokio::runtime::Handle;
+use tracing::{Span, error};
 
 use crate::{
-    DatatypeError, DatatypeSet, DatatypeState, datatypes::common::Attribute,
+    DatatypeError, DatatypeSet, DatatypeState,
+    datatypes::{common::Attribute, target::DatatypeTarget},
     observability::trace::add_span_event,
 };
 
@@ -100,53 +102,81 @@ impl HandlersManager {
         }
     }
 
-    pub fn set_handler(&mut self, priority: usize, handler: DatatypeHandler) {
-        self.handlers.insert(priority, Arc::new(handler));
+    /// Returns the previous registration so the mutable owner can drop it after unlocking.
+    pub(crate) fn replace_handler(
+        &mut self,
+        priority: usize,
+        handler: DatatypeHandler,
+    ) -> Option<Arc<DatatypeHandler>> {
+        self.handlers.insert(priority, Arc::new(handler))
     }
 
-    /// Removes the handler at `priority`, reporting whether one was there.
-    ///
-    /// The handler itself is not handed back: [`dispatch`](Self::dispatch) clones
-    /// every handler's `Arc` into the task that notifies it, so a handler removed
-    /// while one of its notifications is still in flight is not solely owned here.
-    /// Reporting removal as a `bool` keeps the answer independent of that timing;
-    /// the handler is dropped once the last notification holding it finishes.
-    pub fn unset_handler(&mut self, priority: usize) -> bool {
-        self.handlers.remove(&priority).is_some()
+    pub(crate) fn remove_handler(&mut self, priority: usize) -> Option<Arc<DatatypeHandler>> {
+        self.handlers.remove(&priority)
     }
 
-    fn dispatch<F>(&self, event_name: &'static str, notify: F)
-    where
-        F: Fn(&DatatypeHandler, DatatypeSet) + Send + 'static,
-    {
-        let rt_handle = self.attr.client_common.handle.clone();
-        if let Some(ds) = self.attr.get_datatype_set() {
-            let handlers: Vec<(usize, Arc<DatatypeHandler>)> =
-                self.handlers.iter().map(|(&k, v)| (k, v.clone())).collect();
-            let span = Span::current();
-            rt_handle.spawn(async move {
-                for (priority, handler) in handlers {
-                    span.in_scope(|| {
-                        add_span_event!(format!("begin {event_name} priority={priority}"));
-                        notify(&handler, ds.clone());
-                        add_span_event!(format!("end {event_name} priority={priority}"));
-                    });
-                }
-            });
+    fn snapshot(&self, event: HandlerEvent) -> Option<HandlerNotification> {
+        if self.handlers.is_empty() {
+            return None;
         }
+        Some(HandlerNotification {
+            target: self.attr.datatype_target()?,
+            handle: self.attr.client_common.handle.clone(),
+            handlers: self.handlers.iter().map(|(&k, v)| (k, v.clone())).collect(),
+            span: Span::current(),
+            event,
+        })
     }
 
-    #[instrument]
-    pub(crate) fn notify_state_change(&self, old_state: DatatypeState, new_state: DatatypeState) {
-        self.dispatch("notify_state_change", move |handler, ds| {
-            handler.notify_state_change(ds, old_state, new_state);
-        });
+    pub(crate) fn prepare_state_change(
+        &self,
+        old_state: DatatypeState,
+        new_state: DatatypeState,
+    ) -> Option<HandlerNotification> {
+        self.snapshot(HandlerEvent::StateChange(old_state, new_state))
     }
 
-    #[instrument]
-    pub(crate) fn notify_error(&self, err: DatatypeError) {
-        self.dispatch("notify_error", move |handler, ds| {
-            handler.notify_error(ds, err.clone());
+    pub(crate) fn prepare_error(&self, err: DatatypeError) -> Option<HandlerNotification> {
+        self.snapshot(HandlerEvent::Error(err))
+    }
+}
+
+enum HandlerEvent {
+    StateChange(DatatypeState, DatatypeState),
+    Error(DatatypeError),
+}
+
+/// An immutable notification prepared under mutable state, dispatched after unlocking.
+pub(crate) struct HandlerNotification {
+    target: DatatypeTarget,
+    handle: Handle,
+    handlers: Vec<(usize, Arc<DatatypeHandler>)>,
+    span: Span,
+    event: HandlerEvent,
+}
+
+impl HandlerNotification {
+    pub(crate) fn dispatch(self) {
+        let Some(ds) = self.target.resolve() else {
+            return;
+        };
+        let event_name = match self.event {
+            HandlerEvent::StateChange(..) => "notify_state_change",
+            HandlerEvent::Error(_) => "notify_error",
+        };
+        self.handle.spawn(async move {
+            for (priority, handler) in self.handlers {
+                self.span.in_scope(|| {
+                    add_span_event!(format!("begin {event_name} priority={priority}"));
+                    match &self.event {
+                        HandlerEvent::StateChange(old, new) => {
+                            handler.notify_state_change(ds.clone(), *old, *new);
+                        }
+                        HandlerEvent::Error(err) => handler.notify_error(ds.clone(), err.clone()),
+                    }
+                    add_span_event!(format!("end {event_name} priority={priority}"));
+                });
+            }
         });
     }
 }

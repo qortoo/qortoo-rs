@@ -30,7 +30,7 @@ Each datatype is composed from five layers:
 | Layer | Responsibility |
 |-------|----------------|
 | Public API | The methods an application calls, one type per datatype kind |
-| Transactional | Transaction scope, write-access checks, and serialization of concurrent local operations |
+| Transactional | Local transaction lifecycle, write-access checks, and serialization of concurrent local operations |
 | Mutable | The datatype's changing state: CRDT value, operation progress, buffered transactions, transaction record, lifecycle state, checkpoint, and handler registry |
 | Wired | Assembling what to send, applying what comes back |
 | CRDT | The convergence rules themselves — a pure state machine with no I/O and no locking |
@@ -39,6 +39,12 @@ These five are responsibilities, not a containment chain. The transactional laye
 wired layer both hold the same mutable state and both write to it: local operations arrive
 through one, synchronization through the other. Understanding a datatype means knowing that
 one state has two writers, not that each layer wraps the next.
+
+The transactional and wired layers share one `Arc<DatatypeCore>`. The core owns the
+shared attributes, mutable-state `RwLock`, transaction mutex (`tx_mutex`), and effects
+mutex (`effects_mutex`). The transaction context and event loop belong to the transactional
+layer; synchronization and its transport belong to the wired layer. `DatatypeCore` groups
+shared ownership and synchronization, while each layer keeps its own execution policy.
 
 ```mermaid
 flowchart TD
@@ -88,11 +94,23 @@ copy.
 be cloned and moved across threads freely; clones share one state rather than diverging.
 
 **Serialization of writes.** All mutation of a datatype's state passes through that
-datatype's single lock. Concurrent local operations and concurrent transaction scopes are
+datatype's single lock. Concurrent standalone writes and explicit local transactions are
 serialized by the transactional layer before they reach it; the mechanism and the transaction
 semantics it enforces are defined in
 [`docs/transaction-and-rollback.md`](transaction-and-rollback.md). Reads take the same lock
 for shared access and create no operations.
+
+The transactional layer gives each local transaction a transaction mutex guard and records its
+active context. Tagged operations with that same context join the local transaction and acquire
+the mutable-state write lock for each operation. Calls on the owning thread that would start
+another local transaction return `DatatypeError::Disallowed`; this includes nested transactions
+and writes through a captured original handle. Competing calls from other threads wait for the
+transaction guard and use it directly to own the next local transaction after cleanup; there
+is no release-and-retry admission step. These guards do not extend the mutable-state lock across network calls, and only
+the transaction guard spans a user callback. The wired layer shares that transaction guard: a
+remote response may arrive while local work is open, but applying its transactions, snapshot, or
+lifecycle change waits until the local commit or rollback finishes. Error recovery and snapshots
+served to new subscribers follow the same rule.
 
 **Runtime.** Datatypes do not run on the application's runtime. Building a client builds a
 multi-threaded Tokio runtime for it, sized to the machine's available parallelism, with
@@ -103,10 +121,12 @@ while handler callbacks are spawned as ordinary tasks onto the worker threads. T
 memory cost therefore scales with the number of clients and datatypes; that cost has not been
 characterized here.
 
-**Synchronization boundaries.** The lock is held while assembling what to send and while
-applying what comes back, and released across the backend exchange, so a slow or unreachable
-backend does not block local reads and writes. What is sent, what is skipped, and how errors
-are routed are defined in [`docs/connectivity.md`](connectivity.md),
+**Synchronization boundaries.** The mutable-state lock is held while assembling what to send and
+while applying what comes back, and released across the backend exchange. The local transaction
+guard is acquired only after the response arrives, before applying it. Calling synchronous
+`sync()` on the thread that owns the active local transaction is rejected, which prevents the callback from
+waiting for a response whose application is waiting for that same transaction. What is sent,
+what is skipped, and how errors are routed are defined in [`docs/connectivity.md`](connectivity.md),
 [`docs/event-loop.md`](event-loop.md), and
 [`docs/error-handling.md`](error-handling.md).
 
@@ -114,6 +134,28 @@ are routed are defined in [`docs/connectivity.md`](connectivity.md),
 datatype's own references do not keep it alive. Dropping the last handle stops its event
 loop. A datatype that transitions to disabled removes itself from the client's table, and only
 if the table still holds that same instance.
+
+**Client table lock order.** The client table lock protects key membership and the datatype
+handle stored for each key. Code holding that lock does not inspect mutable datatype state.
+A transition to `Disabled` records a detach effect under mutable state, then releases that
+lock before taking the client table lock. The effect captures the instance identity, so it
+cannot remove a replacement registered under the same key.
+
+**State effects.** State transitions and recovery snapshot their handler registrations and
+reserve effects under the mutable-state write lock. A shared `effects_mutex` covers that
+mutation and the subsequent effect dispatch; it preserves dispatch order across concurrent
+state changes. `DatatypeCore::prepare_state_effects` runs mutation under mutable state,
+extracts the batch, and releases the mutable lock. It returns a `StateEffectsGuard` that
+keeps the effects gate held until the caller finishes dispatch and follow-up work.
+Transaction cleanup clears its active context before dispatch; transmission requests run
+afterward. Dispatch consumes the batch while retaining the gate; dropping the guard
+releases the gate without automatically dispatching pending effects.
+The lock order is `tx_mutex` (when needed), then `effects_mutex`, then mutable
+state. Mutable state is released before detaching, spawning handler tasks, or requesting
+transmission. Reads, ordinary joined writes, and handler registration use only mutable
+state. Handler replacement and removal drop the old registration after releasing it.
+Callbacks run asynchronously and never run under the effects gate on the triggering stack;
+different notifications can still overlap. See [`docs/handler-system.md`](handler-system.md).
 
 **Limits on the guarantees.** Convergence is a property of the CRDT layer and holds for
 datatypes that actually exchange operations; the default backend exchanges with no one, so
@@ -130,11 +172,11 @@ immediately: the datatype starts in a creating or subscribing state, is writable
 according to that state, and reports the transition to subscribed once the backend confirms
 it.
 
-**A local write.** The call checks write access, opens or joins a transaction scope, takes
+**A local write.** The call checks write access, opens or joins a local transaction, takes
 the datatype's lock, and applies the operation to the CRDT. The operation and an action that
-would undo it are recorded, and the value is returned. When the enclosing scope commits, the
-recorded transaction is queued for the backend; when it aborts, the recorded undo actions
-restore the previous state.
+would undo it are recorded, and the value is returned. When the enclosing local transaction
+commits, the recorded transaction is queued for the backend; when it rolls back, the recorded
+undo actions restore the previous state.
 
 ```mermaid
 sequenceDiagram
@@ -144,13 +186,13 @@ sequenceDiagram
     participant CRDT as CRDT
 
     App->>TX: counter.increase_by(1)
-    TX->>TX: check write access, open or join a scope
+    TX->>TX: check write access, open or join a local transaction
     TX->>MUT: take the lock
     MUT->>CRDT: apply the operation
     CRDT-->>MUT: new value + undo action
     MUT-->>TX: record both, advance progress
     TX-->>App: return the value
-    Note over TX,MUT: on scope commit: queue the transaction<br/>on scope abort: run the undo actions
+    Note over TX,MUT: on local transaction commit: queue the transaction<br/>on local transaction abort: run the undo actions
 ```
 
 **A local read.** A read takes the lock for shared access, copies what it needs, and returns.
@@ -160,13 +202,16 @@ reflects every local write that has returned, whether or not it has reached the 
 **A sync exchange.** The event loop wakes on a queued transaction, an explicit sync request,
 or a notification from the backend. It takes the lock, builds a package from the buffered
 transactions and the datatype's acknowledged progress, and releases the lock. It then calls
-the backend. On a response it takes the lock again, validates the response, applies a state
-snapshot if one is present, skips transactions it has already seen, executes the rest against
-the CRDT, and updates the acknowledged progress and lifecycle state.
+the backend. On a response it waits for any open local transaction to finish, takes the mutable
+lock again, validates the response, applies a state snapshot if one is present, skips
+transactions it has already seen, executes the rest against the CRDT, and updates the
+acknowledged progress and lifecycle state. Only after successful application does it remove
+acknowledged transactions from the push buffer, releasing capacity for later writes.
 
 ```mermaid
 sequenceDiagram
     participant EL as Event loop
+    participant TX as Local transaction gate
     participant MUT as Mutable state
     participant CONN as Backend
 
@@ -175,8 +220,10 @@ sequenceDiagram
     EL->>EL: release the lock
     EL->>CONN: exchange
     CONN-->>EL: response
+    EL->>TX: wait for local commit or rollback
     EL->>MUT: take the lock, validate and apply
     MUT-->>EL: progress and state updated
+    EL->>TX: release the gate
     Note over EL,MUT: local reads and writes proceed<br/>while the exchange is in flight
 ```
 
@@ -192,8 +239,9 @@ to apply remote transactions to the same value local writes act on, and it must 
 opening a user transaction, checking write access, or recording undo actions — none of which
 apply to a change that already happened elsewhere. Giving the wired layer its own reference to
 the mutable state keeps the sync path out of the transaction machinery while still leaving one
-CRDT value per datatype. The cost is that the mutable state's invariants are a joint property
-of both paths rather than something the transactional layer alone can enforce.
+CRDT value per datatype. The wired path shares only the local transaction admission gate, which
+prevents remote application from interleaving with rollback while leaving protocol handling out
+of a user transaction. The mutable state's invariants remain a joint property of both paths.
 
 **The CRDT layer holds no locks and performs no I/O.** Convergence rules are the part that has
 to be right regardless of scheduling. Keeping them in a pure state machine means they can be
@@ -225,18 +273,21 @@ in return.
 | `ClientCommon` — collection, client identity, runtime handle, backend | `src/clients/common.rs` |
 | `DatatypeManager` — key-to-datatype table, subscribe-or-create, detach | `src/clients/datatype_manager.rs` |
 | Shared runtimes keyed by group | `src/utils/runtime.rs` |
-| `TransactionalDatatype` — scope, write-access checks, construction of the layers, event-loop start | `src/datatypes/transactional.rs` |
+| `DatatypeCore` — shared attributes, mutable state, transaction gate, and effects gate | `src/datatypes/core.rs` |
+| `TransactionalDatatype` — local transaction, write-access checks, construction of the layers, event-loop start | `src/datatypes/transactional.rs` |
 | `MutableDatatype` — the per-datatype state behind the lock | `src/datatypes/mutable.rs` |
 | `WiredDatatype` — package assembly and the backend call | `src/datatypes/wired.rs` |
 | `PullHandler` — validating and applying a response | `src/datatypes/pull_handler.rs` |
 | `Attribute` — shared attributes and the weak back-reference | `src/datatypes/common.rs` |
 | `Crdt` and its per-datatype implementations | `src/datatypes/crdts/` |
+| `DatatypeTarget` — weak instance reference for deferred notification and detach | `src/datatypes/target.rs` |
 | Public datatype handles | `src/datatypes/counter.rs`, `src/datatypes/variable.rs` |
 
 | Verified by | Tests |
 |-------------|-------|
 | `Client` and datatype handles are `Send + Sync` | `can_assert_send_and_sync_traits` in `src/clients/client.rs`, `src/datatypes/counter.rs`, `src/datatypes/variable.rs` |
 | A key already in the table cannot be built a second time | `can_use_subscribe_or_create_datatype` in `src/clients/datatype_manager.rs` |
+| Rejecting a duplicate build does not inspect mutable datatype state while holding the client table lock | `can_reject_a_duplicate_build_without_reading_mutable_state` in `src/clients/client.rs` |
 | Concurrent local operations are serialized | `can_run_transactions_concurrently` in `src/datatypes/counter.rs` |
 | Two clients converge over a shared backend | `can_sync_bidirectionally_between_two_clients` in `src/connectivity/local_datatype_server.rs` |
 | Convergence is independent of exchange order | `can_converge_via_cuid_tie_break_regardless_of_sync_order` in `src/datatypes/variable.rs` |
@@ -248,7 +299,7 @@ in return.
 - [`docs/client-and-datatype-builder.md`](client-and-datatype-builder.md) — building a client, naming rules, and the datatype builder chain
 - [`docs/core-types.md`](core-types.md) — identities, CRDT ordering keys, and progress counters
 - [`docs/datatype-state.md`](datatype-state.md) — the lifecycle states and the write access each allows
-- [`docs/transaction-and-rollback.md`](transaction-and-rollback.md) — transaction scope, serialization, and undo actions
+- [`docs/transaction-and-rollback.md`](transaction-and-rollback.md) — local transaction lifecycle, serialization, and undo actions
 - [`docs/variable.md`](variable.md) — the LWW `Variable` datatype
 - [`docs/connectivity.md`](connectivity.md) — the backend interface and the bundled backends
 - [`docs/event-loop.md`](event-loop.md) — event priorities, channels, and retry behavior
