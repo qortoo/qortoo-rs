@@ -15,9 +15,10 @@
 //! # Why a fixed budget instead of criterion
 //!
 //! Cost per operation is not constant in this SDK. A datatype accumulates its
-//! pending push buffer and its server-side history; a client accumulates every
-//! datatype ever registered in it and never releases the tokio worker threads of
-//! a dropped client. Every one of those makes later operations slower, so what a
+//! pending push buffer and its server-side history; a client retains registered
+//! datatypes until detach or manager drop, and a local backend retains wired
+//! subscriptions until unsubscribe. Those lifetimes also retain runtime resources.
+//! State growth can make later operations slower, so what a
 //! run reports depends on how many iterations the harness chose to run — and
 //! criterion (time-driven) picked roughly an order of magnitude more iterations
 //! than `go test -bench` did, which made the two halves incomparable in exactly
