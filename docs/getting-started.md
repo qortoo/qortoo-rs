@@ -1,6 +1,6 @@
 # Getting Started
 
-See the [architecture guide](missing-docs-validation-guide.md) for the SDK model.
+See the [architecture guide](architecture.md) for the SDK model.
 
 This is the complete first-run flow: adding the crate, creating a datatype, and syncing two
 clients. The root README's Quick Start is the short version of the same thing; this document
