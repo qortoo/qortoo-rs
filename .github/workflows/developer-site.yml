@@ -1,0 +1,63 @@
+name: Developer website
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'build.rs'
+      - 'examples/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'qortoo-ffi/**'
+      - '.github/workflows/developer-site.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: developer-site-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    if: github.event_name == 'pull_request'
+    # Merge the website workflow into qortoo/main before enabling this caller.
+    uses: qortoo/qortoo/.github/workflows/build-docs.yml@main
+    with:
+      candidate_sdk: rust
+      candidate_repository: ${{ github.event.pull_request.head.repo.full_name }}
+      candidate_sha: ${{ github.event.pull_request.head.sha }}
+
+  refresh:
+    if: github.repository == 'qortoo/qortoo-rs' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Check dispatch credential
+        env:
+          WORKFLOW_PAT: ${{ secrets.WORKFLOW_PAT }}
+        run: |
+          if [ -z "$WORKFLOW_PAT" ]; then
+            echo '::error::Configure WORKFLOW_PAT with Actions write access to qortoo/qortoo.'
+            exit 1
+          fi
+      - name: Request website refresh
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.WORKFLOW_PAT }}
+          script: |
+            const response = await github.rest.actions.createWorkflowDispatch({
+              owner: 'qortoo', repo: 'qortoo', workflow_id: 'docs.yml', ref: 'main',
+              headers: { 'X-GitHub-Api-Version': '2026-03-10' },
+              inputs: { candidate_sdk: 'none' },
+            });
+            core.info(`Website refresh requested by ${context.repo.owner}/${context.repo.repo}@${context.sha}.`);
+            if (response.data?.html_url) core.info(`Website run: ${response.data.html_url}`);

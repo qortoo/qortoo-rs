@@ -97,6 +97,23 @@ npm registry on first run, so it's a separate target and a separate CI job. Neit
 script checks that a diagram's labels still match the code — that's still a manual
 comparison against `src/`, same as any other claim in a concept doc.
 
+## Developer Website Checks
+
+Keep user guides in this repository's `docs/` directory and API explanations in
+Rust documentation comments. The **Developer website** PR check builds both with
+the PR's exact head commit, including fork heads, through the shared
+[website workflow](https://github.com/qortoo/qortoo/blob/main/.github/workflows/build-docs.yml).
+It validates the combined portal without deployment permissions or inherited secrets.
+
+For a local portal preview, place a `qortoo` and `qortoo-go` checkout beside this
+repository and follow the website's
+[development and candidate-validation guide](https://github.com/qortoo/qortoo/blob/main/docs/developer-site.md).
+Use `QORTOO_RS_REF=HEAD` to include your committed SDK change. A `main` push that
+changes documentation or API inputs requests a website refresh through a separate
+job. Maintainers configure `WORKFLOW_PAT` with Actions write access to
+`qortoo/qortoo`; PR validation never receives it. To retry, manually run
+**Developer website** on `main`, or use **Documentation** in the website's Actions tab.
+
 ## Coding Style
 
 - Standard Rust style: 4-space indentation, `snake_case` for functions and modules,
