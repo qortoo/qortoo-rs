@@ -68,7 +68,7 @@ make measure-resources RESOURCE_OUTPUT=/tmp/qortoo-resources.json RESOURCE_ROUND
 
 The defaults are `target/resource-measurements.json`, three rounds, and 500 samples
 per API path. The output file is replaced on each run. This target builds with default
-features before invoking the Python driver; it is separate from `make bench` and CI.
+features before invoking the Python driver; it is separate from the central latency benchmarks and CI.
 The driver also remains directly callable for custom builds and sampling options.
 
 The Python driver supports macOS and Linux with `ps`, uses a fresh process per case,

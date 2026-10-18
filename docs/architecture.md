@@ -306,5 +306,5 @@ in return.
 - [`docs/handler-system.md`](handler-system.md) — how a datatype reports state changes and errors
 - [`docs/error-handling.md`](error-handling.md) — the error taxonomy and recovery actions
 - [`docs/observability.md`](observability.md) — tracing, metrics, and profiling
-- [`docs/performance.md`](performance.md) — the benchmark harness and its comparison contract
+- [`docs/performance.md`](performance.md) — central benchmark ownership and measurement contracts
 - [`docs/go-binding.md`](go-binding.md) — the C ABI and native SDK layered on this core

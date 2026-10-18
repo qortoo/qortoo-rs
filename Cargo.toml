@@ -99,12 +99,6 @@ name = "trace"
 path = "examples/observability/trace.rs"
 required-features = ["observability-trace"]
 
-# Fixed-budget Rust core harness. Language bindings can pair its Go-format output
-# with their own measurements; see `docs/performance.md`.
-[[bench]]
-name = "qortoo_bench"
-harness = false
-
 [dev-dependencies]
 rstest = "^0.27.0"
 awaitility = "^0.4.1"
