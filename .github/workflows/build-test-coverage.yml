@@ -102,8 +102,7 @@ jobs:
             --out Lcov \
             --out html \
             --out xml \
-            --output-dir ./coverage \
-            --exclude-files 'benches/*'
+            --output-dir ./coverage
 
       - name: Generate coverage badge
         run: |

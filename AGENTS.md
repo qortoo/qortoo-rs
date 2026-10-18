@@ -55,7 +55,7 @@ The full architecture is documented in `docs/`, kept accurate via `/qortoo-rust:
 - [`docs/error-handling.md`](docs/error-handling.md) — error taxonomy, `RecoveryAction` routing, sync-path vs commit-path recovery
 - [`docs/observability.md`](docs/observability.md) — feature flags (`observability-log` / `-trace` / `-metrics` / umbrella), managed setup, local stack (`make obs-up`)
 - [`docs/go-binding.md`](docs/go-binding.md) — `qortoo-ffi` C ABI, ownership rules, error mapping, header generation, and native SDK staging
-- [`docs/performance.md`](docs/performance.md) — Rust core fixed-budget benchmark harness; cross-language comparison is owned by `qortoo-go`
+- [`docs/performance.md`](docs/performance.md) — central Rust/Go latency benchmarks and results owned by `qortoo-bench`
 
 When you change behavior described in one of these documents, update it in the same change — don't let `AGENTS.md` or `docs/` drift from the code (this happened before: this file used to duplicate `DatatypeState`'s variant names inline and had gone stale relative to `src/types/datatype.rs`; the fix was deleting the duplicate and linking to `docs/datatype-state.md` instead).
 

@@ -38,7 +38,7 @@ layers that wrap each other.
 | [Error Handling](error-handling.md) | Error taxonomy, `RecoveryAction` routing, and sync-path vs commit-path recovery |
 | [Observability](observability.md) | Rust tracing, log layer, Prometheus metrics, Pyroscope profiling, and managed exporters |
 | [C ABI and Native SDK](go-binding.md) | `qortoo-ffi` ownership, error/callback contracts, header generation, and SDK staging |
-| [Performance](performance.md) | Rust core fixed-budget benchmark harness and comparison contract |
+| [Performance](performance.md) | Central Rust/Go benchmark ownership and result interpretation |
 | [Runtime Resources](runtime-resources.md) | Per-client workers, per-datatype blocking loops, callback progress, shutdown ownership, and resource probes |
 
 ## Usage Guides

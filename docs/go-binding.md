@@ -234,4 +234,4 @@ re-linking rather than swapping a shared object at deploy time.
 - [`docs/variable.md`](variable.md) — the value contract the raw buffer entry points carry
 - [`docs/handler-system.md`](handler-system.md) — the handler contract this boundary bridges to a foreign callback
 - [`docs/datatype-state.md`](datatype-state.md) — the lifecycle values exposed through the shared handle
-- [`docs/performance.md`](performance.md) — the Rust core benchmark a binding's own numbers are compared against
+- [`docs/performance.md`](performance.md) — central public-API latency measurements for Rust and Go

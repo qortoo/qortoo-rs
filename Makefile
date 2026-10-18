@@ -10,7 +10,7 @@ lint:
 
 .PHONY: tarpaulin
 tarpaulin:
-	cargo tarpaulin -o html -o xml -o Lcov --workspace --tests --all-features --engine Llvm --fail-under 90 --output-dir ./coverage --exclude-files 'benches/*'
+	cargo tarpaulin -o html -o xml -o Lcov --workspace --tests --all-features --engine Llvm --fail-under 90 --output-dir ./coverage
 	open coverage/tarpaulin-report.html
 
 # Local, informational only — not run in CI. Line coverage is a poor completeness
@@ -99,13 +99,6 @@ native-sdk-stage:
 	printf '{\n  "sdk_version": "%s",\n  "abi_version_major": %s,\n  "abi_version_minor": %s,\n  "profile": "%s",\n  "target": "%s"\n}\n' \
 		"$(QORTOO_FFI_VERSION)" "$$abi_major" "$$abi_minor" "$(NATIVE_SDK_PROFILE)" "$(RUST_TARGET)" \
 		> $(NATIVE_SDK_DIR)/manifest.json
-
-# ── Rust core benchmarks (see docs/performance.md) ────────────────────────────
-.PHONY: bench bench-rust
-bench: bench-rust
-
-bench-rust:
-	cargo bench --bench qortoo_bench
 
 # Informational resource probe, separate from benchmarks and CI gates.
 RESOURCE_OUTPUT ?= target/resource-measurements.json

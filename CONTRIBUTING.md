@@ -6,6 +6,9 @@ work rules on top of this (test naming, what belongs in `qortoo-ffi` vs the core
 plan-tracking conventions) that apply to every contributor, agent or human, regardless
 of tooling.
 
+Benchmark workloads and result tracking belong to [qortoo-bench](https://github.com/qortoo/qortoo-bench).
+See [Performance](docs/performance.md) for the central execution and result guides.
+
 ## Prerequisites
 
 - Edition 2024, with a declared minimum of Rust `1.87.0` (`rust-version` in
@@ -28,7 +31,6 @@ cargo test module_name::              # run a module's tests
 make lint                             # nightly fmt check, cargo check, clippy -D warnings
 make tarpaulin                        # coverage (local: 90% minimum; CI: 80% minimum)
 make doc                              # generate rustdoc
-make bench                            # fixed-budget benchmarks (see docs/performance.md)
 make measure-resources                # release build, then isolated resource probes (macOS/Linux, Python 3 + ps)
 make native-sdk-stage                 # stage the C header, static lib, pkg-config, manifest
 
