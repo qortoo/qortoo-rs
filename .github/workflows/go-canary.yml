@@ -1,0 +1,35 @@
+name: Go binding canary
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  dispatch:
+    if: github.repository == 'qortoo/qortoo-rs' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check dispatch credential
+        env:
+          WORKFLOW_PAT: ${{ secrets.WORKFLOW_PAT }}
+        run: |
+          if [ -z "$WORKFLOW_PAT" ]; then
+            echo '::error::Configure WORKFLOW_PAT with Actions write access to qortoo/qortoo-go.'
+            exit 1
+          fi
+      - name: Request Go canary for this commit
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.WORKFLOW_PAT }}
+          script: |
+            const response = await github.rest.actions.createWorkflowDispatch({
+              owner: 'qortoo', repo: 'qortoo-go', workflow_id: 'canary.yml', ref: 'main',
+              headers: { 'X-GitHub-Api-Version': '2026-03-10' },
+              inputs: { qortoo_rs_sha: context.sha },
+            });
+            core.info(`Go canary requested for qortoo-rs@${context.sha}.`);
+            if (response.data?.html_url) core.info(`Canary run: ${response.data.html_url}`);

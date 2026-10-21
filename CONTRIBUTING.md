@@ -116,6 +116,18 @@ job. Maintainers configure `WORKFLOW_PAT` with Actions write access to
 `qortoo/qortoo`; PR validation never receives it. To retry, manually run
 **Developer website** on `main`, or use **Documentation** in the website's Actions tab.
 
+## Go Binding Canary
+
+Every push to `main` runs **Go binding canary**, which dispatches
+`qortoo-go`'s `canary.yml` on `main` with this commit's exact SHA. The Go workflow
+checks Linux and macOS compatibility and proposes a native SDK pin update after
+both pass. A manual run on `main` retries the dispatch.
+
+Configure `WORKFLOW_PAT` in this repository with access to `qortoo/qortoo-go` and
+Actions write permission. This is separate from the Go repository's credential
+used to push workflow pin updates. Enable the updated receiver on `qortoo-go/main`
+before enabling this caller. PR workflows do not receive the dispatch credential.
+
 ## Coding Style
 
 - Standard Rust style: 4-space indentation, `snake_case` for functions and modules,
