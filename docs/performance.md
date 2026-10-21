@@ -28,3 +28,13 @@ Smoke runs check execution and state, not performance.
 For client/datatype scaling, resident memory, idle threads, and shutdown observations,
 see [Runtime Resources](runtime-resources.md). Its process-isolated resource probe
 is separate from latency benchmarks and remains an SDK development tool.
+
+## Automatic main measurements
+
+Every push to this SDK's `main` requests a run in qortoo-bench with the exact push
+SHA. The central request ledger preserves the dependency selection and attempt
+outcomes. See the [central workflow guide](https://github.com/qortoo/qortoo-bench/blob/main/docs/central-workflow.md)
+for credentials, request status, retries, and compatibility failures.
+
+SDK pull requests do not automatically request central measurements. Manual central
+runs remain available. Central latency measurements do not measure heap allocations.
