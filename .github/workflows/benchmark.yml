@@ -1,0 +1,56 @@
+name: Central benchmark request
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact SHA of a failed main push request
+        type: string
+        required: true
+      source_run_id:
+        description: Original push-triggered benchmark request run ID
+        type: string
+        required: true
+
+permissions: {}
+
+jobs:
+  notify:
+    if: github.repository == 'qortoo/qortoo-rs' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # No checkout: SDK code never runs with the cross-repository dispatch token.
+      - name: Request the central benchmark
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          WORKFLOW_PAT: ${{ secrets.WORKFLOW_PAT }}
+        with:
+          github-token: ${{ secrets.WORKFLOW_PAT || github.token }}
+          script: |
+            const sha = context.payload.inputs?.source_sha || context.sha;
+            const run = context.payload.inputs?.source_run_id || String(context.runId);
+            if (!/^[0-9a-f]{40}$/.test(sha) || !/^[0-9]+$/.test(run)) {
+              core.setFailed('A full source SHA and original main push run ID are required.');
+              return;
+            }
+            const inputs = {source_component: 'rust', source_sha: sha, source_run_id: run};
+            const recovery = `gh workflow run benchmark.yml --repo qortoo/qortoo-bench --ref main -f source_component=rust -f source_sha=${sha} -f source_run_id=${run}`;
+            if (!process.env.WORKFLOW_PAT) {
+              await core.summary.addHeading('Central dispatch credential is missing').addCodeBlock(recovery, 'sh').write();
+              core.setFailed('WORKFLOW_PAT is required: grant Actions write on qortoo/qortoo-bench.');
+              return;
+            }
+            try {
+              const response = await github.rest.actions.createWorkflowDispatch({owner: 'qortoo', repo: 'qortoo-bench', workflow_id: 'benchmark.yml', ref: 'main', inputs, headers: {'X-GitHub-Api-Version': '2026-03-10'}});
+              const centralUrl = response.data?.html_url || 'https://github.com/qortoo/qortoo-bench/actions/workflows/benchmark.yml';
+              await core.summary.addHeading('Central benchmark request accepted')
+                .addRaw(`Source: ${context.repo.owner}/${context.repo.repo}@${sha}\n\n`)
+                .addLink('Central workflow runs (acceptance is not measurement success)', centralUrl)
+                .addCodeBlock(recovery, 'sh').write();
+            } catch (error) {
+              await core.summary.addHeading('Central dispatch failed').addCodeBlock(recovery, 'sh').write();
+              core.setFailed(`Central benchmark dispatch failed: ${error.message}`);
+            }
