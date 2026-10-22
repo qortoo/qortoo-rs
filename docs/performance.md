@@ -43,4 +43,4 @@ website performance data and does not block merging based on a numeric threshold
 Manual central runs remain available. Central latency measurements do not measure
 heap allocations.
 
-<!-- Temporary candidate routing validation: first head. -->
+<!-- Temporary candidate routing validation: updated head. -->
