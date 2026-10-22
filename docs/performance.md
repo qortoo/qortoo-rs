@@ -42,3 +42,7 @@ Actions approval policy. The candidate result never updates official history or
 website performance data and does not block merging based on a numeric threshold.
 Manual central runs remain available. Central latency measurements do not measure
 heap allocations.
+
+The PR notifier locates open PRs by the source run's head owner and branch, then
+requires an exact repository, branch, and commit match. Recovery of an old head
+skips the request instead of substituting the PR's latest commit.

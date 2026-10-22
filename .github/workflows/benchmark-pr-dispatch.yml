@@ -46,8 +46,15 @@ jobs:
               core.setFailed('The source must be a successful Benchmark PR event run.');
               return;
             }
-            const {data: associated} = await github.rest.repos.listPullRequestsAssociatedWithCommit({owner, repo, commit_sha: origin.head_sha, per_page: 100});
-            const prs = associated.filter(pr => pr.state === 'open' && pr.base.ref === 'main' && pr.base.repo.full_name === owner + '/' + repo && pr.head.sha === origin.head_sha && (!number || pr.number === Number(number)));
+            const headRepository = origin.head_repository?.full_name;
+            const headOwner = origin.head_repository?.owner?.login;
+            if (!headRepository || !headOwner || !origin.head_branch || headRepository.split('/')[0] !== headOwner) {
+              core.setFailed('The source run must identify its head repository and branch.');
+              return;
+            }
+            // Fork commits may have no associated PRs in the base repository's commit API.
+            const associated = await github.paginate(github.rest.pulls.list, {owner, repo, state: 'open', base: 'main', head: headOwner + ':' + origin.head_branch, per_page: 100});
+            const prs = associated.filter(pr => pr.state === 'open' && pr.base.ref === 'main' && pr.base.repo.full_name === owner + '/' + repo && pr.head.repo?.full_name === headRepository && pr.head.ref === origin.head_branch && pr.head.sha === origin.head_sha && (!number || pr.number === Number(number)));
             if (!prs.length) {
               await core.summary.addHeading('No current PR head to measure').addRaw('The PR was closed or superseded.').write();
               return;
