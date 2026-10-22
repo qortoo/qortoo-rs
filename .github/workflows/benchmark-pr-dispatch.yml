@@ -1,0 +1,67 @@
+name: Central PR benchmark request
+
+on:
+  workflow_run:
+    workflows: [Benchmark PR event]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Successful Benchmark PR event run ID to recover
+        type: string
+        required: true
+      pr_number:
+        description: Open PR number associated with the source run
+        type: string
+        required: true
+
+permissions: {}
+
+jobs:
+  notify:
+    if: github.repository == 'qortoo/qortoo-rs' && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || (github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # This default-branch job only handles API metadata; it never downloads PR code or artifacts.
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          WORKFLOW_PAT: ${{ secrets.WORKFLOW_PAT }}
+        with:
+          github-token: ${{ secrets.WORKFLOW_PAT || github.token }}
+          script: |
+            const runId = context.payload.inputs?.source_run_id || String(context.payload.workflow_run?.id || '');
+            const number = context.payload.inputs?.pr_number;
+            if (!/^[0-9]+$/.test(runId) || (number && !/^[1-9][0-9]*$/.test(number))) {
+              core.setFailed('A source run ID and valid PR number are required.');
+              return;
+            }
+            if (!process.env.WORKFLOW_PAT) {
+              core.setFailed('WORKFLOW_PAT requires Actions write on qortoo/qortoo-bench. Rerun this notifier after configuration.');
+              return;
+            }
+            const {owner, repo} = context.repo;
+            const {data: origin} = await github.rest.actions.getWorkflowRun({owner, repo, run_id: runId});
+            if (origin.event !== 'pull_request' || origin.conclusion !== 'success' || origin.path.split('@')[0] !== '.github/workflows/benchmark-pr.yml' || !/^[0-9a-f]{40}$/.test(origin.head_sha)) {
+              core.setFailed('The source must be a successful Benchmark PR event run.');
+              return;
+            }
+            const {data: associated} = await github.rest.repos.listPullRequestsAssociatedWithCommit({owner, repo, commit_sha: origin.head_sha, per_page: 100});
+            const prs = associated.filter(pr => pr.state === 'open' && pr.base.ref === 'main' && pr.base.repo.full_name === owner + '/' + repo && pr.head.sha === origin.head_sha && (!number || pr.number === Number(number)));
+            if (!prs.length) {
+              await core.summary.addHeading('No current PR head to measure').addRaw('The PR was closed or superseded.').write();
+              return;
+            }
+            for (const pr of prs) {
+              const inputs = {source_component: 'rust', source_pr: String(pr.number), source_sha: origin.head_sha, source_run_id: runId};
+              const recovery = `gh workflow run candidate.yml --repo qortoo/qortoo-bench --ref main -f source_component=rust -f source_pr=${pr.number} -f source_sha=${origin.head_sha} -f source_run_id=${runId}`;
+              try {
+                const response = await github.rest.actions.createWorkflowDispatch({owner: 'qortoo', repo: 'qortoo-bench', workflow_id: 'candidate.yml', ref: 'main', inputs, headers: {'X-GitHub-Api-Version': '2026-03-10'}});
+                await core.summary.addHeading('PR #' + pr.number + ' candidate request accepted')
+                  .addLink('Central run (acceptance is not measurement success)', response.data?.html_url || 'https://github.com/qortoo/qortoo-bench/actions/workflows/candidate.yml')
+                  .addCodeBlock(recovery, 'sh').write();
+              } catch (error) {
+                await core.summary.addHeading('Central candidate dispatch failed').addCodeBlock(recovery, 'sh').write();
+                core.setFailed(error.message);
+              }
+            }
