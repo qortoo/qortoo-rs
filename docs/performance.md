@@ -36,5 +36,9 @@ SHA. The central request ledger preserves the dependency selection and attempt
 outcomes. See the [central workflow guide](https://github.com/qortoo/qortoo-bench/blob/main/docs/central-workflow.md)
 for credentials, request status, retries, and compatibility failures.
 
-SDK pull requests do not automatically request central measurements. Manual central
-runs remain available. Central latency measurements do not measure heap allocations.
+PRs targeting `main` request a separate [candidate base/head comparison](https://github.com/qortoo/qortoo-bench/blob/main/docs/pr-candidates.md)
+after the PR event workflow succeeds. Fork PRs follow the source repository's
+Actions approval policy. The candidate result never updates official history or
+website performance data and does not block merging based on a numeric threshold.
+Manual central runs remain available. Central latency measurements do not measure
+heap allocations.

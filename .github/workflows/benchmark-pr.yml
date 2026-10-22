@@ -1,0 +1,16 @@
+name: Benchmark PR event
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize]
+
+permissions: {}
+
+jobs:
+  event:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Record the PR event without checking out SDK code
+        run: echo 'The trusted completion notifier will request a central candidate benchmark.'
