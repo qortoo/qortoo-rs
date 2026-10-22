@@ -44,6 +44,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Test benchmark notifier routing
+        run: node --test .github/tests/benchmark-pr-dispatch.test.mjs
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@1.97.1
 
