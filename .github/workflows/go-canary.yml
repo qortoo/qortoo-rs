@@ -3,6 +3,16 @@ name: Go binding canary
 on:
   push:
     branches: [main]
+    # Exclude only known documentation/policy inputs. Unknown paths still run.
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - 'CONTRIBUTING.md'
+      - 'AGENTS.md'
+      - 'LICENSE'
+      - '.github/CODEOWNERS'
+      - '.github/ISSUE_TEMPLATE/**'
+      - '.github/workflows/assign-reviewers.yml'
   workflow_dispatch:
 
 permissions: {}

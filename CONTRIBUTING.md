@@ -118,10 +118,18 @@ job. Maintainers configure `WORKFLOW_PAT` with Actions write access to
 
 ## Go Binding Canary
 
-Every push to `main` runs **Go binding canary**, which dispatches
+Pushes to `main` run **Go binding canary**, except when all changed paths are under
+`docs/` or `.github/ISSUE_TEMPLATE/`, or are root `README.md`, `CONTRIBUTING.md`,
+`AGENTS.md`, `LICENSE`, `.github/CODEOWNERS`, or
+`.github/workflows/assign-reviewers.yml`. The workflow dispatches
 `qortoo-go`'s `canary.yml` on `main` with this commit's exact SHA. The Go workflow
 checks Linux and macOS compatibility and proposes a native SDK pin update after
 both pass. A manual run on `main` retries the dispatch.
+
+Code, FFI headers and packaging, dependencies, build configuration, tests, examples,
+and unknown paths continue to request the canary, including when mixed with ignored
+paths. Commit-hash metadata alone does not require a new compatibility check or pin.
+The push filter does not restrict manual runs.
 
 Configure `WORKFLOW_PAT` in this repository with access to `qortoo/qortoo-go` and
 Actions write permission. This is separate from the Go repository's credential
