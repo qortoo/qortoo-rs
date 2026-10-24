@@ -3,6 +3,16 @@ name: Central benchmark request
 on:
   push:
     branches: [main]
+    # Exclude only known documentation and repository metadata; mixed changes run.
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - 'CONTRIBUTING.md'
+      - 'AGENTS.md'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.github/CODEOWNERS'
+      - '.github/ISSUE_TEMPLATE/**'
   workflow_dispatch:
     inputs:
       source_sha:

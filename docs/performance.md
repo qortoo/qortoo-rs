@@ -31,10 +31,13 @@ is separate from latency benchmarks and remains an SDK development tool.
 
 ## Automatic main measurements
 
-Every push to this SDK's `main` requests a run in qortoo-bench with the exact push
-SHA. The central request ledger preserves the dependency selection and attempt
-outcomes. See the [central workflow guide](https://github.com/qortoo/qortoo-bench/blob/main/docs/central-workflow.md)
-for credentials, request status, retries, and compatibility failures.
+Pushes to `main` request central benchmarks for code, dependency, build, or
+validation changes. Documentation-only and repository metadata changes are skipped
+according to the [workflow filters](../.github/workflows/benchmark.yml).
+
+Each request identifies the exact push SHA, and the central ledger preserves its
+dependency selection and outcomes. For manual measurements and recovery, see the
+[central workflow guide](https://github.com/qortoo/qortoo-bench/blob/main/docs/central-workflow.md).
 
 PRs targeting `main` request a separate [candidate base/head comparison](https://github.com/qortoo/qortoo-bench/blob/main/docs/pr-candidates.md)
 after the PR event workflow succeeds. Fork PRs follow the source repository's
