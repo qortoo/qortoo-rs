@@ -3,14 +3,33 @@ name: Developer website
 on:
   pull_request:
     branches: [main]
-  push:
-    branches: [main]
     paths:
+      - 'README.md'
       - 'docs/**'
       - 'src/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'build.rs'
+      - '.cargo/**'
+      - 'rust-toolchain'
+      - 'rust-toolchain.toml'
+      - 'examples/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'qortoo-ffi/**'
+      - '.github/workflows/developer-site.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'README.md'
+      - 'docs/**'
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'build.rs'
+      - '.cargo/**'
+      - 'rust-toolchain'
+      - 'rust-toolchain.toml'
       - 'examples/**'
       - 'tests/**'
       - 'scripts/**'

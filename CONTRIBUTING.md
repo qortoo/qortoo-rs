@@ -102,10 +102,14 @@ comparison against `src/`, same as any other claim in a concept doc.
 ## Developer Website Checks
 
 Keep user guides in this repository's `docs/` directory and API explanations in
-Rust documentation comments. The **Developer website** PR check builds both with
+Rust documentation comments. The **Developer website** PR check runs for documentation and API inputs, then builds both with
 the PR's exact head commit, including fork heads, through the shared
 [website workflow](https://github.com/qortoo/qortoo/blob/main/.github/workflows/build-docs.yml).
 It validates the combined portal without deployment permissions or inherited secrets.
+
+PR validation and main refresh use the same [path filters](.github/workflows/developer-site.yml).
+Metadata-only and unrelated workflow changes skip these checks; mixed changes run.
+Manual main refresh remains available.
 
 For a local portal preview, place a `qortoo` and `qortoo-go` checkout beside this
 repository and follow the website's
