@@ -9,14 +9,18 @@ on:
     branches: [ "main" ]
     paths:
       - '**/*.md'
+      - 'docs/**'
       - 'scripts/check_doc_links.py'
       - 'scripts/check_mermaid.py'
+      - '.github/workflows/check-docs.yml'
   pull_request:
     branches: [ "main" ]
     paths:
       - '**/*.md'
+      - 'docs/**'
       - 'scripts/check_doc_links.py'
       - 'scripts/check_mermaid.py'
+      - '.github/workflows/check-docs.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}

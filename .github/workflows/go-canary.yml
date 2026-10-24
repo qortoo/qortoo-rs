@@ -1,25 +1,16 @@
 name: Go binding canary
 
 on:
-  push:
+  workflow_run:
+    workflows: [Build and Test]
+    types: [completed]
     branches: [main]
-    # Exclude only known documentation/policy inputs. Unknown paths still run.
-    paths-ignore:
-      - 'docs/**'
-      - 'README.md'
-      - 'CONTRIBUTING.md'
-      - 'AGENTS.md'
-      - 'LICENSE'
-      - '.github/CODEOWNERS'
-      - '.github/ISSUE_TEMPLATE/**'
-      - '.github/workflows/assign-reviewers.yml'
-  workflow_dispatch:
 
 permissions: {}
 
 jobs:
   dispatch:
-    if: github.repository == 'qortoo/qortoo-rs' && github.ref == 'refs/heads/main'
+    if: github.repository == 'qortoo/qortoo-rs' && github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == 'qortoo/qortoo-rs'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -31,7 +22,7 @@ jobs:
             echo '::error::Configure WORKFLOW_PAT with Actions write access to qortoo/qortoo-go.'
             exit 1
           fi
-      - name: Request Go canary for this commit
+      - name: Request Go canary for current Rust main
         uses: actions/github-script@v8
         with:
           github-token: ${{ secrets.WORKFLOW_PAT }}
@@ -39,7 +30,6 @@ jobs:
             const response = await github.rest.actions.createWorkflowDispatch({
               owner: 'qortoo', repo: 'qortoo-go', workflow_id: 'canary.yml', ref: 'main',
               headers: { 'X-GitHub-Api-Version': '2026-03-10' },
-              inputs: { qortoo_rs_sha: context.sha },
             });
-            core.info(`Go canary requested for qortoo-rs@${context.sha}.`);
+            core.info(`Go canary requested after successful Rust build ${context.payload.workflow_run.html_url}.`);
             if (response.data?.html_url) core.info(`Canary run: ${response.data.html_url}`);

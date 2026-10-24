@@ -118,18 +118,26 @@ job. Maintainers configure `WORKFLOW_PAT` with Actions write access to
 
 ## Go Binding Canary
 
-Pushes to `main` run **Go binding canary**, except when all changed paths are under
-`docs/` or `.github/ISSUE_TEMPLATE/`, or are root `README.md`, `CONTRIBUTING.md`,
-`AGENTS.md`, `LICENSE`, `.github/CODEOWNERS`, or
-`.github/workflows/assign-reviewers.yml`. The workflow dispatches
-`qortoo-go`'s `canary.yml` on `main` with this commit's exact SHA. The Go workflow
-checks Linux and macOS compatibility and proposes a native SDK pin update after
-both pass. A manual run on `main` retries the dispatch.
+After **Build and Test** succeeds for a push to this repository's `main`,
+**Go binding canary** requests `qortoo-go`'s `canary.yml` on `main` without a SHA.
+Failed, canceled, and PR builds do not request the canary. Changes excluded by
+Build and Test's path filters do not create a build or a canary request.
 
-Code, FFI headers and packaging, dependencies, build configuration, tests, examples,
-and unknown paths continue to request the canary, including when mixed with ignored
-paths. Commit-hash metadata alone does not require a new compatibility check or pin.
-The push filter does not restrict manual runs.
+Build and Test excludes documentation and assets under `docs/`, Markdown files,
+the two documentation check scripts, the documentation-check and developer-site
+workflows, and `.rustfmt.toml`, in addition to repository metadata and the local
+Docker stack. These files are not inputs to this workflow. Documentation checks
+still run for changes to documentation, its assets, their check scripts, or the
+documentation-check workflow. Code, Cargo/FFI inputs, tests, examples, and other
+workflow changes continue to run Build and Test, including mixed changes.
+
+The Go workflow resolves Rust `main` when it starts and uses that same SHA for
+Linux/macOS compatibility checks and the proposed native SDK pin. The selected
+SHA can be newer than the successful build that requested the run; that build's
+success gates the request, not the selection of the latest main revision.
+
+For a manual retry, run Canary in `qortoo-go` on `main`. Its optional
+`qortoo_rs_sha` input selects a full Rust SHA; leaving it empty tests current main.
 
 Configure `WORKFLOW_PAT` in this repository with access to `qortoo/qortoo-go` and
 Actions write permission. This is separate from the Go repository's credential

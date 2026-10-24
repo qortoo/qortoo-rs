@@ -4,9 +4,14 @@ on:
   push:
     branches: [ "main" ]
     paths-ignore:
-      # Prose and editor/tooling assets are not build inputs: no `include_str!`
-      # pulls them into the crate, and CI never runs the docker stack.
+      # Docs/tooling are not build inputs; CI runs neither rustfmt nor the Docker stack.
       - '**/*.md'
+      - 'docs/**'
+      - 'scripts/check_doc_links.py'
+      - 'scripts/check_mermaid.py'
+      - '.github/workflows/check-docs.yml'
+      - '.github/workflows/developer-site.yml'
+      - '.rustfmt.toml'
       - 'LICENSE'
       - '.gitignore'
       - '.github/CODEOWNERS'
@@ -17,6 +22,12 @@ on:
     branches: [ "main" ]
     paths-ignore:
       - '**/*.md'
+      - 'docs/**'
+      - 'scripts/check_doc_links.py'
+      - 'scripts/check_mermaid.py'
+      - '.github/workflows/check-docs.yml'
+      - '.github/workflows/developer-site.yml'
+      - '.rustfmt.toml'
       - 'LICENSE'
       - '.gitignore'
       - '.github/CODEOWNERS'
