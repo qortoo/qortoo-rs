@@ -29,7 +29,7 @@ Qortoo is a Rust SDK for conflict-free replicated data types (CRDTs) with distri
 
 - Keep active plans in `qortoo-harness/.local/plans/`.
 - Before closing a plan, verify its checklist and external delivery state. Keep it active while any acceptance condition remains.
-- Mark a finished plan complete, record its final outcome, and move it to `qortoo-harness/.local/legacy/`. Retain completed plans; never commit either directory.
+- Mark a finished plan complete, record its final outcome, and move it to `qortoo-harness/.local/archive/`. Retain completed plans; never commit either directory.
 <!-- END QORTOO-HARNESS MANAGED BLOCK -->
 
 ## Project Structure & Module Organization
