@@ -4,6 +4,15 @@ on:
   pull_request:
     branches: [main]
     types: [opened, reopened, synchronize]
+    paths-ignore:
+      - 'docs/**'
+      - 'README.md'
+      - 'CONTRIBUTING.md'
+      - 'AGENTS.md'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.github/CODEOWNERS'
+      - '.github/ISSUE_TEMPLATE/**'
 
 permissions: {}
 
