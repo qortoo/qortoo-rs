@@ -4,9 +4,14 @@ on:
   push:
     branches: [ "main" ]
     paths-ignore:
-      # Prose and editor/tooling assets are not build inputs: no `include_str!`
-      # pulls them into the crate, and CI never runs the docker stack.
+      # Docs/tooling are not build inputs; CI runs neither rustfmt nor the Docker stack.
       - '**/*.md'
+      - 'docs/**'
+      - 'scripts/check_doc_links.py'
+      - 'scripts/check_mermaid.py'
+      - '.github/workflows/check-docs.yml'
+      - '.github/workflows/developer-site.yml'
+      - '.rustfmt.toml'
       - 'LICENSE'
       - '.gitignore'
       - '.github/CODEOWNERS'
@@ -17,6 +22,12 @@ on:
     branches: [ "main" ]
     paths-ignore:
       - '**/*.md'
+      - 'docs/**'
+      - 'scripts/check_doc_links.py'
+      - 'scripts/check_mermaid.py'
+      - '.github/workflows/check-docs.yml'
+      - '.github/workflows/developer-site.yml'
+      - '.rustfmt.toml'
       - 'LICENSE'
       - '.gitignore'
       - '.github/CODEOWNERS'
@@ -111,7 +122,7 @@ jobs:
         run: |
           COVERAGE=$(awk -F: '/^LF:/{lf+=$2} /^LH:/{lh+=$2} END{printf("%.2f%%\n", (lh/lf)*100)}' ./coverage/lcov.info)
           echo "COVERAGE=$COVERAGE"
-          echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
+          echo "coverage=$COVERAGE" >> "$GITHUB_OUTPUT"
         id: coverage
 
       - name: Upload coverage reports to Codecov
@@ -124,7 +135,7 @@ jobs:
 
       - name: Comment PR with coverage
         if: github.event_name == 'pull_request'
-        uses: actions/github-script@v6
+        uses: actions/github-script@v8
         with:
           script: |
             const coverage = '${{ steps.coverage.outputs.coverage }}';
