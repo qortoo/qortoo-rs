@@ -7,7 +7,7 @@ use crate::{
     connectivity::Connectivity,
     datatypes::{event_loop::Event, wired::WiredDatatype},
     errors::{connectivity::ConnectivityError, push_pull::PushPullError},
-    types::push_pull_pack::PushPullPack,
+    types::{checkpoint::CheckPoint, push_pull_pack::PushPullPack},
 };
 
 #[derive(Debug)]
@@ -19,8 +19,7 @@ impl NullConnectivity {
     }
 
     fn push_transaction(&self, pushed: &PushPullPack, pulled: &mut PushPullPack) {
-        pulled.checkpoint.cseq = pushed.checkpoint.cseq;
-        pulled.checkpoint.sseq = pushed.checkpoint.cseq;
+        pulled.checkpoint = CheckPoint::new(pushed.checkpoint.cseq, pushed.checkpoint.cseq);
     }
 
     fn set_illegal_push_request(&self, pulled: &mut PushPullPack, reason: &str) {

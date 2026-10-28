@@ -20,12 +20,16 @@ pub(crate) enum CounterRollbackAction {
     Increase { delta: i64 },
 }
 
-#[derive(Debug, Default, Clone, Display)]
+#[derive(Debug, Default, Display)]
 pub struct CounterCrdt {
     value: i64,
 }
 
 impl CounterCrdt {
+    pub(crate) fn fork_for_batch(&self) -> Self {
+        Self { value: self.value }
+    }
+
     pub fn increase_by(&mut self, delta: i64) -> i64 {
         self.value = self.value.wrapping_add(delta);
         self.value

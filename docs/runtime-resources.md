@@ -42,14 +42,13 @@ tasks cannot be forcibly cancelled, and neither runtime shutdown nor handle drop
 completion of every queued notification.
 
 Backend registration does not own a client's runtime. `LocalConnectivity` holds weak
-wired references; the event loop owns its wired instance until it exits. A snapshot
-exchange temporarily upgrades a live reference, keeping that provider alive for the
-snapshot. If the origin is gone, another live subscribed instance can provide it; if
-none remains, the server replays history. Dropping external handles can release client
-runtime ownership without an explicit unsubscribe. Already dispatched callbacks and
-in-flight exchanges can delay that release under the contracts above.
+wired references; the event loop owns its wired instance until it exits. The per-resource
+backend owns its accepted CRDT and generates subscription snapshots without upgrading client
+references. Dropping external handles can release client runtime ownership without an explicit
+unsubscribe. Already dispatched callbacks and in-flight exchanges can delay that release under
+the contracts above.
 
-While the backend itself is retained, dropping client handles preserves server history
+While the backend itself is retained, dropping client handles preserves server CRDT state, history
 and subscription records for later subscribers. Use `unsubscribe()` and `sync()` to
 remove a subscription explicitly; the resource is removed when all subscriptions and
 registrations have been removed. Dropping the backend releases its stored records.
@@ -163,7 +162,7 @@ or datatype counts exceed the measured envelope.
 | Runtime ownership | `src/clients/common.rs` |
 | Blocking event loop and stop acknowledgement | `src/datatypes/event_loop.rs` |
 | Notification lifetime and synchronous handler execution | `src/datatypes/handler.rs` |
-| Local backend weak registration and snapshot providers | `src/connectivity/local_datatype_server.rs` |
+| Local backend weak registration and backend-owned snapshots | `src/connectivity/local_datatype_server.rs` |
 | Isolated public API probe and OS sampling | `examples/resource_probe.rs`, `scripts/measure_resources.py` |
 
 See [Performance](performance.md) for the separate fixed-budget Rust/Go comparison

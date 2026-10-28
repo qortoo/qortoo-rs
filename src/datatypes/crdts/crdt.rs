@@ -11,13 +11,23 @@ use crate::{
     types::operation_context::OperationContext,
 };
 
-#[derive(Debug, Clone, Display)]
+#[derive(Debug, Display)]
 pub enum Crdt {
     Counter(CounterCrdt),
     Variable(VariableCrdt),
 }
 
 impl Crdt {
+    /// Creates an isolated batch candidate in O(1), sharing immutable payloads.
+    /// Never clone CRDT collections here; new datatypes must provide an O(1) fork.
+    /// Batch writes must not defer a full collection copy to copy-on-write either.
+    pub(crate) fn fork_for_batch(&self) -> Self {
+        match self {
+            Self::Counter(counter) => Self::Counter(counter.fork_for_batch()),
+            Self::Variable(variable) => Self::Variable(variable.fork_for_batch()),
+        }
+    }
+
     pub fn new(r#type: DataType) -> Self {
         match r#type {
             DataType::Counter => Crdt::Counter(CounterCrdt::default()),
@@ -99,6 +109,8 @@ impl Crdt {
 
 #[cfg(test)]
 mod tests_crdt {
+    use std::sync::Arc;
+
     use tracing::instrument;
 
     use crate::{
@@ -110,6 +122,35 @@ mod tests_crdt {
         operations::Operation,
         types::{operation_context::OperationContext, uid::Cuid},
     };
+
+    #[test]
+    fn can_fork_a_variable_batch_without_copying_or_mutating_its_payload() {
+        let mut source = Crdt::new(DataType::Variable);
+        let cuid = Cuid::try_from("0000000000000001").unwrap();
+        let mut operation =
+            Operation::new_variable_set(br#""initial""#.to_vec().into_boxed_slice());
+        operation.set_lamport(1);
+        source
+            .execute_remote_operation(&OperationContext::try_new(&operation, &cuid).unwrap())
+            .unwrap();
+        let mut candidate = source.fork_for_batch();
+        let original = source.as_variable().unwrap();
+        let forked = candidate.as_variable().unwrap();
+        assert!(Arc::ptr_eq(
+            &original.shared_value(),
+            &forked.shared_value()
+        ));
+        assert_eq!(original.timestamp(), forked.timestamp());
+
+        let mut update = Operation::new_variable_set(br#""changed""#.to_vec().into_boxed_slice());
+        update.set_lamport(2);
+        candidate
+            .execute_remote_operation(&OperationContext::try_new(&update, &cuid).unwrap())
+            .unwrap();
+        assert_eq!(source.as_variable().unwrap().value(), br#""initial""#);
+        assert_eq!(source.as_variable().unwrap().timestamp().lamport(), 1);
+        assert_eq!(candidate.as_variable().unwrap().value(), br#""changed""#);
+    }
 
     #[test]
     fn can_serialize_and_deserialize() {

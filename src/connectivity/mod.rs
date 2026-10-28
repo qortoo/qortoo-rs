@@ -15,6 +15,8 @@ pub mod null_connectivity;
 
 pub trait Connectivity: Send + Sync + Debug {
     fn register(&self, wired: Arc<WiredDatatype>, sender: Sender<Event>);
+    /// Exchanges progress and transactions. Shared backends own subscription snapshots,
+    /// including their accepted server sequence and clock, independently of client state.
     fn push_pull(&self, ppp: &PushPullPack) -> Result<PushPullPack, ConnectivityError>;
     fn is_realtime(&self) -> bool;
 }

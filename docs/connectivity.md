@@ -29,7 +29,7 @@ flowchart TD
     C["connectivity contract:<br/>register · exchange · realtime?"]
     N["default backend<br/>answers this client alone"]
     L["local backend<br/>shares between in-process clients"]
-    S["per-resource server state:<br/>origin, subscribers, progress, history"]
+    S["per-resource server state:<br/>CRDT, clock, subscribers, progress, history"]
 
     WD -->|exchange| C
     C -.->|implemented by| N
@@ -106,19 +106,32 @@ and examples that do not need sharing do not have to set one up.
 
 **The local backend** simulates a server for clients in one process. It keeps per-resource
 state created the first time a datatype registers for that resource, and it can be switched
-between realtime and manual. Its per-resource state tracks which client is the origin, which
-clients count as subscribed, how far each has acknowledged, and every transaction ever pushed,
-each stamped with a backend sequence number.
+between realtime and manual. Each resource groups its CRDT, maximum accepted Lamport time,
+server sequence, client progress, and transaction history in `SyncedState`. That state owns
+batch acceptance, history pulls, and snapshot generation. `LocalDatatypeServer` manages
+resource identity, lifecycle, subscriptions, and notifications.
 
-A subscribe is answered from the origin's snapshot when its wired instance is still live and
-subscribed, or from another live subscribed instance when the origin is unavailable. If no
-provider remains, the backend replays recorded history. The subscribing instance cannot
-provide its own snapshot. Registrations hold weak wired references; snapshot creation
-temporarily owns its chosen provider. The event loop owns wired state during exchanges.
-When the origin unsubscribes, the role passes to another in-process subscriber if there is
-one. Explicitly removing all subscriptions and registrations discards the resource. Dropping
-client handles alone preserves history while the backend is retained, without retaining client
-runtime ownership. See [Runtime Resources](runtime-resources.md#shutdown-and-backend-ownership).
+New transactions are executed in server order against an isolated O(1) fork of the backend CRDT.
+Only a completely valid request batch publishes the CRDT, clock, history, and acknowledgement
+progress. A failed batch leaves those fields unchanged; a failed creation does not publish a
+created resource. Retransmitted client sequence numbers are not executed or recorded again.
+Responses continue to exclude the requesting client's own transactions.
+When a subscription ends, its client-sequence deduplication entry is removed after the final
+push is processed. A fresh subscription from the same client can therefore start its local
+sequence at zero without inheriting the previous subscription's accepted sequence.
+
+A subscription receives a snapshot serialized from the backend's accepted CRDT, with its
+server `sseq` and Lamport clock captured under the same resource lock. Snapshot bytes are
+created on subscription, not on every push. The boundary includes successfully accepted
+transactions even if their originating client lost its response. It excludes edits that have
+not been sent. The snapshot transaction's envelope CUID is nil; originating CUIDs inside CRDT
+conflict metadata are preserved, and the subscriber retains its own local identity.
+
+Snapshot generation never acquires a client's transaction gate, invokes client callbacks, or
+looks for a live provider. Registrations hold weak wired references, so dropping client
+handles preserves backend state and history without retaining client runtime ownership.
+Explicitly removing all subscriptions and registrations discards the resource. See
+[Runtime Resources](runtime-resources.md#shutdown-and-backend-ownership).
 
 A test-only interceptor can wrap a single datatype's exchanges, inspecting or altering what goes
 out and injecting an error on what comes back. It is reachable only from test builds.
@@ -126,9 +139,9 @@ out and injecting an error on what comes back. It is reachable only from test bu
 ## Behavior
 
 **Two clients sharing a datatype.** Both build a datatype with the same collection and key
-against the same local backend. The first to push becomes the origin. The second, subscribing,
-receives the origin's snapshot and is then at the same point. From there each push is returned
-to the other, either on notification or at the next exchange.
+against the same local backend. The first to push creates the backend resource. The second
+receives its accepted-state snapshot. From there each new transaction reaches the other client
+either on notification or at the next exchange.
 
 **A datatype with the default backend.** Every exchange succeeds and moves the lifecycle
 forward, so the datatype reaches subscribed and stays writable, but nothing it pushes reaches
@@ -139,9 +152,9 @@ datatype looks fully functional and shares nothing.
 synchronization. This is what makes an ordering deterministic in a test — with realtime on, a
 push can happen before a handler is registered.
 
-**An origin that leaves.** If the origin unsubscribes, another remaining client becomes the
-origin. If its wired instance expires without unsubscribing, a later subscriber uses another
-live subscribed provider. If no provider remains, replaying history produces the same state.
+**A client that leaves.** Existing clients may unsubscribe or lose their wired instances.
+Later subscriptions still receive the backend snapshot while the resource remains retained.
+No client is promoted to snapshot provider.
 
 **A refusal.** The backend rejects a push — a type mismatch, a client that is not subscribed, a
 protocol violation — and returns the reason in the package. The client turns it into a typed
@@ -164,10 +177,16 @@ apply or an error to route.
 worth retrying. Keeping them in different channels means the client does not have to
 reverse-engineer which happened from an error string.
 
-**The local backend distinguishes an origin from ordinary subscribers.** Answering a subscribe
-from a live client's snapshot is much cheaper than replaying every transaction ever recorded.
-Keeping the history as a fallback means losing the origin degrades performance rather than
-correctness.
+**The backend owns subscription state.** A client's current value can contain unsent edits.
+Maintaining one accepted CRDT per backend resource provides consistent subscription snapshots
+without keeping a second CRDT per client, echoing self transactions, or replaying the entire
+history on each subscription. The backend pays one extra operation execution per accepted
+operation and keeps a temporary CRDT candidate while validating a new batch. It does not keep
+a client runtime or pre-serialize snapshot bytes on each write. CRDTs do not implement `Clone`;
+`fork_for_batch` explicitly copies scalar metadata and shares immutable payloads. Every added
+CRDT must implement this O(1) contract without copying its collections, including a deferred
+full copy on the first batch write. Variable tests check
+payload pointer sharing and that a candidate write leaves its source state unchanged.
 
 **A client is allowed to drop its own follow-up check, not the notification that caused it.**
 Queuing every follow-up would turn a burst of notifications into unbounded memory on the
@@ -187,18 +206,22 @@ free of conditional compilation while still keeping the capability out of produc
 | The package exchanged in both directions, and how a resource is addressed | `src/types/push_pull_pack.rs` |
 | The default backend | `src/connectivity/null_connectivity.rs` |
 | The local backend and its per-resource map | `src/connectivity/local_connectivity.rs` |
-| Per-resource state: origin, subscribers, progress, history, and the per-state handling | `src/connectivity/local_datatype_server.rs` |
+| Per-resource state: CRDT, clock, subscribers, progress, history, and the per-state handling | `src/connectivity/local_datatype_server.rs` |
 | The test-only exchange interceptor | `src/datatypes/wired_interceptor.rs` |
 | The caller: building the outgoing package and applying the response | `src/datatypes/wired.rs`, `src/datatypes/pull_handler.rs` |
 
 | Verified by | Tests |
 |-------------|-------|
+| Invalid operation batches leave backend state and progress unchanged | `can_reject_a_late_batch_failure_without_advancing_backend_state`, `can_keep_a_failed_creation_unpublished` in `src/connectivity/local_datatype_server.rs` |
+| Subscription is independent of client lifetime and transaction gates | `can_serve_a_snapshot_without_accessing_client_state` in `src/connectivity/local_datatype_server.rs` |
+| Subscription includes accepted work before its creator applies the response | `can_subscribe_before_the_creator_applies_its_accepted_response` in `src/connectivity/local_datatype_server.rs` |
+| Unsent edits do not leak into new subscriptions | `tests/snapshot_state.rs` |
 | Two clients converge over a shared backend | `can_sync_bidirectionally_between_two_clients` in `src/connectivity/local_datatype_server.rs` |
 | Each declared state is handled | `can_process_creating`, `can_process_subscribing`, `can_process_subscribe` in `src/connectivity/local_datatype_server.rs` |
 | Refusals: unsubscribed pusher, type mismatch, disabled client, readonly with work | `can_reject_subscribed_push_from_unsubscribed_client`, `can_reject_type_mismatch_in_subscribed_push`, `can_reject_push_from_disabled_client`, `can_reject_readonly_unsubscribing_with_transactions` in `src/connectivity/local_datatype_server.rs` |
 | Unsubscribing a client that was never subscribed is not an error | `can_unsubscribe_not_subscribed_client_gracefully` in `src/connectivity/local_datatype_server.rs` |
-| A subscribe falls back to replaying history when no origin is present | `can_subscribe_via_history_replay_when_creator_is_unavailable` in `src/connectivity/local_datatype_server.rs` |
-| The origin role passes to a remaining client | `can_promote_remaining_client_when_creator_unsubscribes` in `src/connectivity/local_connectivity.rs` |
+| Backend snapshots survive removal of client registrations | `can_subscribe_from_backend_state_after_clients_are_removed` in `src/connectivity/local_datatype_server.rs` |
+| A creator can unsubscribe without changing snapshot ownership | `can_keep_serving_snapshots_after_the_creator_unsubscribes` in `src/connectivity/local_connectivity.rs` |
 | Per-resource state is discarded when the last client leaves | `can_remove_server_when_last_client_unsubscribes` in `src/connectivity/local_connectivity.rs` |
 | Realtime and manual differ in when work moves | `can_compare_manual_and_realtime_local_connectivity` in `src/connectivity/local_connectivity.rs` |
 | A realtime push notifies the other clients | `can_notify_other_clients_after_realtime_push` in `src/connectivity/local_connectivity.rs` |
