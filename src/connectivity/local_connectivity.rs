@@ -431,10 +431,10 @@ mod tests_local_connectivity {
 
     #[test]
     #[instrument]
-    fn can_promote_remaining_client_when_creator_unsubscribes() {
+    fn can_keep_serving_snapshots_after_the_creator_unsubscribes() {
         let connectivity = LocalConnectivity::new_arc();
         connectivity.set_realtime(false);
-        let (collection, key, resource_id) = get_test_ids!();
+        let (collection, key, _) = get_test_ids!();
         let client1 = Client::builder(collection.clone(), "client1")
             .with_connectivity(connectivity.clone())
             .build()
@@ -465,11 +465,6 @@ mod tests_local_connectivity {
         counter1.unsubscribe().unwrap();
         counter1.sync().unwrap();
         assert_eq!(counter1.get_state(), DatatypeState::Disabled);
-
-        let server = connectivity
-            .get_local_datatype_server(&resource_id)
-            .unwrap();
-        assert_eq!(server.read().creator(), &client2.get_cuid());
 
         counter2.increase_by(5).unwrap();
         counter2.sync().unwrap();

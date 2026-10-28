@@ -25,7 +25,7 @@ const SNAPSHOT_VERSION: u8 = 1;
 const SNAPSHOT_CONTEXT: &str = "variable crdt";
 const INITIAL_VALUE: &[u8] = b"null";
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub(crate) struct VariableState {
     value: Arc<[u8]>,
     timestamp: Timestamp,
@@ -68,7 +68,7 @@ pub(crate) enum VariableRollbackAction {
     Restore { previous: VariableState },
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct VariableCrdt {
     winning: VariableState,
 }
@@ -82,6 +82,15 @@ impl Default for VariableCrdt {
 }
 
 impl VariableCrdt {
+    pub(crate) fn fork_for_batch(&self) -> Self {
+        Self {
+            winning: VariableState {
+                value: Arc::clone(&self.winning.value),
+                timestamp: self.winning.timestamp.clone(),
+            },
+        }
+    }
+
     pub(crate) fn value(&self) -> &[u8] {
         self.winning.value()
     }

@@ -27,8 +27,8 @@ the local transaction resolves both: a commit hands the pending transaction to t
 and throws the undo actions away, while a rollback runs the undo actions and throws the pending
 transaction away.
 
-Rollback is by recorded inverse, not by snapshot. Nothing keeps a copy of the CRDT value, and
-nothing about undoing is ever serialized — a rollback action exists only on the client that
+Local rollback is by recorded inverse, not by snapshot. Local transaction admission does not
+copy the CRDT value, and nothing about undoing is ever serialized — a rollback action exists only on the client that
 created it, and only until its local transaction closes.
 
 ## Rules and Guarantees
@@ -70,8 +70,9 @@ context cleanup release the transaction guard.
 
 The wired layer shares the transaction mutex. Network exchange remains outside it, but applying
 a remote response waits until the open local transaction has committed or rolled back. The same
-gate covers response snapshots, lifecycle changes, error recovery, and snapshots served to new
-subscribers, so local rollback cannot erase a remote change applied during the transaction.
+gate covers incoming response snapshots, lifecycle changes, and error recovery, so local
+rollback cannot erase a remote change applied during the transaction. Subscription snapshots
+are generated from backend state and do not acquire another client's transaction gate.
 Synchronous `sync()` is rejected on the thread that owns the active local transaction, including
 calls through a captured original handle, because its response cannot be applied until the
 callback finishes. Calls from other threads can exchange with the backend and wait for the gate
@@ -375,7 +376,7 @@ their existing caller-return policy; this notification path is for commit reject
 ### Sync and remote response application
 
 `sync()` does not register an active local context. The wired layer shares `tx_mutex` but
-holds it only for response application, recovery, or subscriber snapshot generation, not
+holds it only for response application or recovery, not
 network exchange. This diagram shows the successful response path; a failed exchange uses
 `WiredDatatype::handle_error` and the same gate for recovery.
 
@@ -460,7 +461,7 @@ because a remote transaction is never rolled back locally.
 | Opening and joining local transactions, waiting for a local transaction held elsewhere | `src/datatypes/transactional.rs` (`begin_transaction`, `execute_local_operation_as_tx`, `do_transaction`) |
 | Success handling for owned or joined local work, cleanup, and active-context ownership | `src/datatypes/transactional.rs` (`with_local_transaction`, `TransactionGuard`) |
 | Shared mutable-state boundary and the effects gate held through dispatch and follow-up work | `src/datatypes/core.rs` (`prepare_state_effects`, `StateEffectsGuard`) |
-| Waiting to apply remote responses, recovery, and subscriber snapshot generation after local transaction cleanup | `src/datatypes/wired.rs` (`with_transaction_gate`) |
+| Waiting to apply remote responses and recovery after local transaction cleanup | `src/datatypes/wired.rs` (`with_transaction_gate`) |
 | The public `transaction(tag, closure)` entry point | `src/datatypes/counter.rs`, `src/datatypes/variable.rs` |
 | Sequence checks and capacity limits on enqueue | `src/datatypes/push_buffer.rs` |
 | Response checkpoint validation and reclamation after successful application | `src/datatypes/pull_handler.rs` (`validate_checkpoint`, `apply`) |

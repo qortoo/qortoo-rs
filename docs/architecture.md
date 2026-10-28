@@ -109,8 +109,9 @@ transaction guard and use it directly to own the next local transaction after cl
 is no release-and-retry admission step. These guards do not extend the mutable-state lock across network calls, and only
 the transaction guard spans a user callback. The wired layer shares that transaction guard: a
 remote response may arrive while local work is open, but applying its transactions, snapshot, or
-lifecycle change waits until the local commit or rollback finishes. Error recovery and snapshots
-served to new subscribers follow the same rule.
+lifecycle change waits until the local commit or rollback finishes. Error recovery follows
+the same rule. Subscription snapshots come from the local backend's own accepted CRDT under
+its resource lock and never acquire a client transaction gate.
 
 **Runtime.** Datatypes do not run on the application's runtime. Building a client builds a
 multi-threaded Tokio runtime for it, sized to the machine's available parallelism, with

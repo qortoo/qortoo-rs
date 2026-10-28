@@ -191,13 +191,6 @@ impl MutableDatatype {
         Ok(return_value)
     }
 
-    pub fn new_snapshot_operation(&self) -> Operation {
-        let data = self.crdt.serialize();
-        let mut snap_op = Operation::new_snapshot(data);
-        snap_op.lamport = self.op_id.lamport;
-        snap_op
-    }
-
     pub fn set_handler(
         &mut self,
         priority: usize,

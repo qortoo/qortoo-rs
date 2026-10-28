@@ -3,6 +3,7 @@ pub mod common;
 mod core;
 pub mod counter;
 mod crdts;
+pub(crate) use crdts::Crdt;
 pub mod datatype;
 pub mod datatype_set;
 mod effects;

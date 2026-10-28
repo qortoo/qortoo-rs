@@ -13,7 +13,6 @@ use crate::{
     defaults,
     errors::datatypes::{DatatypeErrorWithAction, RecoveryAction},
     observability::{metrics, trace::add_span_event},
-    operations::transaction::Transaction,
     types::{notification::Notification, push_pull_pack::PushPullPack, uid::Cuid},
 };
 
@@ -147,16 +146,6 @@ impl WiredDatatype {
 
     pub fn cuid(&self) -> Cuid {
         self.core.attr.get_cuid()
-    }
-
-    pub fn get_subscribe_snapshot(&self) -> Transaction {
-        self.with_transaction_gate(|mutable| {
-            let snap_op = mutable.new_snapshot_operation();
-            let mut tx = Transaction::new_with_cuid(&self.cuid());
-            tx.push_operation(snap_op);
-            tx.sseq = mutable.checkpoint.sseq;
-            tx
-        })
     }
 }
 
