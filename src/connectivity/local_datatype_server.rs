@@ -351,6 +351,7 @@ impl LocalDatatypeServer {
         self.wired_map.remove(&pushed.cuid);
         self.sender_map.remove(&pushed.cuid);
         self.subscribers.remove(&pushed.cuid);
+        self.synced.cseq_map.remove(&pushed.cuid);
 
         Ok(pulled)
     }}
@@ -448,6 +449,92 @@ mod tests_local_datatype_server {
     };
 
     fn push_no_change(_push: &mut PushPullPack) {}
+
+    #[test]
+    fn can_restart_client_sequences_after_unsubscribe_and_resubscribe() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let (collection, key, resource_id) = get_test_ids!();
+        let client = Client::builder(collection.clone(), "rejoining")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let peer_client = Client::builder(collection, "remaining")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let counter = client.create_datatype(key.clone()).build_counter().unwrap();
+        counter.increase_by(7).unwrap();
+        counter.sync().unwrap();
+        let peer = peer_client
+            .subscribe_datatype(key.clone())
+            .build_counter()
+            .unwrap();
+        peer.sync().unwrap();
+        peer.increase_by(3).unwrap();
+        peer.sync().unwrap();
+        counter.sync().unwrap();
+
+        counter.increase_by(2).unwrap();
+        counter.unsubscribe().unwrap();
+        counter.sync().unwrap();
+        peer.sync().unwrap();
+        assert_eq!(peer.get_value(), 12);
+        let server = connectivity
+            .get_local_datatype_server(&resource_id)
+            .unwrap();
+        {
+            let server = server.read();
+            assert!(!server.synced.cseq_map.contains_key(&client.get_cuid()));
+            assert_eq!(
+                server.synced.cseq_map.get(&peer_client.get_cuid()),
+                Some(&1)
+            );
+        }
+
+        let renewed = client.subscribe_datatype(key).build_counter().unwrap();
+        renewed.sync().unwrap();
+        assert_eq!(renewed.get_value(), 12);
+        assert_eq!(renewed.get_client_version(), 0);
+        renewed.increase_by(5).unwrap();
+        renewed.sync().unwrap();
+        assert_eq!(renewed.get_synced_client_version(), 1);
+        peer.sync().unwrap();
+        assert_eq!(peer.get_value(), 17);
+        assert_eq!(renewed.get_value(), 17);
+    }
+
+    #[test]
+    fn can_clear_client_progress_when_unsubscribe_rejects_pending_work() {
+        let attr = new_attribute!(DataType::Counter);
+        let mut server = LocalDatatypeServer::new(&attr);
+        let mut pushed = PushPullPack::new(&attr, DatatypeState::Creating);
+        pushed.transactions = vec![transaction(
+            &pushed.cuid,
+            1,
+            Operation::new_counter_increase(7),
+        )];
+        server.process_creating(&pushed).unwrap();
+        pushed.state = DatatypeState::Unsubscribing;
+        pushed.is_readonly = true;
+        pushed.transactions = vec![transaction(
+            &pushed.cuid,
+            2,
+            Operation::new_counter_increase(5),
+        )];
+        let pulled = server.process_unsubscribing(&pushed, false).unwrap();
+        assert_eq!(pulled.error, Some(PushPullError::ReadonlyViolation));
+        assert!(!server.subscribers.contains(&pushed.cuid));
+        assert!(!server.synced.cseq_map.contains_key(&pushed.cuid));
+        assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 7);
+        assert_eq!(server.synced.sseq, 1);
+        assert_eq!(server.synced.history.len(), 1);
+        let repeated = server.process_unsubscribing(&pushed, false).unwrap();
+        assert!(repeated.error.is_none());
+        assert_eq!(repeated.state, DatatypeState::Disabled);
+        assert!(server.synced.cseq_map.is_empty());
+        assert_eq!(server.synced.sseq, 1);
+    }
 
     fn transaction(
         cuid: &crate::types::uid::Cuid,

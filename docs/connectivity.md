@@ -116,6 +116,9 @@ Only a completely valid request batch publishes the CRDT, clock, history, and ac
 progress. A failed batch leaves those fields unchanged; a failed creation does not publish a
 created resource. Retransmitted client sequence numbers are not executed or recorded again.
 Responses continue to exclude the requesting client's own transactions.
+When a subscription ends, its client-sequence deduplication entry is removed after the final
+push is processed. A fresh subscription from the same client can therefore start its local
+sequence at zero without inheriting the previous subscription's accepted sequence.
 
 A subscription receives a snapshot serialized from the backend's accepted CRDT, with its
 server `sseq` and Lamport clock captured under the same resource lock. Snapshot bytes are
