@@ -143,7 +143,7 @@ creation, subscription, and active-subscription processing.
 A new subscription must start with checkpoint zero. Identity, progress, and batch validation
 must succeed before its applied boundary advances. Clients must report only successfully
 applied state: an incorrect acknowledgement can advance the safe boundary prematurely and
-make future history pruning discard transactions that client still needs.
+make history pruning discard transactions that client still needs.
 
 Pull `safe_sseq` is the minimum applied boundary across all logical subscribers, including the
 requesting client and readonly subscribers. With no subscribers it is the server head. Wired
@@ -157,7 +157,37 @@ the shared response and return `PushPullError` on rejection. Creation, subscript
 client-push validation use read-only helpers before backend mutations. Unsubscribe cleans up
 its subscription even when its final push is rejected.
 Failed final batches retain the existing unsubscribe cleanup behavior without acknowledging
-that batch. These acknowledgements do not remove history or perform tombstone GC.
+that batch. Applied acknowledgements protect incremental history; they do not authorize
+tombstone GC.
+
+After successful request processing, the local backend removes history transactions through
+`safe_sseq`. It first captures the response's transaction references, so even a delayed request
+can receive all retained transactions it needs before this request prunes them. History uses
+a prefix-removable queue, and `pruned_sseq` records the last transaction removed. Pruning does
+not change the server head, CRDT, or accepted client-sequence deduplication metadata.
+Existing pull references remain valid after history removal. Transaction payloads are freed
+only when their last reference is dropped; queue capacity need not shrink immediately.
+
+An incremental request with `checkpoint.sseq == pruned_sseq` can pull from the next sequence.
+One below `pruned_sseq` is rejected with
+`ProtocolViolation("requested server history has been pruned")` before accepting transactions
+or advancing applied progress. This includes creation retries and even entirely deduplicated
+requests. The client follows the existing `Disabled`/reset path, clearing its pending push
+buffer and transaction rollback record. Unaccepted edits can be lost from synchronization;
+reset does not roll back the local CRDT, and there is no automatic snapshot replacement,
+rebase, or transaction recovery API for this failure.
+
+New and repeated snapshot subscriptions can still start at checkpoint zero after pruning.
+They use the backend snapshot and retain the existing safe-boundary initialization rules.
+Failed requests do not advance `pruned_sseq`. An unsubscribe failure still removes its
+subscription; the resulting higher safe boundary can be pruned by a later successful request.
+Removing the resource after its last local registration and subscription ends remains a
+separate lifecycle action.
+
+Pruning runs at successful request boundaries without a background worker. An idle, readonly,
+or manually synchronized subscriber can hold the safe boundary indefinitely. Subscription
+expiry and generation fencing are not implemented, so pruning does not guarantee a fixed
+memory bound.
 
 A creation retried after a lost pull receives intervening transactions from other clients as
 well as its deduplicated client checkpoint. This also applies to subscribe-or-create retries
