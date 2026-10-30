@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fmt::Display,
     sync::{Arc, Weak},
 };
@@ -22,6 +22,15 @@ use crate::{
     },
 };
 
+const ERR_INVALID_TRANSACTION: &str = "invalid transaction identity or client sequence";
+const ERR_INVALID_IDENTITY: &str = "invalid datatype identity";
+const ERR_INVALID_CHECKPOINT: &str = "checkpoint exceeds the server head";
+const ERR_ALREADY_EXISTS: &str = "already exist";
+const ERR_INVALID_CREATION: &str = "invalid creation DUID or type";
+const ERR_DISABLED_PUSH: &str = "disabled client attempted push";
+const ERR_SUBSCRIBING_PUSH: &str = "cannot push transactions when subscribing";
+const ERR_INVALID_SUBSCRIPTION_CHECKPOINT: &str = "invalid subscription checkpoint";
+
 macro_rules! datatype_server_instrument {
     ($(#[$attr:meta])* $vis:vis fn $name:ident $($rest:tt)*) => {
         $(#[$attr])*
@@ -43,7 +52,8 @@ struct SyncedState {
     crdt: Crdt,
     lamport: u64,
     sseq: u64,
-    cseq_map: HashMap<Cuid, u64>,
+    // Active subscriptions: accepted client cseq and reported applied server sseq.
+    checkpoints: HashMap<Cuid, CheckPoint>,
     history: Vec<Arc<Transaction>>,
 }
 
@@ -53,13 +63,18 @@ impl SyncedState {
             crdt: Crdt::new(r#type),
             lamport: 0,
             sseq: 0,
-            cseq_map: HashMap::new(),
+            checkpoints: HashMap::new(),
             history: Vec::new(),
         }
     }
 
     fn push_transactions(&mut self, pushed: &PushPullPack) -> Result<(u64, bool), PushPullError> {
-        let previous_cseq = self.cseq_map.get(&pushed.cuid).copied().unwrap_or_default();
+        let checkpoint = self
+            .checkpoints
+            .get(&pushed.cuid)
+            .copied()
+            .unwrap_or_else(|| CheckPoint::new(self.safe_sseq(), 0));
+        let previous_cseq = checkpoint.cseq;
         let mut incoming = pushed.transactions_after_cseq(previous_cseq).peekable();
         if incoming.peek().is_none() {
             return Ok((previous_cseq, false));
@@ -72,15 +87,12 @@ impl SyncedState {
         let mut cseq = previous_cseq;
         let mut transactions = Vec::new();
         for tx in incoming {
-            if tx.cseq <= cseq {
-                continue;
-            }
             if tx.cuid != pushed.cuid
                 || cseq.checked_add(1) != Some(tx.cseq)
                 || tx.operations.is_empty()
             {
                 return Err(PushPullError::ProtocolViolation(
-                    "invalid transaction identity or client sequence".into(),
+                    ERR_INVALID_TRANSACTION.into(),
                 ));
             }
             for operation in tx.iter() {
@@ -100,8 +112,19 @@ impl SyncedState {
         self.lamport = lamport;
         self.sseq = sseq;
         self.history.extend(transactions);
-        self.cseq_map.insert(pushed.cuid.clone(), cseq);
+        self.checkpoints
+            .entry(pushed.cuid.clone())
+            .or_insert(checkpoint)
+            .cseq = cseq;
         Ok((cseq, true))
+    }
+
+    fn safe_sseq(&self) -> u64 {
+        self.checkpoints
+            .values()
+            .map(|cp| cp.sseq)
+            .min()
+            .unwrap_or(self.sseq)
     }
 
     fn get_subscribe_snapshot(&self) -> Transaction {
@@ -131,12 +154,9 @@ pub struct LocalDatatypeServer {
     collection: ArcStr,
     key: ArcStr,
     r#type: DataType,
+    // Nil until a creation request succeeds.
     duid: Duid,
-    created: bool,
     synced: SyncedState,
-    /// Cuids the server considers subscribed. Unlike `wired_map`, this also covers
-    /// clients that have no in-process `WiredDatatype` (e.g., after client handles are dropped).
-    subscribers: HashSet<Cuid>,
 }
 
 impl Display for LocalDatatypeServer {
@@ -147,7 +167,7 @@ impl Display for LocalDatatypeServer {
             self.key,
             self.wired_map.len(),
             self.synced.sseq,
-            self.created
+            self.is_created()
         ))
     }
 }
@@ -157,33 +177,141 @@ impl LocalDatatypeServer {
         Self {
             wired_map: HashMap::new(),
             sender_map: HashMap::new(),
-            created: false,
             synced: SyncedState::new(attr.r#type),
             collection: attr.client_common.collection.clone(),
-            subscribers: HashSet::new(),
             key: attr.key.clone(),
             r#type: attr.r#type,
-            duid: attr.get_duid(),
+            duid: Duid::new_nil(),
         }
     }
 
+    fn is_created(&self) -> bool {
+        !self.duid.is_nil()
+    }
+
     pub fn insert_client_item(&mut self, wired: Arc<WiredDatatype>, sender: Sender<Event>) {
-        self.subscribers.insert(wired.cuid());
         self.wired_map.insert(wired.cuid(), Arc::downgrade(&wired));
         self.sender_map.insert(wired.cuid(), sender);
     }
 
     pub fn is_empty(&self) -> bool {
         // Both must be empty: `wired_map` can hold in-process clients registered before
-        // their first sync, which are not yet in `subscribers`.
-        self.wired_map.is_empty() && self.subscribers.is_empty()
+        // their first sync, which are not yet in `checkpoints`.
+        self.wired_map.is_empty() && self.synced.checkpoints.is_empty()
     }
 
     #[cfg(test)]
     pub fn remove_client_subscription(&mut self, cuid: &Cuid) {
         self.wired_map.remove(cuid);
         self.sender_map.remove(cuid);
-        self.subscribers.remove(cuid);
+        self.synced.checkpoints.remove(cuid);
+    }
+
+    fn validate_progress(&self, pushed: &PushPullPack) -> Result<(), PushPullError> {
+        if !self.synced.checkpoints.contains_key(&pushed.cuid) {
+            return Err(PushPullError::MissingSubscription(format!(
+                "cuid '{}' has no active datatype subscription on this server",
+                pushed.cuid
+            )));
+        }
+        if self.duid != pushed.duid || self.r#type != pushed.r#type {
+            return Err(PushPullError::ProtocolViolation(
+                ERR_INVALID_IDENTITY.into(),
+            ));
+        }
+        if pushed.checkpoint.sseq > self.synced.sseq {
+            return Err(PushPullError::ProtocolViolation(
+                ERR_INVALID_CHECKPOINT.into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_creation(&self, pushed: &PushPullPack) -> Result<(), PushPullError> {
+        // If already created, an error should occur,
+        // but if the DUID is the same, it is considered a duplicate transmission case and is allowed.
+        if self.is_created() && self.duid != pushed.duid {
+            return Err(PushPullError::CreateFailed(ERR_ALREADY_EXISTS.into()));
+        }
+        if pushed.duid.is_nil() || self.r#type != pushed.r#type {
+            return Err(PushPullError::ProtocolViolation(
+                ERR_INVALID_CREATION.into(),
+            ));
+        }
+        if pushed.checkpoint.sseq > self.synced.sseq {
+            return Err(PushPullError::ProtocolViolation(
+                ERR_INVALID_CHECKPOINT.into(),
+            ));
+        }
+        if self.is_created() {
+            self.validate_progress(pushed)?;
+        }
+        if pushed.is_readonly {
+            return Err(PushPullError::ReadonlyViolation);
+        }
+        Ok(())
+    }
+
+    fn validate_subscription(&self, pushed: &PushPullPack) -> Result<(), PushPullError> {
+        if !self.is_created() {
+            return Err(PushPullError::ResourceNotFound(format!(
+                "{} '{}' not exists",
+                pushed.r#type,
+                pushed.resource_id(),
+            )));
+        }
+        if self.r#type != pushed.r#type {
+            return Err(PushPullError::ResourceNotFound(format!(
+                "mismatched types for '{}': pushed type-{} but existed type {}",
+                pushed.resource_id(),
+                pushed.r#type,
+                self.r#type,
+            )));
+        }
+        if !pushed.transactions.is_empty() {
+            return Err(PushPullError::ProtocolViolation(
+                ERR_SUBSCRIBING_PUSH.into(),
+            ));
+        }
+
+        if pushed.checkpoint.sseq > self.synced.sseq {
+            return Err(PushPullError::ProtocolViolation(
+                ERR_INVALID_CHECKPOINT.into(),
+            ));
+        }
+        if !self.synced.checkpoints.contains_key(&pushed.cuid) && pushed.checkpoint.sseq != 0 {
+            return Err(PushPullError::ProtocolViolation(
+                ERR_INVALID_SUBSCRIPTION_CHECKPOINT.into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_client_push(&self, pushed: &PushPullPack) -> Result<(), PushPullError> {
+        self.validate_progress(pushed)?;
+
+        if pushed.is_readonly && !pushed.transactions.is_empty() {
+            return Err(PushPullError::ReadonlyViolation);
+        }
+        Ok(())
+    }
+
+    fn update_subscription_progress(
+        &mut self,
+        pushed: &PushPullPack,
+        pulled: &mut PushPullPack,
+        initial: u64,
+    ) {
+        // Only a new subscription or transaction-free creation needs insertion; neither has accepted client transactions.
+        let checkpoint = self
+            .synced
+            .checkpoints
+            .entry(pushed.cuid.clone())
+            .or_insert(CheckPoint::new(initial, 0));
+        // A bootstrap push has not applied the snapshot that this pull will provide.
+        if pulled.snapshot_transaction.is_none() {
+            checkpoint.sseq = checkpoint.sseq.max(pushed.checkpoint.sseq);
+        }
     }
 
     /// Dispatches one pushed pack to the state-specific processor.
@@ -192,123 +320,85 @@ impl LocalDatatypeServer {
         pushed: &PushPullPack,
         is_realtime: bool,
     ) -> Result<PushPullPack, ConnectivityError> {
-        match pushed.state {
-            DatatypeState::Creating => self.process_creating(pushed),
-            DatatypeState::Subscribing => self.process_subscribing(pushed),
-            DatatypeState::SubscribingOrCreating => self.process_subscribing_or_creating(pushed),
-            DatatypeState::Subscribed => self.process_subscribed(pushed, is_realtime),
-            DatatypeState::Unsubscribing => self.process_unsubscribing(pushed, is_realtime),
-            DatatypeState::Deleting => self.process_deleting(pushed),
-            DatatypeState::Disabled => self.process_disabled(pushed),
+        let mut pulled = pushed.get_pulled_stub();
+        let result = match pushed.state {
+            DatatypeState::Creating => self.process_creating(pushed, &mut pulled),
+            DatatypeState::Subscribing => self.process_subscribing(pushed, &mut pulled),
+            DatatypeState::SubscribingOrCreating => {
+                self.process_subscribing_or_creating(pushed, &mut pulled)
+            }
+            DatatypeState::Subscribed => self.process_subscribed(pushed, &mut pulled, is_realtime),
+            DatatypeState::Unsubscribing => {
+                self.process_unsubscribing(pushed, &mut pulled, is_realtime)
+            }
+            DatatypeState::Deleting => self.process_deleting(),
+            DatatypeState::Disabled => self.process_disabled(),
+        };
+        if let Err(error) = result {
+            pulled = pulled.with_error(error);
         }
+        pulled.safe_sseq = self.synced.safe_sseq();
+        Ok(pulled)
     }
 
     datatype_server_instrument! {
-    pub fn process_creating(
+    fn process_creating(
         &mut self,
         pushed: &PushPullPack,
-    ) -> Result<PushPullPack, ConnectivityError> {
-        let mut pulled = pushed.get_pulled_stub();
-        // If already created, an error should occur,
-        // but if the DUID is the same, it is considered a duplicate transmission case and is allowed.
-        if self.created && self.duid != pushed.duid {
-            pulled.error = Some(PushPullError::CreateFailed(
-                "already exist".to_string(),
-            ));
-            pulled.state = DatatypeState::Disabled;
-            return Ok(pulled);
-        }
-        if pulled.is_readonly {
-            pulled.error = Some(PushPullError::ReadonlyViolation);
-            pulled.state = DatatypeState::Disabled;
-            return Ok(pulled);
-        }
-        let (cseq, _) = match self.synced.push_transactions(pushed) {
-            Ok(result) => result,
-            Err(error) => {
-                pulled.error = Some(error);
-                pulled.state = DatatypeState::Disabled;
-                return Ok(pulled);
-            }
-        };
-        self.created = true;
+        pulled: &mut PushPullPack,
+    ) -> Result<(), PushPullError> {
+        self.validate_creation(pushed)?;
+        let (cseq, _) = self.synced.push_transactions(pushed)?;
         self.duid = pushed.duid.clone();
-        self.subscribers.insert(pushed.cuid.clone());
-        pulled.checkpoint = CheckPoint::new(self.synced.sseq, cseq);
+        pulled.checkpoint = CheckPoint::new(pushed.checkpoint.sseq, cseq);
+        // A creation retry after a lost response must also pull intervening changes from other clients.
+        self.synced.pull_transactions(pulled);
         pulled.state = DatatypeState::Subscribed;
-        Ok(pulled)
+        self.update_subscription_progress(pushed, pulled, 0);
+        Ok(())
     }}
 
     datatype_server_instrument! {
-    pub fn process_subscribing_or_creating(
+    fn process_subscribing_or_creating(
         &mut self,
         pushed: &PushPullPack,
-    ) -> Result<PushPullPack, ConnectivityError> {
-        if self.created {
-            self.process_subscribing(pushed)
+        pulled: &mut PushPullPack,
+    ) -> Result<(), PushPullError> {
+        if self.is_created() && self.duid != pushed.duid {
+            self.process_subscribing(pushed, pulled)
         } else {
-            self.process_creating(pushed)
+            self.process_creating(pushed, pulled)
         }
     }}
 
     datatype_server_instrument! {
-    pub fn process_subscribed(
+    fn process_subscribed(
         &mut self,
         pushed: &PushPullPack,
+        pulled: &mut PushPullPack,
         is_realtime: bool,
-    ) -> Result<PushPullPack, ConnectivityError> {
-        let mut pulled = pushed.get_pulled_stub();
-        if !self.subscribers.contains(&pushed.cuid) {
-            pulled.error = Some(PushPullError::MissingSubscription(
-                format!(
-                    "cuid '{}' has no active datatype subscription on this server",
-                    pushed.cuid
-                ),
-            ));
-            pulled.state = DatatypeState::Disabled;
-            return Ok(pulled);
-        }
-        if self.r#type != pushed.r#type {
-            pulled.error = Some(PushPullError::ProtocolViolation(format!(
-                "type mismatch for '{}': expected {} but got {}",
-                pushed.resource_id(),
-                self.r#type,
-                pushed.r#type,
-            )));
-            pulled.state = DatatypeState::Disabled;
-            return Ok(pulled);
-        }
-        Ok(self.process_client_push(pushed, DatatypeState::Subscribed, is_realtime))
+    ) -> Result<(), PushPullError> {
+        self.process_push_pull(pushed, pulled, DatatypeState::Subscribed, is_realtime)
     }}
 
-    fn process_client_push(
+    fn process_push_pull(
         &mut self,
         pushed: &PushPullPack,
+        pulled: &mut PushPullPack,
         success_state: DatatypeState,
         is_realtime: bool,
-    ) -> PushPullPack {
-        let mut pulled = pushed.get_pulled_stub();
-        if pulled.is_readonly && !pushed.transactions.is_empty() {
-            pulled.error = Some(PushPullError::ReadonlyViolation);
-            pulled.state = DatatypeState::Disabled;
-            return pulled;
-        }
-        let (cseq, pushed_any) = match self.synced.push_transactions(pushed) {
-            Ok(result) => result,
-            Err(error) => {
-                pulled.error = Some(error);
-                pulled.state = DatatypeState::Disabled;
-                return pulled;
-            }
-        };
+    ) -> Result<(), PushPullError> {
+        self.validate_client_push(pushed)?;
+        let (cseq, pushed_any) = self.synced.push_transactions(pushed)?;
         pulled.checkpoint = CheckPoint::new(pushed.checkpoint.sseq, cseq);
-        self.synced.pull_transactions(&mut pulled);
+        self.synced.pull_transactions(pulled);
         pulled.state = success_state;
+        self.update_subscription_progress(pushed, pulled, 0);
         if is_realtime && pushed_any {
             self.notify_pushed(&pushed.cuid);
         }
 
-        pulled
+        Ok(())
     }
 
     #[instrument(skip_all)]
@@ -331,93 +421,59 @@ impl LocalDatatypeServer {
     }
 
     datatype_server_instrument! {
-    pub fn process_unsubscribing(
+    fn process_unsubscribing(
         &mut self,
         pushed: &PushPullPack,
+        pulled: &mut PushPullPack,
         is_realtime: bool,
-    ) -> Result<PushPullPack, ConnectivityError> {
+    ) -> Result<(), PushPullError> {
         // If the client's datatype is not subscribed on this server, skip push processing to avoid
-        // polluting cseq_map, and return Disabled directly since that is the desired state.
-        if !self.subscribers.contains(&pushed.cuid) {
-            let mut pulled = pushed.get_pulled_stub();
+        // polluting checkpoints, and return Disabled directly since that is the desired state.
+        if !self.synced.checkpoints.contains_key(&pushed.cuid) {
             pulled.state = DatatypeState::Disabled;
-            return Ok(pulled);
+            self.wired_map.remove(&pushed.cuid);
+            self.sender_map.remove(&pushed.cuid);
+            return Ok(());
         }
 
-        let pulled = self.process_client_push(pushed, DatatypeState::Disabled, is_realtime);
+        let result = self.process_push_pull(pushed, pulled, DatatypeState::Disabled, is_realtime);
 
         // Always clean up client subscription regardless of error: the client will be Disabled
         // either way, and leaving stale entries would cause infinite unsubscribe retry loops.
         self.wired_map.remove(&pushed.cuid);
         self.sender_map.remove(&pushed.cuid);
-        self.subscribers.remove(&pushed.cuid);
-        self.synced.cseq_map.remove(&pushed.cuid);
+        self.synced.checkpoints.remove(&pushed.cuid);
 
-        Ok(pulled)
+        result
     }}
 
     datatype_server_instrument! {
-    pub fn process_deleting(
-        &mut self,
-        pushed: &PushPullPack,
-    ) -> Result<PushPullPack, ConnectivityError> {
-        let pulled = pushed.get_pulled_stub();
-        Ok(pulled)
+    fn process_deleting(&mut self) -> Result<(), PushPullError> {
+        Ok(())
     }}
 
     datatype_server_instrument! {
-    pub fn process_disabled(
-        &mut self,
-        pushed: &PushPullPack,
-    ) -> Result<PushPullPack, ConnectivityError> {
-        let mut pulled = pushed.get_pulled_stub();
-        pulled.error = Some(PushPullError::ProtocolViolation(
-            "disabled client attempted push".to_string(),
-        ));
-        pulled.state = DatatypeState::Disabled;
-        Ok(pulled)
+    fn process_disabled(&mut self) -> Result<(), PushPullError> {
+        Err(PushPullError::ProtocolViolation(
+            ERR_DISABLED_PUSH.into(),
+        ))
     }}
 
     datatype_server_instrument! {
-    pub fn process_subscribing(
+    fn process_subscribing(
         &mut self,
         pushed: &PushPullPack,
-    ) -> Result<PushPullPack, ConnectivityError> {
-        let mut pulled = pushed.get_pulled_stub();
-        if !self.created {
-            pulled.error = Some(PushPullError::ResourceNotFound(format!(
-                "{} '{}' not exists",
-                pushed.r#type,
-                pushed.resource_id(),
-            )));
-            pulled.state = DatatypeState::Disabled;
-            return Ok(pulled);
-        }
-        if self.r#type != pushed.r#type {
-            pulled.error = Some(PushPullError::ResourceNotFound(format!(
-                "mismatched types for '{}': pushed type-{} but existed type {}",
-                pushed.resource_id(),
-                pushed.r#type,
-                self.r#type,
-            )));
-            pulled.state = DatatypeState::Disabled;
-            return Ok(pulled);
-        }
-        if !pushed.transactions.is_empty() {
-            pulled.error = Some(PushPullError::ProtocolViolation(
-                "cannot push transactions when subscribing".to_string(),
-            ));
-            pulled.state = DatatypeState::Disabled;
-            return Ok(pulled);
-        }
-
+        pulled: &mut PushPullPack,
+    ) -> Result<(), PushPullError> {
+        self.validate_subscription(pushed)?;
+        let initial = self.synced.safe_sseq();
         pulled.duid = self.duid.clone();
-        self.subscribers.insert(pushed.cuid.clone());
         let snapshot = self.synced.get_subscribe_snapshot();
         pulled.checkpoint.sseq = snapshot.sseq;
         pulled.snapshot_transaction = Some(Arc::new(snapshot));
         pulled.state = DatatypeState::Subscribed;
-        Ok(pulled)
+        self.update_subscription_progress(pushed, pulled, initial);
+        Ok(())
     }}
 
     #[cfg(test)]
@@ -449,6 +505,275 @@ mod tests_local_datatype_server {
     };
 
     fn push_no_change(_push: &mut PushPullPack) {}
+
+    #[test]
+    fn can_track_readonly_acknowledgements_without_advancing_on_snapshot_delivery() {
+        let attr = new_attribute!(DataType::Counter);
+        let mut server = LocalDatatypeServer::new(&attr);
+        let mut writer = PushPullPack::new(&attr, DatatypeState::Creating);
+        writer.transactions = vec![transaction(
+            &writer.cuid,
+            1,
+            Operation::new_counter_increase(7),
+        )];
+        writer.safe_sseq = u64::MAX;
+        let created = server.process(&writer, false).unwrap();
+        assert_eq!(created.safe_sseq, 0);
+        assert_eq!(created.checkpoint.sseq, 1);
+        writer.state = DatatypeState::Subscribed;
+        writer.transactions.clear();
+        writer.checkpoint.sseq = 1;
+        assert_eq!(server.process(&writer, false).unwrap().safe_sseq, 1);
+
+        let mut reader = PushPullPack::new(&attr, DatatypeState::Subscribing);
+        reader.cuid = crate::types::uid::Cuid::new();
+        reader.is_readonly = true;
+        let snapshot = server.process(&reader, false).unwrap();
+        assert_eq!(snapshot.safe_sseq, 1);
+        assert_eq!(server.synced.checkpoints[&reader.cuid].sseq, 1);
+        writer.transactions = vec![transaction(
+            &writer.cuid,
+            2,
+            Operation::new_counter_increase(3),
+        )];
+        assert_eq!(server.process(&writer, false).unwrap().safe_sseq, 1);
+        writer.transactions.clear();
+        writer.checkpoint.sseq = 2;
+        assert_eq!(server.process(&writer, false).unwrap().safe_sseq, 1);
+
+        // A repeated subscribe may provide a newer snapshot, but is not its acknowledgement.
+        let repeated = server.process(&reader, false).unwrap();
+        assert_eq!(repeated.checkpoint.sseq, 2);
+        assert_eq!(repeated.safe_sseq, 1);
+        reader.state = DatatypeState::Subscribed;
+        reader.checkpoint.sseq = 1;
+        let replay = server.process(&reader, false).unwrap();
+        assert_eq!(replay.transactions.len(), 1);
+        assert_eq!(replay.safe_sseq, 1);
+        reader.checkpoint.sseq = 2;
+        assert_eq!(server.process(&reader, false).unwrap().safe_sseq, 2);
+        reader.checkpoint.sseq = 1;
+        let delayed = server.process(&reader, false).unwrap();
+        assert!(delayed.error.is_none());
+        assert_eq!(delayed.transactions.len(), 1);
+        assert_eq!(delayed.safe_sseq, 2);
+        assert_eq!(server.synced.checkpoints[&reader.cuid].sseq, 2);
+
+        reader.state = DatatypeState::Unsubscribing;
+        assert_eq!(server.process(&reader, false).unwrap().safe_sseq, 2);
+        assert!(!server.synced.checkpoints.contains_key(&reader.cuid));
+        writer.state = DatatypeState::Unsubscribing;
+        assert_eq!(server.process(&writer, false).unwrap().safe_sseq, 2);
+        assert!(server.synced.checkpoints.is_empty());
+    }
+
+    #[rstest]
+    #[case::future_sequence(0)]
+    #[case::wrong_datatype(1)]
+    #[case::missing_subscription(2)]
+    #[case::failed_batch(3)]
+    fn can_reject_invalid_pushes_without_advancing_applied_progress(#[case] invalid: u8) {
+        let attr = new_attribute!(DataType::Counter);
+        let mut server = LocalDatatypeServer::new(&attr);
+        let mut writer = PushPullPack::new(&attr, DatatypeState::Creating);
+        writer.transactions = vec![transaction(
+            &writer.cuid,
+            1,
+            Operation::new_counter_increase(7),
+        )];
+        assert!(server.process(&writer, false).unwrap().error.is_none());
+        let mut peer = PushPullPack::new(&attr, DatatypeState::Subscribing);
+        peer.cuid = crate::types::uid::Cuid::new();
+        server.process(&peer, false).unwrap();
+        peer.state = DatatypeState::Subscribed;
+        peer.transactions = vec![transaction(
+            &peer.cuid,
+            1,
+            Operation::new_counter_increase(3),
+        )];
+        server.process(&peer, false).unwrap();
+        assert_eq!(server.synced.sseq, 2);
+
+        writer.state = DatatypeState::Subscribed;
+        writer.checkpoint.sseq = 1;
+        writer.transactions = vec![transaction(
+            &writer.cuid,
+            2,
+            Operation::new_counter_increase(5),
+        )];
+        match invalid {
+            // This request must be checked against the head before accepting its new transaction.
+            0 => writer.checkpoint.sseq = 3,
+            1 => writer.duid = Duid::new(),
+            2 => writer.cuid = crate::types::uid::Cuid::new(),
+            3 => {
+                writer.transactions = vec![transaction(
+                    &writer.cuid,
+                    3,
+                    Operation::new_counter_increase(5),
+                )]
+            }
+            _ => unreachable!(),
+        }
+        writer.safe_sseq = u64::MAX;
+        let rejected = server.process(&writer, false).unwrap();
+        assert!(rejected.error.is_some());
+        assert_eq!(rejected.safe_sseq, 0);
+        assert_eq!(server.synced.sseq, 2);
+        assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 10);
+        assert_eq!(server.synced.checkpoints[&attr.get_cuid()].sseq, 0);
+        assert_eq!(server.synced.checkpoints[&attr.get_cuid()].cseq, 1);
+    }
+
+    #[rstest]
+    #[case::creation(DatatypeState::Creating, false)]
+    #[case::subscribe_or_create(DatatypeState::SubscribingOrCreating, false)]
+    #[case::creation_retry(DatatypeState::Creating, true)]
+    #[case::subscribe_or_create_retry(DatatypeState::SubscribingOrCreating, true)]
+    #[case::subscribed(DatatypeState::Subscribed, true)]
+    #[case::subscription_retry(DatatypeState::Subscribing, true)]
+    #[case::unsubscribing(DatatypeState::Unsubscribing, true)]
+    fn can_report_a_consistent_error_for_a_checkpoint_beyond_the_server_head(
+        #[case] state: DatatypeState,
+        #[case] created: bool,
+    ) {
+        let attr = new_attribute!(DataType::Counter);
+        let mut server = LocalDatatypeServer::new(&attr);
+        let mut pushed = PushPullPack::new(&attr, DatatypeState::Creating);
+        if created {
+            assert!(server.process(&pushed, false).unwrap().error.is_none());
+        }
+        pushed.state = state;
+        pushed.checkpoint.sseq = 1;
+        let pulled = server.process(&pushed, false).unwrap();
+        assert_eq!(
+            pulled.error,
+            Some(PushPullError::ProtocolViolation(
+                "checkpoint exceeds the server head".into()
+            ))
+        );
+        assert_eq!(pulled.state, DatatypeState::Disabled);
+        assert_eq!(server.synced.sseq, 0);
+    }
+
+    #[test]
+    fn can_acknowledge_an_existing_boundary_without_a_prior_response() {
+        let attr = new_attribute!(DataType::Counter);
+        let mut server = LocalDatatypeServer::new(&attr);
+        let mut writer = PushPullPack::new(&attr, DatatypeState::Creating);
+        writer.transactions = vec![transaction(
+            &writer.cuid,
+            1,
+            Operation::new_counter_increase(7),
+        )];
+        server.process(&writer, false).unwrap();
+        let mut peer = PushPullPack::new(&attr, DatatypeState::Subscribing);
+        peer.cuid = crate::types::uid::Cuid::new();
+        server.process(&peer, false).unwrap();
+        peer.state = DatatypeState::Subscribed;
+        peer.transactions = vec![transaction(
+            &peer.cuid,
+            1,
+            Operation::new_counter_increase(3),
+        )];
+        server.process(&peer, false).unwrap();
+
+        // The writer's previous response only covered sequence 1; it reports applying 2 elsewhere.
+        writer.state = DatatypeState::Subscribed;
+        writer.transactions.clear();
+        writer.checkpoint.sseq = 2;
+        let pulled = server.process(&writer, false).unwrap();
+        assert!(pulled.error.is_none());
+        assert_eq!(server.synced.checkpoints[&writer.cuid].sseq, 2);
+        assert!(pulled.transactions.is_empty());
+    }
+
+    #[test]
+    fn can_keep_a_failed_snapshot_application_unacknowledged() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let (collection, key, resource_id) = get_test_ids!();
+        let creator = Client::builder(collection.clone(), "creator")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let reader = Client::builder(collection, "reader")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let source = creator
+            .create_datatype(key.clone())
+            .build_counter()
+            .unwrap();
+        source.increase().unwrap();
+        source.sync().unwrap();
+        let replica = reader
+            .subscribe_datatype(key)
+            .with_readonly()
+            .build_counter()
+            .unwrap();
+        let interceptor = connectivity
+            .get_wired_interceptor(&resource_id, &reader.get_cuid())
+            .unwrap();
+        interceptor.set_after_pull(|pull| {
+            // Force the actual snapshot application to fail after the backend supplied it.
+            let snapshot = Arc::make_mut(pull.snapshot_transaction.as_mut().unwrap());
+            snapshot.operations.clear();
+            Ok(())
+        });
+        assert!(replica.sync().is_err());
+        let server = connectivity
+            .get_local_datatype_server(&resource_id)
+            .unwrap();
+        assert_eq!(server.read().synced.checkpoints[&reader.get_cuid()].sseq, 0);
+        assert_eq!(server.read().synced.safe_sseq(), 0);
+        assert_eq!(replica.get_server_version(), 0);
+    }
+
+    #[test]
+    fn can_exclude_registration_only_handles_from_applied_progress() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let (collection, key, resource_id) = get_test_ids!();
+        let creator = Client::builder(collection.clone(), "creator")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let pending = Client::builder(collection, "pending")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let source = creator
+            .create_datatype(key.clone())
+            .build_counter()
+            .unwrap();
+        source.increase().unwrap();
+        source.sync().unwrap();
+        source.sync().unwrap();
+        let waiting = pending.subscribe_datatype(key).build_counter().unwrap();
+        let server = connectivity
+            .get_local_datatype_server(&resource_id)
+            .unwrap();
+        assert_eq!(server.read().synced.checkpoints.len(), 1);
+        assert_eq!(server.read().synced.safe_sseq(), 1);
+        let unsubscribe = PushPullPack::new(&waiting.get_attr(), DatatypeState::Unsubscribing);
+        assert!(
+            server
+                .write()
+                .process(&unsubscribe, false)
+                .unwrap()
+                .error
+                .is_none()
+        );
+        assert!(!server.read().wired_map.contains_key(&pending.get_cuid()));
+        source.unsubscribe().unwrap();
+        source.sync().unwrap();
+        assert!(
+            connectivity
+                .get_local_datatype_server(&resource_id)
+                .is_none()
+        );
+    }
 
     #[test]
     fn can_restart_client_sequences_after_unsubscribe_and_resubscribe() {
@@ -485,10 +810,14 @@ mod tests_local_datatype_server {
             .unwrap();
         {
             let server = server.read();
-            assert!(!server.synced.cseq_map.contains_key(&client.get_cuid()));
+            assert!(!server.synced.checkpoints.contains_key(&client.get_cuid()));
             assert_eq!(
-                server.synced.cseq_map.get(&peer_client.get_cuid()),
-                Some(&1)
+                server
+                    .synced
+                    .checkpoints
+                    .get(&peer_client.get_cuid())
+                    .map(|cp| cp.cseq),
+                Some(1)
             );
         }
 
@@ -514,7 +843,7 @@ mod tests_local_datatype_server {
             1,
             Operation::new_counter_increase(7),
         )];
-        server.process_creating(&pushed).unwrap();
+        server.process(&pushed, false).unwrap();
         pushed.state = DatatypeState::Unsubscribing;
         pushed.is_readonly = true;
         pushed.transactions = vec![transaction(
@@ -522,17 +851,16 @@ mod tests_local_datatype_server {
             2,
             Operation::new_counter_increase(5),
         )];
-        let pulled = server.process_unsubscribing(&pushed, false).unwrap();
+        let pulled = server.process(&pushed, false).unwrap();
         assert_eq!(pulled.error, Some(PushPullError::ReadonlyViolation));
-        assert!(!server.subscribers.contains(&pushed.cuid));
-        assert!(!server.synced.cseq_map.contains_key(&pushed.cuid));
+        assert!(!server.synced.checkpoints.contains_key(&pushed.cuid));
         assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 7);
         assert_eq!(server.synced.sseq, 1);
         assert_eq!(server.synced.history.len(), 1);
-        let repeated = server.process_unsubscribing(&pushed, false).unwrap();
+        let repeated = server.process(&pushed, false).unwrap();
         assert!(repeated.error.is_none());
         assert_eq!(repeated.state, DatatypeState::Disabled);
-        assert!(server.synced.cseq_map.is_empty());
+        assert!(server.synced.checkpoints.is_empty());
         assert_eq!(server.synced.sseq, 1);
     }
 
@@ -545,6 +873,62 @@ mod tests_local_datatype_server {
         let mut tx = Transaction::new(cuid, cseq);
         tx.push_operation(operation);
         Arc::new(tx)
+    }
+
+    #[rstest]
+    #[case::duplicate(&[2, 3, 3, 4])]
+    #[case::backward_sequence(&[2, 3, 2, 4])]
+    fn can_reject_nonsequential_new_transactions_without_publishing_batch(
+        #[case] sequences: &[u64],
+    ) {
+        let attr = new_attribute!(DataType::Counter);
+        let mut server = LocalDatatypeServer::new(&attr);
+        let mut pushed = PushPullPack::new(&attr, DatatypeState::Creating);
+        let accepted = transaction(&pushed.cuid, 1, Operation::new_counter_increase(7));
+        pushed.transactions = vec![accepted.clone()];
+        assert!(server.process(&pushed, false).unwrap().error.is_none());
+        let before = server.synced.crdt.serialize();
+        let history = server.synced.history.clone();
+        let checkpoints = server.synced.checkpoints.clone();
+
+        pushed.state = DatatypeState::Subscribed;
+        pushed.checkpoint.sseq = 1;
+        pushed.transactions = sequences
+            .iter()
+            .enumerate()
+            .map(|(index, &cseq)| {
+                transaction(
+                    &pushed.cuid,
+                    cseq,
+                    Operation::new_counter_increase(index as i64 + 10),
+                )
+            })
+            .collect();
+        let failed = server.process(&pushed, false).unwrap();
+        assert!(matches!(
+            failed.error,
+            Some(PushPullError::ProtocolViolation(_))
+        ));
+        assert_eq!(server.synced.crdt.serialize(), before);
+        assert_eq!(server.synced.history, history);
+        assert_eq!(server.synced.checkpoints, checkpoints);
+        assert_eq!(server.synced.sseq, 1);
+        assert_eq!(server.synced.lamport, 1);
+
+        // A retry may still include transactions accepted by an earlier request.
+        pushed.transactions = vec![
+            accepted,
+            transaction(&pushed.cuid, 2, Operation::new_counter_increase(10)),
+            transaction(&pushed.cuid, 3, Operation::new_counter_increase(20)),
+        ];
+        assert!(server.process(&pushed, false).unwrap().error.is_none());
+        assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 37);
+        assert_eq!(server.synced.history.len(), 3);
+        assert_eq!(server.synced.sseq, 3);
+        assert_eq!(
+            server.synced.checkpoints[&pushed.cuid],
+            CheckPoint::new(1, 3)
+        );
     }
 
     #[rstest]
@@ -564,10 +948,10 @@ mod tests_local_datatype_server {
         };
         let mut pushed = PushPullPack::new(&attr, DatatypeState::Creating);
         pushed.transactions = vec![transaction(&pushed.cuid, 1, operation(7))];
-        assert!(server.process_creating(&pushed).unwrap().error.is_none());
+        assert!(server.process(&pushed, false).unwrap().error.is_none());
         let before = server.synced.crdt.serialize();
         let history = server.synced.history.clone();
-        let checkpoints = server.synced.cseq_map.clone();
+        let checkpoints = server.synced.checkpoints.clone();
         pushed.state = DatatypeState::Subscribed;
         pushed.transactions = vec![
             transaction(&pushed.cuid, 2, operation(10)),
@@ -576,57 +960,41 @@ mod tests_local_datatype_server {
         let mut invalid = Operation::new_snapshot(Vec::new().into_boxed_slice());
         invalid.set_lamport(50);
         Arc::make_mut(&mut pushed.transactions[1]).push_operation(invalid);
-        let failed = server.process_subscribed(&pushed, false).unwrap();
+        let failed = server.process(&pushed, false).unwrap();
         assert!(matches!(
             failed.error,
             Some(PushPullError::ProtocolViolation(_))
         ));
         assert_eq!(server.synced.crdt.serialize(), before);
         assert_eq!(server.synced.history, history);
-        assert_eq!(server.synced.cseq_map, checkpoints);
+        assert_eq!(server.synced.checkpoints, checkpoints);
         assert_eq!(server.synced.sseq, 1);
         assert_eq!(server.synced.lamport, 1);
 
         Arc::make_mut(&mut pushed.transactions[1]).operations.pop();
-        assert!(
-            server
-                .process_subscribed(&pushed, false)
-                .unwrap()
-                .error
-                .is_none()
-        );
+        assert!(server.process(&pushed, false).unwrap().error.is_none());
         assert_eq!(server.synced.sseq, 3);
         assert_eq!(server.synced.lamport, 3);
         let after = server.synced.crdt.serialize();
-        assert!(
-            server
-                .process_subscribed(&pushed, false)
-                .unwrap()
-                .error
-                .is_none()
-        );
+        assert!(server.process(&pushed, false).unwrap().error.is_none());
         pushed.transactions.clear();
-        assert!(
-            server
-                .process_subscribed(&pushed, false)
-                .unwrap()
-                .error
-                .is_none()
-        );
+        assert!(server.process(&pushed, false).unwrap().error.is_none());
         assert_eq!(server.synced.crdt.serialize(), after);
         assert_eq!(server.synced.history.len(), 3);
         assert_eq!(server.synced.sseq, 3);
     }
 
     #[rstest]
-    #[case::wrong_operation(0)]
-    #[case::wrong_origin(1)]
-    #[case::sequence_gap(2)]
-    #[case::zero_lamport(3)]
-    fn can_keep_a_failed_creation_unpublished(#[case] mutation: u8) {
+    #[case::wrong_operation(0, DatatypeState::Creating)]
+    #[case::wrong_origin(1, DatatypeState::Creating)]
+    #[case::sequence_gap(2, DatatypeState::Creating)]
+    #[case::zero_lamport(3, DatatypeState::Creating)]
+    #[case::nil_duid(4, DatatypeState::Creating)]
+    #[case::nil_duid_subscribe_or_create(4, DatatypeState::SubscribingOrCreating)]
+    fn can_keep_a_failed_creation_unpublished(#[case] mutation: u8, #[case] state: DatatypeState) {
         let attr = new_attribute!(DataType::Counter);
         let mut server = LocalDatatypeServer::new(&attr);
-        let mut pushed = PushPullPack::new(&attr, DatatypeState::Creating);
+        let mut pushed = PushPullPack::new(&attr, state);
         let mut tx = (*transaction(&pushed.cuid, 1, Operation::new_counter_increase(7))).clone();
         match mutation {
             0 => {
@@ -637,27 +1005,28 @@ mod tests_local_datatype_server {
             1 => tx.cuid = crate::types::uid::Cuid::new(),
             2 => tx.cseq = 2,
             3 => tx.operations[0].set_lamport(0),
+            4 => pushed.duid = Duid::new_nil(),
             _ => unreachable!(),
         }
         pushed.transactions.push(Arc::new(tx));
         let duid = server.duid.clone();
-        assert!(server.process_creating(&pushed).unwrap().error.is_some());
-        assert!(!server.created);
+        assert!(server.process(&pushed, false).unwrap().error.is_some());
+        assert!(!server.is_created());
         assert_eq!(server.duid, duid);
         assert!(server.synced.history.is_empty());
-        assert!(server.synced.cseq_map.is_empty());
-        assert!(server.subscribers.is_empty());
+        assert!(server.synced.checkpoints.is_empty());
         assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 0);
         assert_eq!(server.synced.lamport, 0);
         assert_eq!(server.synced.sseq, 0);
+        pushed.duid = attr.get_duid();
         pushed.transactions = vec![transaction(
             &pushed.cuid,
             1,
             Operation::new_counter_increase(7),
         )];
-        assert!(server.process_creating(&pushed).unwrap().error.is_none());
+        assert!(server.process(&pushed, false).unwrap().error.is_none());
         assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 7);
-        assert!(server.created);
+        assert!(server.is_created());
     }
 
     #[test]
@@ -665,9 +1034,9 @@ mod tests_local_datatype_server {
         let attr = new_attribute!(DataType::Counter);
         let mut server = LocalDatatypeServer::new(&attr);
         let create = PushPullPack::new(&attr, DatatypeState::Creating);
-        assert!(server.process_creating(&create).unwrap().error.is_none());
+        assert!(server.process(&create, false).unwrap().error.is_none());
         let subscribe = PushPullPack::new(&attr, DatatypeState::Subscribing);
-        let pulled = server.process_subscribing(&subscribe).unwrap();
+        let pulled = server.process(&subscribe, false).unwrap();
         let snapshot = pulled.snapshot_transaction.unwrap();
         assert_eq!(snapshot.sseq, 0);
         assert_eq!(snapshot.operations[0].lamport, 0);
@@ -695,7 +1064,7 @@ mod tests_local_datatype_server {
             1,
             Operation::new_counter_increase(7),
         )];
-        assert!(server.process_creating(&create).unwrap().error.is_none());
+        assert!(server.process(&create, false).unwrap().error.is_none());
         let handle = keep_busy_handle.then_some(wired);
         if let Some(wired) = &handle {
             wired
@@ -713,7 +1082,7 @@ mod tests_local_datatype_server {
         let (done_tx, done_rx) = mpsc::channel();
         let worker = thread::spawn(move || {
             done_tx
-                .send(server.process_subscribing(&subscribe).unwrap())
+                .send(server.process(&subscribe, false).unwrap())
                 .unwrap();
         });
         let result = done_rx.recv_timeout(Duration::from_secs(5));
@@ -733,8 +1102,12 @@ mod tests_local_datatype_server {
         assert!(pulled.transactions.is_empty());
     }
 
-    #[test]
-    fn can_subscribe_before_the_creator_applies_its_accepted_response() {
+    #[rstest]
+    #[case::create(false)]
+    #[case::subscribe_or_create(true)]
+    fn can_subscribe_before_the_creator_applies_its_accepted_response(
+        #[case] create_or_subscribe: bool,
+    ) {
         let connectivity = LocalConnectivity::new_arc();
         connectivity.set_realtime(false);
         let (collection, key, resource_id) = get_test_ids!();
@@ -746,10 +1119,12 @@ mod tests_local_datatype_server {
             .with_connectivity(connectivity.clone())
             .build()
             .unwrap();
-        let source = creator
-            .create_datatype(key.clone())
-            .build_counter()
-            .unwrap();
+        let builder = if create_or_subscribe {
+            creator.subscribe_or_create_datatype(key.clone())
+        } else {
+            creator.create_datatype(key.clone())
+        };
+        let source = builder.build_counter().unwrap();
         source.increase_by(7).unwrap();
         let interceptor = connectivity
             .get_wired_interceptor(&resource_id, &creator.get_cuid())
@@ -762,12 +1137,14 @@ mod tests_local_datatype_server {
         replica.sync().unwrap();
         assert_eq!(replica.get_value(), 7);
         assert_eq!(replica.get_server_version(), 1);
+        replica.increase_by(3).unwrap();
+        replica.sync().unwrap();
         interceptor.set_after_pull(|_| Ok(()));
         source.sync().unwrap();
         replica.sync().unwrap();
-        assert_eq!(source.get_value(), 7);
-        assert_eq!(replica.get_value(), 7);
-        assert_eq!(source.get_server_version(), 1);
+        assert_eq!(source.get_value(), 10);
+        assert_eq!(replica.get_value(), 10);
+        assert_eq!(source.get_server_version(), 2);
     }
 
     fn push_set_readonly(push: &mut PushPullPack) {
@@ -866,7 +1243,7 @@ mod tests_local_datatype_server {
                     .mapping())
             });
             let _ = counter1.sync();
-            assert!(server.read().created);
+            assert!(server.read().is_created());
         }
 
         let expected_error = Arc::new(expected_error);
@@ -902,7 +1279,7 @@ mod tests_local_datatype_server {
             assert!(sync_result.is_ok());
             assert_eq!(counter1.get_state(), DatatypeState::Subscribed);
         }
-        assert_eq!(server.read().created, expected_created);
+        assert_eq!(server.read().is_created(), expected_created);
         assert_eq!(server.read().synced.history.len(), expected_history_len);
         info!("{}", server.read());
     }

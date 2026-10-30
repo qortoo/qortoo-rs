@@ -49,6 +49,12 @@ impl PushPullPack {
         }
     }
 
+    pub(crate) fn with_error(mut self, error: PushPullError) -> Self {
+        self.error = Some(error);
+        self.state = DatatypeState::Disabled;
+        self
+    }
+
     pub fn resource_id(&self) -> ResourceID {
         format!("{}/{}", self.collection, self.key)
     }
