@@ -28,6 +28,7 @@ const ERR_INVALID_CHECKPOINT: &str = "checkpoint exceeds the server head";
 const ERR_ALREADY_EXISTS: &str = "already exist";
 const ERR_INVALID_CREATION: &str = "invalid creation DUID or type";
 const ERR_DISABLED_PUSH: &str = "disabled client attempted push";
+const ERR_DELETING_UNSUPPORTED: &str = "datatype deletion is not supported";
 const ERR_SUBSCRIBING_PUSH: &str = "cannot push transactions when subscribing";
 const ERR_INVALID_SUBSCRIPTION_CHECKPOINT: &str = "invalid subscription checkpoint";
 
@@ -449,7 +450,9 @@ impl LocalDatatypeServer {
 
     datatype_server_instrument! {
     fn process_deleting(&mut self) -> Result<(), PushPullError> {
-        Ok(())
+        Err(PushPullError::ProtocolViolation(
+            ERR_DELETING_UNSUPPORTED.into(),
+        ))
     }}
 
     datatype_server_instrument! {
@@ -773,6 +776,75 @@ mod tests_local_datatype_server {
                 .get_local_datatype_server(&resource_id)
                 .is_none()
         );
+    }
+
+    #[rstest]
+    #[case::uncreated(false)]
+    #[case::created(true)]
+    fn can_reject_unsupported_deletion_without_changing_backend_state(#[case] created: bool) {
+        use crate::datatypes::{wired::WiredDatatype, wired_interceptor::WiredInterceptor};
+
+        let attr = new_attribute!(DataType::Counter);
+        let wired = WiredDatatype::new_arc_for_test(
+            attr.clone(),
+            DatatypeState::Creating,
+            WiredInterceptor::new_arc(),
+        );
+        let mut server = LocalDatatypeServer::new(&attr);
+        let (sender, receiver) = crossbeam_channel::unbounded();
+        server.insert_client_item(wired.clone(), sender);
+        let mut pushed = PushPullPack::new(&attr, DatatypeState::Creating);
+        if created {
+            pushed.transactions = vec![transaction(
+                &pushed.cuid,
+                1,
+                Operation::new_counter_increase(7),
+            )];
+            assert!(server.process(&pushed, false).unwrap().error.is_none());
+            pushed.state = DatatypeState::Subscribed;
+            pushed.checkpoint.sseq = 1;
+            pushed.transactions.clear();
+            assert!(server.process(&pushed, false).unwrap().error.is_none());
+        }
+        let duid = server.duid.clone();
+        let crdt = server.synced.crdt.serialize();
+        let lamport = server.synced.lamport;
+        let sseq = server.synced.sseq;
+        let history = server.synced.history.clone();
+        let checkpoints = server.synced.checkpoints.clone();
+        let safe_sseq = server.synced.safe_sseq();
+
+        pushed.state = DatatypeState::Deleting;
+        pushed.safe_sseq = u64::MAX;
+        pushed.transactions = vec![transaction(
+            &pushed.cuid,
+            if created { 2 } else { 1 },
+            Operation::new_counter_increase(10),
+        )];
+        let pulled = server.process(&pushed, true).unwrap();
+        let Some(PushPullError::ProtocolViolation(message)) = pulled.error else {
+            panic!("expected unsupported deletion protocol error");
+        };
+        assert_eq!(message, "datatype deletion is not supported");
+        assert_eq!(pulled.state, DatatypeState::Disabled);
+        assert!(pulled.transactions.is_empty());
+        assert!(pulled.snapshot_transaction.is_none());
+        assert_eq!(pulled.safe_sseq, safe_sseq);
+        assert_eq!(server.duid, duid);
+        assert_eq!(server.is_created(), created);
+        assert_eq!(server.synced.crdt.serialize(), crdt);
+        assert_eq!(server.synced.lamport, lamport);
+        assert_eq!(server.synced.sseq, sseq);
+        assert_eq!(server.synced.history, history);
+        assert_eq!(server.synced.checkpoints, checkpoints);
+        assert_eq!(server.wired_map.len(), 1);
+        assert!(Arc::ptr_eq(
+            &server.get_wired_datatype(&pushed.cuid).unwrap(),
+            &wired
+        ));
+        assert_eq!(server.sender_map.len(), 1);
+        assert!(server.sender_map.contains_key(&pushed.cuid));
+        assert!(receiver.is_empty());
     }
 
     #[test]

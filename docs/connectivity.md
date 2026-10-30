@@ -117,6 +117,11 @@ Active logical subscriptions are stored in
 server `sseq`. Readonly and empty subscriptions also have entries; unsubscribe removes the
 entry, clearing both progress boundaries together.
 
+Datatype deletion is unsupported. A direct `Deleting` request to the local backend returns
+`ProtocolViolation("datatype deletion is not supported")` with response state `Disabled`.
+It does not execute attached transactions or change resource state, subscriptions, or
+registrations. This rejection does not implement a delete lifecycle.
+
 New transactions are executed in server order against an isolated O(1) fork of the backend CRDT.
 Only a completely valid request batch publishes the CRDT, clock, history, and acknowledgement
 progress. A failed batch leaves those fields unchanged; a failed creation does not publish a
