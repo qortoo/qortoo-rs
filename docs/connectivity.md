@@ -109,16 +109,90 @@ state created the first time a datatype registers for that resource, and it can 
 between realtime and manual. Each resource groups its CRDT, maximum accepted Lamport time,
 server sequence, client progress, and transaction history in `SyncedState`. That state owns
 batch acceptance, history pulls, and snapshot generation. `LocalDatatypeServer` manages
-resource identity, lifecycle, subscriptions, and notifications.
+resource identity, lifecycle, and notifications. Its DUID is nil until a creation request
+succeeds; creation requests with a nil DUID are rejected before changing backend state.
+Registration alone does not create the resource, and creation can succeed without transactions.
+Active logical subscriptions are stored in
+`SyncedState.checkpoints`: each entry pairs accepted client `cseq` with reported applied
+server `sseq`. Readonly and empty subscriptions also have entries; unsubscribe removes the
+entry, clearing both progress boundaries together.
+
+Datatype deletion is unsupported. A direct `Deleting` request to the local backend returns
+`ProtocolViolation("datatype deletion is not supported")` with response state `Disabled`.
+It does not execute attached transactions or change resource state, subscriptions, or
+registrations. This rejection does not implement a delete lifecycle.
 
 New transactions are executed in server order against an isolated O(1) fork of the backend CRDT.
 Only a completely valid request batch publishes the CRDT, clock, history, and acknowledgement
 progress. A failed batch leaves those fields unchanged; a failed creation does not publish a
-created resource. Retransmitted client sequence numbers are not executed or recorded again.
+created resource. Transactions at or below the client sequence accepted before this request
+are ignored as retransmissions. The remaining transactions must have consecutive increasing
+client sequences; duplicates, backward sequences, or gaps reject the entire batch.
 Responses continue to exclude the requesting client's own transactions.
 When a subscription ends, its client-sequence deduplication entry is removed after the final
 push is processed. A fresh subscription from the same client can therefore start its local
 sequence at zero without inheriting the previous subscription's accepted sequence.
+
+Push `checkpoint.sseq` acknowledges the last server boundary successfully applied by that
+client. Pull `checkpoint.sseq` reports the server head; sending it does not acknowledge client
+application. The backend trusts each client's reported applied boundary and tracks it
+monotonically per subscription, without tracking which responses it previously provided.
+The reported boundary must not exceed the server head before the request is processed.
+This bound is checked separately from identity, with the same protocol error message across
+creation, subscription, and active-subscription processing.
+A new subscription must start with checkpoint zero. Identity, progress, and batch validation
+must succeed before its applied boundary advances. Clients must report only successfully
+applied state: an incorrect acknowledgement can advance the safe boundary prematurely and
+make history pruning discard transactions that client still needs.
+
+Pull `safe_sseq` is the minimum applied boundary across all logical subscribers, including the
+requesting client and readonly subscribers. With no subscribers it is the server head. Wired
+registration alone does not enter this calculation. A new subscription starts at the existing
+safe boundary; resending its snapshot preserves its previous applied boundary. Client-provided
+`safe_sseq` is not trusted or reflected. Unsubscribe processes the final push, removes the
+subscription and its sequence metadata, and recomputes safe over the remaining subscribers.
+`LocalDatatypeServer::process` creates the response, converts state-specific errors into
+Disabled responses, and sets final `safe_sseq`. Private state-specific processors update
+the shared response and return `PushPullError` on rejection. Creation, subscription, and
+client-push validation use read-only helpers before backend mutations. Unsubscribe cleans up
+its subscription even when its final push is rejected.
+Failed final batches retain the existing unsubscribe cleanup behavior without acknowledging
+that batch. Applied acknowledgements protect incremental history; they do not authorize
+tombstone GC.
+
+After successful request processing, the local backend removes history transactions through
+`safe_sseq`. It first captures the response's transaction references, so even a delayed request
+can receive all retained transactions it needs before this request prunes them. History uses
+a prefix-removable queue, and `pruned_sseq` records the last transaction removed. Pruning does
+not change the server head, CRDT, or accepted client-sequence deduplication metadata.
+Existing pull references remain valid after history removal. Transaction payloads are freed
+only when their last reference is dropped; queue capacity need not shrink immediately.
+
+An incremental request with `checkpoint.sseq == pruned_sseq` can pull from the next sequence.
+One below `pruned_sseq` is rejected with
+`ProtocolViolation("requested server history has been pruned")` before accepting transactions
+or advancing applied progress. This includes creation retries and even entirely deduplicated
+requests. The client follows the existing `Disabled`/reset path, clearing its pending push
+buffer and transaction rollback record. Unaccepted edits can be lost from synchronization;
+reset does not roll back the local CRDT, and there is no automatic snapshot replacement,
+rebase, or transaction recovery API for this failure.
+
+New and repeated snapshot subscriptions can still start at checkpoint zero after pruning.
+They use the backend snapshot and retain the existing safe-boundary initialization rules.
+Failed requests do not advance `pruned_sseq`. An unsubscribe failure still removes its
+subscription; the resulting higher safe boundary can be pruned by a later successful request.
+Removing the resource after its last local registration and subscription ends remains a
+separate lifecycle action.
+
+Pruning runs at successful request boundaries without a background worker. An idle, readonly,
+or manually synchronized subscriber can hold the safe boundary indefinitely. Subscription
+expiry and generation fencing are not implemented, so pruning does not guarantee a fixed
+memory bound.
+
+A creation retried after a lost pull receives intervening transactions from other clients as
+well as its deduplicated client checkpoint. This also applies to subscribe-or-create retries
+of the creating client, which retain creation semantics instead of replacing local state with
+a subscription snapshot.
 
 A subscription receives a snapshot serialized from the backend's accepted CRDT, with its
 server `sseq` and Lamport clock captured under the same resource lock. Snapshot bytes are

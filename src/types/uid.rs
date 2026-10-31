@@ -16,6 +16,7 @@ pub type Cuid = Uid;
 pub type Duid = Uid;
 
 pub const UID_LEN: usize = 16;
+const NIL_UID: &str = "0000000000000000";
 
 #[derive(Clone, PartialEq, PartialOrd, Eq, Ord)]
 pub struct Uid(ArcStr);
@@ -26,7 +27,11 @@ impl Uid {
     }
 
     pub fn new_nil() -> Self {
-        Self(Arc::from("0000000000000000"))
+        Self(Arc::from(NIL_UID))
+    }
+
+    pub(crate) fn is_nil(&self) -> bool {
+        self.as_ref() == NIL_UID
     }
 
     pub(crate) fn to_bytes(&self) -> [u8; UID_LEN] {
@@ -130,6 +135,9 @@ mod tests_uid {
         let _cuid = Cuid::new();
         assert_ne!(_duid.to_string(), _cuid.to_string());
         let default_duid = Duid::default();
+        assert!(default_duid.is_nil());
+        assert!(Duid::new_nil().is_nil());
+        assert!(!Uid::try_from("-_00000000000000").unwrap().is_nil());
         info!("{default_duid} {default_duid:?}");
     }
 

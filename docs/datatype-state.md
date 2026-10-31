@@ -60,10 +60,12 @@ datatype in the client's table. It becomes disabled, and detaches, only once the
 acknowledges. With a realtime backend the event loop drives this; with a manual one the caller
 has to synchronize.
 
-**`Deleting` is reserved and unreachable.** It exists in the state set for a delete lifecycle
-that is not implemented. No public API produces it, and the paths that would apply a response
-for it are unimplemented, so reaching it would abort rather than fail gracefully. Treat it as
-absent when reasoning about the lifecycle.
+**`Deleting` is reserved.** No public datatype API produces it. The local backend rejects a
+direct `Deleting` request with `ProtocolViolation` and a `Disabled` response, leaving backend
+state and registrations unchanged. The delete lifecycle remains unimplemented: the
+`NullConnectivity` request path and the client's state-specific handling of a successful
+delete response still contain `todo!()` and would panic if reached. The local backend's error
+response is handled before that client state-specific branch.
 
 **Limits on the guarantees.** A state describes intent, not confirmation: a writable
 pre-subscription state permits writes that the backend may still reject, in which case the
@@ -79,7 +81,7 @@ buffered. See [`docs/error-handling.md`](error-handling.md).
 | `SubscribingOrCreating` | Accepting either outcome | Permitted | Always |
 | `Subscribed` | Attached and exchanging | Permitted | When it holds unacknowledged work |
 | `Unsubscribing` | Asking to detach, waiting for acknowledgement | Refused | Always |
-| `Deleting` | Reserved; not produced and not implemented | Refused | — |
+| `Deleting` | Reserved; not produced by the API; local backend rejects direct requests | Refused | — |
 | `Disabled` | Detached; terminal | Refused | Never |
 
 ## Behavior
