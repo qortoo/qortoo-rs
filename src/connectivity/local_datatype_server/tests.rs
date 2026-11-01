@@ -5,7 +5,7 @@ pub(super) use std::{
 };
 
 pub(super) use rstest::rstest;
-pub(super) use tracing::{info, instrument};
+pub(super) use tracing::instrument;
 
 pub(super) use super::LocalDatatypeServer;
 pub(super) use crate::{

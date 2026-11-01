@@ -181,29 +181,43 @@ fn can_reject_a_late_batch_failure_without_advancing_backend_state(#[case] data_
     assert_eq!(server.synced.sseq, 3);
 }
 
+#[derive(Clone, Copy, Debug)]
+enum CreationMutation {
+    WrongOperation,
+    WrongOrigin,
+    SequenceGap,
+    ZeroLamport,
+    NilDuid,
+}
+
 #[rstest]
-#[case::wrong_operation(0, DatatypeState::Creating)]
-#[case::wrong_origin(1, DatatypeState::Creating)]
-#[case::sequence_gap(2, DatatypeState::Creating)]
-#[case::zero_lamport(3, DatatypeState::Creating)]
-#[case::nil_duid(4, DatatypeState::Creating)]
-#[case::nil_duid_subscribe_or_create(4, DatatypeState::SubscribingOrCreating)]
-fn can_keep_a_failed_creation_unpublished(#[case] mutation: u8, #[case] state: DatatypeState) {
+#[case::wrong_operation(CreationMutation::WrongOperation, DatatypeState::Creating)]
+#[case::wrong_origin(CreationMutation::WrongOrigin, DatatypeState::Creating)]
+#[case::sequence_gap(CreationMutation::SequenceGap, DatatypeState::Creating)]
+#[case::zero_lamport(CreationMutation::ZeroLamport, DatatypeState::Creating)]
+#[case::nil_duid(CreationMutation::NilDuid, DatatypeState::Creating)]
+#[case::nil_duid_subscribe_or_create(
+    CreationMutation::NilDuid,
+    DatatypeState::SubscribingOrCreating
+)]
+fn can_keep_a_failed_creation_unpublished(
+    #[case] mutation: CreationMutation,
+    #[case] state: DatatypeState,
+) {
     let attr = new_attribute!(DataType::Counter);
     let mut server = LocalDatatypeServer::new(&attr);
     let mut pushed = PushPullPack::new(&attr, state);
     let mut tx = (*transaction(&pushed.cuid, 1, Operation::new_counter_increase(7))).clone();
     match mutation {
-        0 => {
+        CreationMutation::WrongOperation => {
             let mut invalid = Operation::new_variable_set(b"7".to_vec().into_boxed_slice());
             invalid.set_lamport(2);
             tx.push_operation(invalid);
         }
-        1 => tx.cuid = crate::types::uid::Cuid::new(),
-        2 => tx.cseq = 2,
-        3 => tx.operations[0].set_lamport(0),
-        4 => pushed.duid = Duid::new_nil(),
-        _ => unreachable!(),
+        CreationMutation::WrongOrigin => tx.cuid = crate::types::uid::Cuid::new(),
+        CreationMutation::SequenceGap => tx.cseq = 2,
+        CreationMutation::ZeroLamport => tx.operations[0].set_lamport(0),
+        CreationMutation::NilDuid => pushed.duid = Duid::new_nil(),
     }
     pushed.transactions.push(Arc::new(tx));
     let duid = server.duid.clone();
@@ -296,37 +310,75 @@ fn assert_push_pull_pack(
     assert_eq!(pulled.transactions.len(), tx_len);
 }
 
+#[derive(Clone, Copy, Debug)]
+enum CreatingScenario {
+    Readonly,
+    Normal,
+    DuplicateRetry,
+    AlreadyCreatedDifferentDuid,
+}
+
+struct CreatingExpectation {
+    pre_create: bool,
+    modify_push: fn(&mut PushPullPack),
+    is_readonly: bool,
+    error: Option<PushPullError>,
+    checkpoint: CheckPoint,
+    is_created: bool,
+    history_len: usize,
+}
+
+impl CreatingScenario {
+    fn expectation(self) -> CreatingExpectation {
+        match self {
+            Self::Readonly => CreatingExpectation {
+                pre_create: false,
+                modify_push: push_set_readonly,
+                is_readonly: true,
+                error: Some(PushPullError::ReadonlyViolation),
+                checkpoint: CheckPoint::new(0, 0),
+                is_created: false,
+                history_len: 0,
+            },
+            Self::Normal => CreatingExpectation {
+                pre_create: false,
+                modify_push: push_no_change,
+                is_readonly: false,
+                error: None,
+                checkpoint: CheckPoint::new(10, 10),
+                is_created: true,
+                history_len: 10,
+            },
+            Self::DuplicateRetry => CreatingExpectation {
+                pre_create: true,
+                modify_push: push_no_change,
+                is_readonly: false,
+                error: None,
+                checkpoint: CheckPoint::new(10, 10),
+                is_created: true,
+                history_len: 10,
+            },
+            Self::AlreadyCreatedDifferentDuid => CreatingExpectation {
+                pre_create: true,
+                modify_push: push_set_new_duid,
+                is_readonly: false,
+                error: Some(PushPullError::CreateFailed("already exist".to_string())),
+                checkpoint: CheckPoint::new(0, 0),
+                is_created: true,
+                history_len: 10,
+            },
+        }
+    }
+}
+
 #[rstest]
-#[case::readonly(
-    false,
-    push_set_readonly,
-    true,
-    Some(PushPullError::ReadonlyViolation),
-    CheckPoint::new(0, 0),
-    false,
-    0
-)]
-#[case::normal(false, push_no_change, false, None, CheckPoint::new(10, 10), true, 10)]
-#[case::duplicate(true, push_no_change, false, None, CheckPoint::new(10, 10), true, 10)]
-#[case::already_created(
-    true,
-    push_set_new_duid,
-    false,
-    Some(PushPullError::CreateFailed("already exist".to_string())),
-    CheckPoint::new(0, 0),
-    true,
-    10,
-)]
+#[case::readonly(CreatingScenario::Readonly)]
+#[case::normal(CreatingScenario::Normal)]
+#[case::duplicate(CreatingScenario::DuplicateRetry)]
+#[case::already_created(CreatingScenario::AlreadyCreatedDifferentDuid)]
 #[instrument]
-fn can_process_creating(
-    #[case] pre_create: bool,
-    #[case] modify_push: fn(&mut PushPullPack),
-    #[case] expected_is_readonly: bool,
-    #[case] expected_error: Option<PushPullError>,
-    #[case] expected_cp: CheckPoint,
-    #[case] expected_created: bool,
-    #[case] expected_history_len: usize,
-) {
+fn can_process_creating(#[case] scenario: CreatingScenario) {
+    let exp = scenario.expectation();
     let f = TestFixture::new(get_test_ids!());
     let client1 = f.client(get_test_func_name!());
     let counter1 = f.create_counter(&client1);
@@ -337,7 +389,7 @@ fn can_process_creating(
     let server = f.server();
     let wired_interceptor1 = f.interceptor(&client1);
 
-    if pre_create {
+    if exp.pre_create {
         wired_interceptor1.set_after_pull(|_pull| {
             Err(ConnectivityError::TimedOut("".to_owned())
                 .to_datatype_error()
@@ -347,28 +399,26 @@ fn can_process_creating(
         assert!(server.read().is_created());
     }
 
-    let expected_error = Arc::new(expected_error);
-    let expected_error2 = expected_error.clone();
+    let expected_error_for_pull = exp.error.clone();
+    let modify_push = exp.modify_push;
 
     wired_interceptor1
         .set_before_push(move |push| {
             modify_push(push);
-            info!("PUSH:{push}");
         })
         .set_after_pull(move |pull| {
-            info!("PULL:{pull}");
             assert_push_pull_pack(
                 pull,
-                expected_is_readonly,
-                expected_cp,
-                (*expected_error2).clone(),
+                exp.is_readonly,
+                exp.checkpoint,
+                expected_error_for_pull.clone(),
                 0,
             );
             Ok(())
         });
 
     let sync_result = counter1.sync();
-    if let Some(ref sppe) = *expected_error {
+    if let Some(ref sppe) = exp.error {
         let err = sync_result.unwrap_err();
         if matches!(sppe, PushPullError::ReadonlyViolation) {
             assert!(matches!(err, DatatypeError::ReadonlyViolation));
@@ -380,38 +430,64 @@ fn can_process_creating(
         assert!(sync_result.is_ok());
         assert_eq!(counter1.get_state(), DatatypeState::Subscribed);
     }
-    assert_eq!(server.read().is_created(), expected_created);
-    assert_eq!(server.read().synced.history.len(), expected_history_len);
-    info!("{}", server.read());
+    assert_eq!(server.read().is_created(), exp.is_created);
+    assert_eq!(server.read().synced.history.len(), exp.history_len);
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SubscribingScenario {
+    Success,
+    NotCreated,
+    TypeMismatch,
+    WithTransactions,
+}
+
+struct SubscribingExpectation {
+    creator_sync: bool,
+    modify_push: fn(&mut PushPullPack),
+    error: Option<PushPullError>,
+    checkpoint: CheckPoint,
+}
+
+impl SubscribingScenario {
+    fn expectation(self) -> SubscribingExpectation {
+        match self {
+            Self::Success => SubscribingExpectation {
+                creator_sync: true,
+                modify_push: push_no_change,
+                error: None,
+                checkpoint: CheckPoint::new(5, 0),
+            },
+            Self::NotCreated => SubscribingExpectation {
+                creator_sync: false,
+                modify_push: push_no_change,
+                error: Some(PushPullError::ResourceNotFound("".to_string())),
+                checkpoint: CheckPoint::new(0, 0),
+            },
+            Self::TypeMismatch => SubscribingExpectation {
+                creator_sync: true,
+                modify_push: push_set_variable_type,
+                error: Some(PushPullError::ResourceNotFound("".to_string())),
+                checkpoint: CheckPoint::new(0, 0),
+            },
+            Self::WithTransactions => SubscribingExpectation {
+                creator_sync: true,
+                modify_push: push_add_transaction,
+                error: Some(PushPullError::ProtocolViolation("".to_string())),
+                checkpoint: CheckPoint::new(0, 0),
+            },
+        }
+    }
 }
 
 #[rstest]
-#[case::success(true, push_no_change, None, CheckPoint::new(5, 0))]
-#[case::not_created(
-    false,
-    push_no_change,
-    Some(PushPullError::ResourceNotFound("".to_string())),
-    CheckPoint::new(0, 0),
-)]
-#[case::type_mismatch(
-    true,
-    push_set_variable_type,
-    Some(PushPullError::ResourceNotFound("".to_string())),
-    CheckPoint::new(0, 0),
-)]
-#[case::with_transactions(
-    true,
-    push_add_transaction,
-    Some(PushPullError::ProtocolViolation("".to_string())),
-    CheckPoint::new(0, 0),
-)]
+#[case::success(SubscribingScenario::Success)]
+#[case::not_created(SubscribingScenario::NotCreated)]
+#[case::type_mismatch(SubscribingScenario::TypeMismatch)]
+#[case::with_transactions(SubscribingScenario::WithTransactions)]
 #[instrument]
-fn can_process_subscribing(
-    #[case] creator_sync: bool,
-    #[case] modify_push: fn(&mut PushPullPack),
-    #[case] expected_error: Option<PushPullError>,
-    #[case] expected_cp: CheckPoint,
-) {
+fn can_process_subscribing(#[case] scenario: SubscribingScenario) {
+    let exp = scenario.expectation();
     let f = TestFixture::new(get_test_ids!());
 
     let client1 = f.client(f.key.clone());
@@ -422,7 +498,7 @@ fn can_process_subscribing(
         counter1.increase_by(i).unwrap();
     }
 
-    if creator_sync {
+    if exp.creator_sync {
         assert!(counter1.sync().is_ok());
         assert_eq!(counter1.get_state(), DatatypeState::Subscribed);
     }
@@ -430,22 +506,26 @@ fn can_process_subscribing(
     let counter2 = f.subscribe_counter(&client2);
     let interceptor2 = f.interceptor(&client2);
 
-    let expected_error = Arc::new(expected_error);
-    let expected_error2 = expected_error.clone();
+    let expected_error_for_pull = exp.error.clone();
+    let modify_push = exp.modify_push;
 
     interceptor2
         .set_before_push(move |push| {
             modify_push(push);
-            info!("PUSH: {push}");
         })
         .set_after_pull(move |pull| {
-            info!("PULL: {pull}");
-            assert_push_pull_pack(pull, false, expected_cp, (*expected_error2).clone(), 0);
+            assert_push_pull_pack(
+                pull,
+                false,
+                exp.checkpoint,
+                expected_error_for_pull.clone(),
+                0,
+            );
             Ok(())
         });
 
     let sync_result = counter2.sync();
-    if expected_error.is_some() {
+    if exp.error.is_some() {
         let err = sync_result.unwrap_err();
         assert!(matches!(err, DatatypeError::ServerRejected(_)));
         assert_eq!(counter2.get_state(), DatatypeState::Disabled);
@@ -497,29 +577,75 @@ fn can_reject_readonly_unsubscribing_with_transactions() {
     assert!(client.get_datatype(counter.get_key()).is_none());
 }
 
+#[derive(Clone, Copy, Debug)]
+enum SubscribedPushScenario {
+    Normal,
+    ReadonlyWithTransactions,
+    ReadonlyNoTransactions,
+    PullFromAnotherClient,
+}
+
+struct SubscribedPushExpectation {
+    extra_ops: i64,
+    use_subscriber: bool,
+    modify_push: fn(&mut PushPullPack),
+    is_readonly: bool,
+    error: Option<PushPullError>,
+    checkpoint: CheckPoint,
+    tx_len: usize,
+}
+
+impl SubscribedPushScenario {
+    fn expectation(self) -> SubscribedPushExpectation {
+        match self {
+            Self::Normal => SubscribedPushExpectation {
+                extra_ops: 5,
+                use_subscriber: false,
+                modify_push: push_no_change,
+                is_readonly: false,
+                error: None,
+                checkpoint: CheckPoint::new(10, 10),
+                tx_len: 0,
+            },
+            Self::ReadonlyWithTransactions => SubscribedPushExpectation {
+                extra_ops: 5,
+                use_subscriber: false,
+                modify_push: push_set_readonly,
+                is_readonly: true,
+                error: Some(PushPullError::ReadonlyViolation),
+                checkpoint: CheckPoint::new(0, 0),
+                tx_len: 0,
+            },
+            Self::ReadonlyNoTransactions => SubscribedPushExpectation {
+                extra_ops: 0,
+                use_subscriber: false,
+                modify_push: push_set_readonly,
+                is_readonly: true,
+                error: None,
+                checkpoint: CheckPoint::new(5, 5),
+                tx_len: 0,
+            },
+            Self::PullFromAnotherClient => SubscribedPushExpectation {
+                extra_ops: 3,
+                use_subscriber: true,
+                modify_push: push_no_change,
+                is_readonly: false,
+                error: None,
+                checkpoint: CheckPoint::new(8, 0),
+                tx_len: 3,
+            },
+        }
+    }
+}
+
 #[rstest]
-#[case::normal(5, false, push_no_change, false, None, CheckPoint::new(10, 10), 0)]
-#[case::readonly_with_transactions(
-    5,
-    false,
-    push_set_readonly,
-    true,
-    Some(PushPullError::ReadonlyViolation),
-    CheckPoint::new(0, 0),
-    0
-)]
-#[case::readonly_no_transactions(0, false, push_set_readonly, true, None, CheckPoint::new(5, 5), 0)]
-#[case::pull_from_another_client(3, true, push_no_change, false, None, CheckPoint::new(8, 0), 3)]
+#[case::normal(SubscribedPushScenario::Normal)]
+#[case::readonly_with_transactions(SubscribedPushScenario::ReadonlyWithTransactions)]
+#[case::readonly_no_transactions(SubscribedPushScenario::ReadonlyNoTransactions)]
+#[case::pull_from_another_client(SubscribedPushScenario::PullFromAnotherClient)]
 #[instrument]
-fn can_process_subscribe(
-    #[case] extra_ops: i64,
-    #[case] use_subscriber: bool,
-    #[case] modify_push: fn(&mut PushPullPack),
-    #[case] expected_is_readonly: bool,
-    #[case] expected_error: Option<PushPullError>,
-    #[case] expected_cp: CheckPoint,
-    #[case] expected_tx_len: usize,
-) {
+fn can_process_subscribe(#[case] scenario: SubscribedPushScenario) {
+    let exp = scenario.expectation();
     let f = TestFixture::new(get_test_ids!());
 
     let client1 = f.client("client1");
@@ -533,63 +659,48 @@ fn can_process_subscribe(
     assert!(counter1.sync().is_ok());
     assert_eq!(counter1.get_state(), DatatypeState::Subscribed);
 
-    if use_subscriber {
-        let client2 = f.client("client2");
-        let counter2 = f.subscribe_counter(&client2);
+    let client2;
+    let counter2;
+    let (target_client, target_counter) = if exp.use_subscriber {
+        client2 = f.client("client2");
+        counter2 = f.subscribe_counter(&client2);
         assert!(counter2.sync().is_ok());
         assert_eq!(counter2.get_state(), DatatypeState::Subscribed);
 
-        for i in 0..extra_ops {
+        for i in 0..exp.extra_ops {
             counter1.increase_by(i).unwrap();
         }
         assert!(counter1.sync().is_ok());
-
-        let interceptor2 = f.interceptor(&client2);
-        let expected_error = Arc::new(expected_error);
-        let expected_error2 = expected_error.clone();
-        interceptor2
-            .set_before_push(move |push| {
-                modify_push(push);
-            })
-            .set_after_pull(move |pull| {
-                assert_push_pull_pack(
-                    pull,
-                    expected_is_readonly,
-                    expected_cp,
-                    (*expected_error2).clone(),
-                    expected_tx_len,
-                );
-                Ok(())
-            });
-        check_error(expected_error, &counter2);
+        (&client2, &counter2)
     } else {
-        for i in 0..extra_ops {
+        for i in 0..exp.extra_ops {
             counter1.increase_by(i).unwrap();
         }
-        let interceptor1 = f.interceptor(&client1);
-        let expected_error = Arc::new(expected_error);
-        let expected_error2 = expected_error.clone();
-        interceptor1
-            .set_before_push(move |push| {
-                info!("PUSH: {push}");
-                modify_push(push);
-            })
-            .set_after_pull(move |pull| {
-                info!("PULL: {pull}");
-                assert_push_pull_pack(
-                    pull,
-                    expected_is_readonly,
-                    expected_cp,
-                    (*expected_error2).clone(),
-                    expected_tx_len,
-                );
-                Ok(())
-            });
-        check_error(expected_error, &counter1);
-    }
+        (&client1, &counter1)
+    };
+
+    let interceptor = f.interceptor(target_client);
+    let expected_error_for_pull = exp.error.clone();
+    let modify_push = exp.modify_push;
+    interceptor
+        .set_before_push(move |push| {
+            modify_push(push);
+        })
+        .set_after_pull(move |pull| {
+            assert_push_pull_pack(
+                pull,
+                exp.is_readonly,
+                exp.checkpoint,
+                expected_error_for_pull.clone(),
+                exp.tx_len,
+            );
+            Ok(())
+        });
+
+    check_error(exp.error.as_ref(), target_counter);
 }
 
-fn check_error(expected_error: Arc<Option<PushPullError>>, counter: &Counter) {
+fn check_error(expected_error: Option<&PushPullError>, counter: &Counter) {
     let sync_result = counter.sync();
     if expected_error.is_some() {
         assert!(matches!(

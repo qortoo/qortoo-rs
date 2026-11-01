@@ -194,28 +194,9 @@ fn can_sync_bidirectionally_between_two_clients() {
     let client1 = f.client("client1-1");
     let client2 = f.client("client1-2");
     let counter1 = f.create_counter(&client1);
-    let interceptor1 = f.interceptor(&client1);
-    interceptor1
-        .set_before_push(|push| {
-            info!("counter1 PUSH:{push}");
-        })
-        .set_after_pull(|pull| {
-            info!("counter1 PULL:{pull}");
-            Ok(())
-        });
-
     counter1.sync().unwrap();
 
     let counter2 = f.subscribe_counter(&client2);
-    let interceptor2 = f.interceptor(&client2);
-    interceptor2
-        .set_before_push(|push| {
-            info!("counter2 PUSH:{push}");
-        })
-        .set_after_pull(|pull| {
-            info!("counter2 PULL:{pull}");
-            Ok(())
-        });
     counter2.sync().unwrap();
 
     // === A: one-way convergence counter1 → counter2 ===

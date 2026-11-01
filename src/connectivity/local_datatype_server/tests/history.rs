@@ -310,12 +310,20 @@ fn can_track_readonly_acknowledgements_without_advancing_on_snapshot_delivery() 
     assert!(server.synced.checkpoints.is_empty());
 }
 
+#[derive(Clone, Copy, Debug)]
+enum InvalidPushKind {
+    FutureSequence,
+    WrongDatatype,
+    MissingSubscription,
+    FailedBatch,
+}
+
 #[rstest]
-#[case::future_sequence(0)]
-#[case::wrong_datatype(1)]
-#[case::missing_subscription(2)]
-#[case::failed_batch(3)]
-fn can_reject_invalid_pushes_without_advancing_applied_progress(#[case] invalid: u8) {
+#[case::future_sequence(InvalidPushKind::FutureSequence)]
+#[case::wrong_datatype(InvalidPushKind::WrongDatatype)]
+#[case::missing_subscription(InvalidPushKind::MissingSubscription)]
+#[case::failed_batch(InvalidPushKind::FailedBatch)]
+fn can_reject_invalid_pushes_without_advancing_applied_progress(#[case] kind: InvalidPushKind) {
     let attr = new_attribute!(DataType::Counter);
     let mut server = LocalDatatypeServer::new(&attr);
     let mut writer = PushPullPack::new(&attr, DatatypeState::Creating);
@@ -344,19 +352,18 @@ fn can_reject_invalid_pushes_without_advancing_applied_progress(#[case] invalid:
         2,
         Operation::new_counter_increase(5),
     )];
-    match invalid {
+    match kind {
         // This request must be checked against the head before accepting its new transaction.
-        0 => writer.checkpoint.sseq = 3,
-        1 => writer.duid = Duid::new(),
-        2 => writer.cuid = crate::types::uid::Cuid::new(),
-        3 => {
+        InvalidPushKind::FutureSequence => writer.checkpoint.sseq = 3,
+        InvalidPushKind::WrongDatatype => writer.duid = Duid::new(),
+        InvalidPushKind::MissingSubscription => writer.cuid = crate::types::uid::Cuid::new(),
+        InvalidPushKind::FailedBatch => {
             writer.transactions = vec![transaction(
                 &writer.cuid,
                 3,
                 Operation::new_counter_increase(5),
             )]
         }
-        _ => unreachable!(),
     }
     writer.safe_sseq = u64::MAX;
     let rejected = server.process(&writer, false).unwrap();
