@@ -3,7 +3,7 @@ use tracing::{debug, instrument};
 use crate::{
     DatatypeError, DatatypeState, ServerRejectReason,
     datatypes::{mutable::MutableDatatype, push_buffer::PushBuffer},
-    errors::datatypes::DatatypeErrorWithAction,
+    errors::datatypes::{DatatypeErrorWithAction, RecoveryAction},
     observability::trace::add_span_event,
     types::{checkpoint::CheckPoint, push_pull_pack::PushPullPack},
 };
@@ -59,6 +59,7 @@ impl<'a> PullHandler<'a> {
             // Reclaim only after every response step succeeds, under the same mutable
             // lock as checkpoint advancement. Failed application retains retry data.
             self.mutable.push_buffer.deque(self.mutable.checkpoint.cseq);
+            self.mutable.needs_snapshot = false;
         }
         result
     }
@@ -98,7 +99,14 @@ impl<'a> PullHandler<'a> {
     fn handle_error_and_datatype_state(&mut self) -> Result<(), DatatypeErrorWithAction> {
         self.new_state = self.pulled_ppp.state;
         if let Some(sppe) = self.pulled_ppp.error.as_ref() {
-            return Err(sppe.to_datatype_error().mapping());
+            let error = sppe.to_datatype_error().mapping();
+            if matches!(
+                error.recovery,
+                RecoveryAction::Resubscribe | RecoveryAction::ResubscribeWithBackOff
+            ) {
+                self.new_state = self.old_state;
+            }
+            return Err(error);
         }
 
         match self.old_state {
@@ -121,7 +129,10 @@ impl<'a> PullHandler<'a> {
                     self.new_state = DatatypeState::Disabled;
                     self.process_illegal_state_response(self.old_state, self.pulled_ppp.state)?;
                 }
-                if self.pulled_ppp.duid == self.mutable.attr.get_duid() {
+                if !self.mutable.needs_snapshot
+                    && self.pulled_ppp.snapshot_transaction.is_none()
+                    && self.pulled_ppp.duid == self.mutable.attr.get_duid()
+                {
                     self.is_created = true;
                 } else {
                     self.enqueue_step(Self::apply_subscribe_response);
@@ -158,6 +169,14 @@ impl<'a> PullHandler<'a> {
     }
 
     fn apply_subscribe_response(&mut self) -> Result<(), DatatypeErrorWithAction> {
+        if self.mutable.needs_snapshot && self.pulled_ppp.snapshot_transaction.is_none() {
+            return Err(
+                DatatypeError::ServerRejected(ServerRejectReason::ProtocolViolation(
+                    "resubscription requires a snapshot".into(),
+                ))
+                .mapping(),
+            );
+        }
         if let Some(snapshot_tx) = self.pulled_ppp.snapshot_transaction.take() {
             self.mutable
                 .apply_snapshot_transaction(snapshot_tx)

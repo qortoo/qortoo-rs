@@ -129,7 +129,7 @@ impl EventLoop {
         let bounded_tx = self.bounded_tx.clone();
         let connectivity = wired.core.attr.client_common.connectivity.clone();
         let span = Span::current();
-        connectivity.register(wired.clone(), unbounded_tx);
+        connectivity.register(wired.clone(), unbounded_tx.clone());
         rt_handle.spawn_blocking(move || {
             span.in_scope(|| {
                 add_span_event!("start event_loop");
@@ -165,21 +165,43 @@ impl EventLoop {
                                 // Entering the requester's span makes the sync — and the
                                 // handler notifications dispatched from it — part of the
                                 // trace that asked for it.
-                                let opt_datatype_error =
-                                    caller.in_scope(|| match wired.push_pull() {
-                                        Ok(_) => {
-                                            loop_mode = LoopMode::Normal;
-                                            None
-                                        }
-                                        Err(dewa) => {
-                                            loop_mode = LoopMode::from(dewa.recovery);
-                                            if matches!(loop_mode, LoopMode::BackOff) {
-                                                metrics::emit_backoff(&wired.core.attr);
+                                let mut resubscribed = false;
+                                let opt_datatype_error = caller.in_scope(|| {
+                                    loop {
+                                        match wired.push_pull() {
+                                            Ok(_) => {
+                                                loop_mode = LoopMode::Normal;
+                                                break None;
                                             }
-                                            wired.handle_error(dewa.error.clone(), dewa.recovery);
-                                            Some(dewa.error)
+                                            Err(mut dewa) => {
+                                                if dewa.recovery == RecoveryAction::Resubscribe {
+                                                    if !resubscribed {
+                                                        wired.handle_error(
+                                                            dewa.error.clone(),
+                                                            dewa.recovery,
+                                                        );
+                                                        connectivity.register(
+                                                            wired.clone(),
+                                                            unbounded_tx.clone(),
+                                                        );
+                                                        resubscribed = true;
+                                                        continue;
+                                                    }
+                                                    dewa.recovery = RecoveryAction::Disable;
+                                                }
+                                                loop_mode = LoopMode::from(dewa.recovery);
+                                                if matches!(loop_mode, LoopMode::BackOff) {
+                                                    metrics::emit_backoff(&wired.core.attr);
+                                                }
+                                                wired.handle_error(
+                                                    dewa.error.clone(),
+                                                    dewa.recovery,
+                                                );
+                                                break Some(dewa.error);
+                                            }
                                         }
-                                    });
+                                    }
+                                });
                                 if !matches!(loop_mode, LoopMode::BackOff) {
                                     backoff = None;
                                 }

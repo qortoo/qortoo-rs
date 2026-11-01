@@ -87,7 +87,7 @@ call; routed variants are paired with an action.
 | `ReadonlyViolation` | 207 | The server reports a write from a client configured as readonly | `Disable` |
 | `SyncFailed` | 210 | A transient exchange failure, such as a timeout or a server-side internal error | `RetryWithBackOff` |
 | `PushBufferExceededMaxMemSize` | 211 | The committed transaction does not fit in the push buffer | `RollbackTransaction` |
-| `ServerRejected` | 213 | The server permanently refused the operation; the reason is carried inside | `Disable` |
+| `ServerRejected` | 213 | The server refused the operation; the reason is carried inside | `Resubscribe` for `MissingSubscription`; otherwise `Disable` |
 
 \* except the non-sequential-sequence reason, which chooses `RollbackTransaction` at its
 creation site — see **Creation-site routing** below.
@@ -138,9 +138,9 @@ server rejection reasons where a counterpart exists.
 | `NotifyOnly` | none; the handler is told and nothing changes | normal | *reserved* |
 | `RetryWithBackOff` | none | exponential backoff | `SyncFailed` |
 | `RollbackTransaction` | undo the pending transaction | never reaches the event loop | `PushBufferExceededMaxMemSize`, non-sequential sequence |
-| `Resubscribe` | reset local state, return to subscribing | normal | *reserved* |
+| `Resubscribe` | discard pending transactions, reset checkpoint, request a snapshot | one immediate attempt, including manual mode | `ServerRejected(MissingSubscription)` |
 | `ResubscribeWithBackOff` | reset local state, return to subscribing | exponential backoff | *reserved* |
-| `Disable` | disable the datatype | stopped; further sync requests are refused | `Internal`, `ServerRejected`, `ReadonlyViolation` |
+| `Disable` | disable the datatype | stopped; further sync requests are refused | `Internal`, other `ServerRejected` reasons, `ReadonlyViolation`, repeated missing subscription during immediate recovery |
 
 ## Rules and Guarantees
 
@@ -179,9 +179,15 @@ error. The handler receives one additional notification.
 needs a routing other than the internal default must therefore choose its action before the
 erasure, at the point the error is created. Every other cause defers to the single table.
 
-**Reserved actions are unwired on purpose.** `Resubscribe` and `ResubscribeWithBackOff` reset
-local state, which discards transactions still waiting in the push buffer. No producer routes
-to them until that data-loss policy is decided.
+**Missing-subscription recovery discards pending transactions.** `Resubscribe` resets the
+checkpoint and fetches a snapshot on the same instance without an intermediate `Disabled`
+transition or manager detach. The current local CRDT remains observable until the snapshot
+replaces it; its value is not a server acknowledgement. Writes committed while that snapshot
+is in flight are also discarded. Recovery errors and lifecycle changes use the existing handlers.
+A successful recovery completes the original `sync()` successfully. A repeated missing
+subscription during the immediate recovery attempt disables the datatype instead of looping.
+`ResubscribeWithBackOff` remains reserved. History-pruned protocol errors still use
+`Disable` and do not trigger snapshot recovery.
 
 **Limits on the guarantees.** Results of operations inside a transaction callback are
 tentative until the enclosing transaction returns success. A standalone write or explicit

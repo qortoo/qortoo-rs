@@ -740,6 +740,216 @@ mod tests_local_datatype_server {
         assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 7);
     }
 
+    #[rstest]
+    #[case::repeated_missing_subscription(true)]
+    #[case::missing_snapshot(false)]
+    fn can_disable_when_subscription_recovery_cannot_complete(#[case] missing_again: bool) {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let (collection, key, resource_id) = get_test_ids!();
+        let client = Client::builder(collection, "client")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let counter = client.create_datatype(key).build_counter().unwrap();
+        counter.increase_by(10).unwrap();
+        counter.sync().unwrap();
+        let interceptor = connectivity
+            .get_wired_interceptor(&resource_id, &client.get_cuid())
+            .unwrap();
+        let observed = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let requests = observed.clone();
+        interceptor.set_before_push(move |push| requests.lock().push(push.state));
+        interceptor.set_after_pull(move |pull| {
+            if missing_again {
+                pull.error = Some(PushPullError::MissingSubscription(
+                    "subscription lost again".into(),
+                ));
+                pull.state = DatatypeState::Disabled;
+            } else {
+                pull.snapshot_transaction = None;
+            }
+            Ok(())
+        });
+        connectivity.remove_client_subscription(&resource_id, &client.get_cuid());
+        assert!(counter.sync().is_err());
+        assert_eq!(counter.get_state(), DatatypeState::Disabled);
+        assert_eq!(
+            *observed.lock(),
+            vec![DatatypeState::Subscribed, DatatypeState::Subscribing]
+        );
+        assert!(counter.sync().is_err());
+        assert_eq!(observed.lock().len(), 2);
+    }
+
+    #[rstest]
+    #[case::manual(false)]
+    #[case::realtime(true)]
+    fn can_resubscribe_after_losing_a_subscription_without_resending_pending_work(
+        #[case] realtime: bool,
+    ) {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let (collection, key, resource_id) = get_test_ids!();
+        let creator = Client::builder(collection.clone(), "creator")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let source = creator
+            .create_datatype(key.clone())
+            .build_counter()
+            .unwrap();
+        source.increase_by(10).unwrap();
+        source.sync().unwrap();
+        let client = Client::builder(collection, "subscriber")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let replica = client
+            .subscribe_datatype(key.clone())
+            .build_counter()
+            .unwrap();
+        replica.sync().unwrap();
+        replica.increase_by(2).unwrap();
+        replica.sync().unwrap();
+        assert_eq!(replica.get_synced_client_version(), 1);
+        replica.increase_by(5).unwrap();
+        source.increase_by(7).unwrap();
+        source.sync().unwrap();
+        let server = connectivity
+            .get_local_datatype_server(&resource_id)
+            .unwrap();
+        let wired = server
+            .read()
+            .get_wired_datatype(&client.get_cuid())
+            .unwrap();
+        let interceptor = wired.get_wired_interceptor();
+        let observed = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let requests = observed.clone();
+        interceptor.set_before_push(move |push| {
+            if push.state == DatatypeState::Subscribing {
+                assert_eq!(push.checkpoint, CheckPoint::default());
+                assert!(push.transactions.is_empty());
+            }
+            requests.lock().push(push.state);
+        });
+        let writing_replica = replica.clone();
+        interceptor.set_after_pull(move |pull| {
+            if pull.snapshot_transaction.is_some() {
+                assert_eq!(
+                    writing_replica.get_state(),
+                    DatatypeState::SubscribingOrCreating
+                );
+                writing_replica.increase_by(3).unwrap();
+            }
+            Ok(())
+        });
+        connectivity.remove_client_subscription(&resource_id, &client.get_cuid());
+        connectivity.set_realtime(realtime);
+        let result = replica.sync();
+        interceptor.set_after_pull(|_| Ok(()));
+        result.unwrap();
+        assert!(
+            observed
+                .lock()
+                .windows(2)
+                .any(|states| states == [DatatypeState::Subscribed, DatatypeState::Subscribing])
+        );
+        assert_eq!(replica.get_state(), DatatypeState::Subscribed);
+        assert_eq!(replica.get_value(), 19);
+        assert_eq!(replica.get_synced_client_version(), 0);
+        assert_eq!(wired.core.mutable.read().push_buffer.iter().count(), 0);
+        assert!(client.get_datatype(&key).is_some());
+        assert!(
+            server
+                .read()
+                .get_wired_datatype(&client.get_cuid())
+                .is_some()
+        );
+        replica.increase_by(4).unwrap();
+        replica.sync().unwrap();
+        source.sync().unwrap();
+        assert_eq!(source.get_value(), 23);
+        assert_eq!(replica.get_value(), 23);
+        assert_eq!(replica.get_synced_client_version(), 1);
+    }
+
+    #[test]
+    fn can_discard_transactions_committed_while_a_subscription_snapshot_is_in_flight() {
+        let connectivity = LocalConnectivity::new_arc();
+        connectivity.set_realtime(false);
+        let (collection, key, resource_id) = get_test_ids!();
+        let creator = Client::builder(collection.clone(), "creator")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let source = creator
+            .create_datatype(key.clone())
+            .build_counter()
+            .unwrap();
+        source.increase_by(10).unwrap();
+        source.sync().unwrap();
+
+        let client = Client::builder(collection, "subscriber")
+            .with_connectivity(connectivity.clone())
+            .build()
+            .unwrap();
+        let replica = client
+            .subscribe_or_create_datatype(key)
+            .build_counter()
+            .unwrap();
+        let server = connectivity
+            .get_local_datatype_server(&resource_id)
+            .unwrap();
+        let wired = server
+            .read()
+            .get_wired_datatype(&client.get_cuid())
+            .unwrap();
+        let interceptor = wired.get_wired_interceptor();
+        let writing_replica = replica.clone();
+        let weak_wired = Arc::downgrade(&wired);
+        interceptor.set_after_pull(move |pull| {
+            assert!(pull.error.is_none());
+            assert!(pull.snapshot_transaction.is_some());
+            assert_eq!(
+                writing_replica.get_state(),
+                DatatypeState::SubscribingOrCreating
+            );
+            // The request was empty, but a local write can finish before snapshot application.
+            writing_replica.increase_by(5).unwrap();
+            assert_eq!(writing_replica.get_value(), 5);
+            assert_eq!(
+                weak_wired
+                    .upgrade()
+                    .unwrap()
+                    .core
+                    .mutable
+                    .read()
+                    .push_buffer
+                    .iter()
+                    .count(),
+                1
+            );
+            Ok(())
+        });
+        let result = replica.sync();
+        interceptor.set_after_pull(|_| Ok(()));
+        result.unwrap();
+
+        assert_eq!(replica.get_state(), DatatypeState::Subscribed);
+        assert_eq!(replica.get_value(), 10);
+        assert_eq!(wired.core.mutable.read().push_buffer.iter().count(), 0);
+        interceptor.set_before_push(|push| assert!(push.transactions.is_empty()));
+        replica.sync().unwrap();
+        source.sync().unwrap();
+        assert_eq!(replica.get_value(), 10);
+        assert_eq!(source.get_value(), 10);
+        let backend = server.read();
+        assert_eq!(backend.synced.sseq, 1);
+        assert_eq!(backend.synced.checkpoints[&client.get_cuid()].cseq, 0);
+        assert_eq!(backend.synced.crdt.as_counter().unwrap().value(), 10);
+    }
+
     #[test]
     fn can_bootstrap_and_retry_a_snapshot_after_history_is_pruned() {
         let connectivity = LocalConnectivity::new_arc();
@@ -2089,42 +2299,6 @@ mod tests_local_datatype_server {
         counter2.sync().unwrap();
         assert_eq!(counter1.get_value(), value_before);
         assert_eq!(counter2.get_value(), value_before);
-    }
-
-    #[test]
-    #[instrument]
-    fn can_reject_subscribed_push_from_unsubscribed_client() {
-        use std::time::Duration;
-
-        let connectivity = LocalConnectivity::new_arc();
-        connectivity.set_realtime(false);
-        let (collection, key, resource_id) = get_test_ids!();
-
-        let client1 = Client::builder(collection.clone(), get_test_func_name!())
-            .with_connectivity(connectivity.clone())
-            .build()
-            .unwrap();
-
-        let counter1 = client1
-            .create_datatype(key.clone())
-            .build_counter()
-            .unwrap();
-
-        counter1.sync().unwrap();
-        assert_eq!(counter1.get_state(), DatatypeState::Subscribed);
-
-        // Simulate the server losing the client's subscription (e.g., after a server restart).
-        connectivity.remove_client_subscription(&resource_id, &client1.get_cuid());
-
-        // The next sync must fail with ServerRejected and disable the datatype.
-        let result = counter1.sync();
-        assert!(matches!(
-            result.unwrap_err(),
-            DatatypeError::ServerRejected(_)
-        ));
-        awaitility::at_most(Duration::from_secs(1))
-            .poll_interval(Duration::from_micros(100))
-            .until(|| counter1.get_state() == DatatypeState::Disabled);
     }
 
     #[test]

@@ -309,3 +309,21 @@ free of conditional compilation while still keeping the capability out of produc
 - [`docs/error-handling.md`](error-handling.md) — how a refusal and an unreachable backend become different recoveries
 - [`docs/transaction-and-rollback.md`](transaction-and-rollback.md) — the transactions an exchange carries
 - [`docs/core-types.md`](core-types.md) — the identities and sequence numbers a package carries
+
+
+### Recovering a missing subscription
+
+When a request is rejected with `MissingSubscription`, the client discards pending
+transactions and its old checkpoint, then requests a backend snapshot on the same instance.
+The local lifecycle uses `SubscribingOrCreating`, but the recovery packet uses the existing
+transaction-free `Subscribing` request. This keeps same-DUID recovery separate from normal
+creation retries, without changing server identity checks or adding subscription generations.
+The client applies the recovery snapshot even when its DUID is unchanged. Local writes made
+while waiting for that snapshot are replaced along with the old local state.
+
+The event loop restores its local registration and makes one immediate recovery attempt,
+including when realtime synchronization is disabled. The original `sync()` succeeds if that
+attempt succeeds. A repeated missing subscription disables the datatype; a transient transport
+failure retains the existing backoff policy. A missing resource is not automatically recreated.
+This recovery uses the completed request/response ordering of `LocalConnectivity`; it does
+not establish a remote transport cancellation guarantee or implement subscription expiry.

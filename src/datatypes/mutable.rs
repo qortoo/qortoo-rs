@@ -31,6 +31,7 @@ pub struct MutableDatatype {
     pub op_id: OperationId,
     pub push_buffer: MemoryPushBuffer,
     pub checkpoint: CheckPoint,
+    pub(super) needs_snapshot: bool,
     state: DatatypeState,
     tx_record: TxRecord,
     handlers_manager: HandlersManager,
@@ -49,6 +50,7 @@ impl MutableDatatype {
             push_buffer: MemoryPushBuffer::new(attr.option.clone()),
             tx_record: TxRecord::new(state, op_id.clone()),
             checkpoint: CheckPoint::default(),
+            needs_snapshot: false,
             handlers_manager: HandlersManager::new(attr.clone(), handlers),
             effects: Default::default(),
             attr,
@@ -154,6 +156,8 @@ impl MutableDatatype {
             RecoveryAction::NotifyOnly | RecoveryAction::RetryWithBackOff => {}
             RecoveryAction::RollbackTransaction => self.do_rollback(),
             RecoveryAction::Resubscribe | RecoveryAction::ResubscribeWithBackOff => {
+                self.checkpoint = CheckPoint::default();
+                self.needs_snapshot = true;
                 self.reset();
                 self.set_state(DatatypeState::SubscribingOrCreating);
             }

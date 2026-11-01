@@ -152,6 +152,10 @@ impl WiredDatatype {
 impl MutableDatatype {
     #[instrument(skip_all)]
     fn create_push_pull_pack(&mut self) -> Result<PushPullPack, DatatypeError> {
+        // Recovery must request a snapshot even when the datatype DUID is unchanged.
+        if self.needs_snapshot {
+            return Ok(PushPullPack::new(&self.attr, DatatypeState::Subscribing));
+        }
         let mut ppp = PushPullPack::new(&self.attr, self.get_state());
 
         let (transactions, _tx_size) = self.push_buffer.get_pushing_transactions(
