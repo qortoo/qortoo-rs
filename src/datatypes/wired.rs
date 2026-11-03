@@ -86,16 +86,16 @@ impl WiredDatatype {
             trace!("ignore {notify}: self-notification");
             return false;
         }
-        let cp_sseq = self.core.mutable.read().checkpoint.sseq;
-        if cp_sseq >= notify.sseq {
+        let sseq_at_client = self.core.mutable.read().checkpoint.sseq;
+        if sseq_at_client >= notify.sseq {
             trace!(
-                "ignore {notify} due to current sseq({cp_sseq}) >= notification.sseq({})",
+                "ignore {notify} due to current sseq({sseq_at_client}) >= notification.sseq({})",
                 notify.sseq
             );
             return false;
         }
         trace!(
-            "schedule push-pull due to current sseq({cp_sseq}) < notification.sseq({})",
+            "schedule push-pull due to current sseq({sseq_at_client}) < notification.sseq({})",
             notify.sseq
         );
         true
@@ -164,7 +164,8 @@ impl MutableDatatype {
         )?;
 
         ppp.transactions = transactions;
-        ppp.checkpointing(&self.checkpoint, 0);
+        ppp.checkpointing(&self.checkpoint);
+        ppp.sseq_gc_safe = self.sseq_gc_safe;
         Ok(ppp)
     }
 

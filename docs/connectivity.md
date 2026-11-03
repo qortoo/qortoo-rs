@@ -145,14 +145,14 @@ must succeed before its applied boundary advances. Clients must report only succ
 applied state: an incorrect acknowledgement can advance the safe boundary prematurely and
 make history pruning discard transactions that client still needs.
 
-Pull `safe_sseq` is the minimum applied boundary across all logical subscribers, including the
-requesting client and readonly subscribers. With no subscribers it is the server head. Wired
+The server's internal `sseq_history_prunable` is the minimum applied boundary across all
+logical subscribers, including the requesting client and readonly subscribers. With no subscribers it is the server head. Wired
 registration alone does not enter this calculation. A new subscription starts at the existing
-safe boundary; resending its snapshot preserves its previous applied boundary. Client-provided
-`safe_sseq` is not trusted or reflected. Unsubscribe processes the final push, removes the
-subscription and its sequence metadata, and recomputes safe over the remaining subscribers.
+history boundary; resending its snapshot preserves its previous applied boundary. The history
+boundary is not transmitted to clients. Unsubscribe processes the final push, removes the
+subscription and its sequence metadata, and recomputes the boundary over the remaining subscribers.
 `LocalDatatypeServer::process` creates the response, converts state-specific errors into
-Disabled responses, and sets final `safe_sseq`. Private state-specific processors update
+Disabled responses, and sets the server-issued GC boundary. Private state-specific processors update
 the shared response and return `PushPullError` on rejection. Creation, subscription, and
 client-push validation use read-only helpers before backend mutations. Unsubscribe cleans up
 its subscription even when its final push is rejected.
@@ -161,15 +161,15 @@ that batch. Applied acknowledgements protect incremental history; they do not au
 tombstone GC.
 
 After successful request processing, the local backend removes history transactions through
-`safe_sseq`. It first captures the response's transaction references, so even a delayed request
+`sseq_history_prunable`. It first captures the response's transaction references, so even a delayed request
 can receive all retained transactions it needs before this request prunes them. History uses
-a prefix-removable queue, and `pruned_sseq` records the last transaction removed. Pruning does
+a prefix-removable queue, and `sseq_history_pruned` records the last transaction removed. Pruning does
 not change the server head, CRDT, or accepted client-sequence deduplication metadata.
 Existing pull references remain valid after history removal. Transaction payloads are freed
 only when their last reference is dropped; queue capacity need not shrink immediately.
 
-An incremental request with `checkpoint.sseq == pruned_sseq` can pull from the next sequence.
-One below `pruned_sseq` is rejected with
+An incremental request with `checkpoint.sseq == sseq_history_pruned` can pull from the next sequence.
+One below `sseq_history_pruned` is rejected with
 `ProtocolViolation("requested server history has been pruned")` before accepting transactions
 or advancing applied progress. This includes creation retries and even entirely deduplicated
 requests. The client follows the existing `Disabled`/reset path, clearing its pending push
@@ -179,7 +179,7 @@ rebase, or transaction recovery API for this failure.
 
 New and repeated snapshot subscriptions can still start at checkpoint zero after pruning.
 They use the backend snapshot and retain the existing safe-boundary initialization rules.
-Failed requests do not advance `pruned_sseq`. An unsubscribe failure still removes its
+Failed requests do not advance `sseq_history_pruned`. An unsubscribe failure still removes its
 subscription; the resulting higher safe boundary can be pruned by a later successful request.
 Removing the resource after its last local registration and subscription ends remains a
 separate lifecycle action.
@@ -327,3 +327,55 @@ attempt succeeds. A repeated missing subscription disables the datatype; a trans
 failure retains the existing backoff policy. A missing resource is not automatically recreated.
 This recovery uses the completed request/response ordering of `LocalConnectivity`; it does
 not establish a remote transport cancellation guarantee or implement subscription expiry.
+
+
+### Pending-aware GC coordination
+
+History retention and tombstone GC use separate progress boundaries:
+
+| Field | Direction or owner | Meaning |
+|---|---|---|
+| `checkpoint.sseq` | client request / server response | Applied server progress |
+| `sseq_history_prunable` | server only | Minimum applied progress across logical subscriptions |
+| `sseq_history_pruned` | server only | Last transaction removed from retained history |
+| `sseq_gc_safe` | client request | Client acknowledgement captured from internal `sseq_gc_safe` |
+| `sseq_gc_safe` | server response | Server boundary computed from internal `sseq_gc_safe` |
+
+`PushPullPack` uses the same `sseq_gc_safe` field in both directions. Its meaning is determined
+by the exchange direction; request acknowledgements are never reflected as response authority.
+The server keeps history pruning internal. Clients discard accepted push-buffer transactions
+using the response's `checkpoint.cseq`, independently of other subscribers' applied progress.
+
+After applying an entire successful response and removing acknowledged transactions, the
+client advances `sseq_gc_safe` to its applied checkpoint only if the push buffer is empty.
+This observation and update run under the transaction gate and mutable lock. A size-limited
+push may leave older transactions pending even after remote changes have been applied;
+those pending transactions prevent GC acknowledgement advancement. New local writes do not
+regress an existing acknowledgement because they use the already-applied logical clock.
+The updated acknowledgement is sent as `sseq_gc_safe` in the next request, not retroactively in the current one.
+Errors, response loss, and failed application do not advance GC progress.
+
+Each active server subscription stores its accepted/applied checkpoint and an effective GC
+protection boundary in one record. A new snapshot subscription starts at the last issued
+`sseq_gc_safe`, while its client's acknowledgement still starts at zero. Snapshot delivery or
+retry does not advance that protection. Subsequent successful requests advance it with the
+maximum of the stored boundary and the reported acknowledgement. Readonly subscriptions
+participate in the minimum. Registration-only handles do not. With no active subscriptions,
+the server retains its last issued GC boundary instead of automatically advancing to the head.
+
+Before accepting transactions, the server validates
+`request.sseq_gc_safe <= checkpoint.sseq <= pre-request head` along with the existing state-specific
+checks. Failed requests do not publish acknowledgement progress or advance the issued GC
+boundary. Response stubs initialize `sseq_gc_safe` to zero; the server supplies its own response
+value. Successful responses must keep `sseq_gc_safe` within their response checkpoint. The
+client does not retain the received GC boundary or compare it with previous responses;
+monotonic GC issuance is maintained and tested on the server.
+
+Automatic snapshot recovery resets the client GC acknowledgement along with the checkpoint. The server bootstraps the new subscription from its current GC
+floor. Snapshot replacement still discards writes committed while waiting for the snapshot.
+`NullConnectivity` returns zero GC progress and performs no collection.
+
+These fields provide coordination only. Counter and Variable have no tombstone collection
+hook, and no datatype physically reclaims tombstones here. Candidate acceptance tracking,
+rollback/reference safety, Map integration, subscription expiry, and resource limits remain
+separate work. A GC boundary is not by itself permission to delete arbitrary CRDT metadata.

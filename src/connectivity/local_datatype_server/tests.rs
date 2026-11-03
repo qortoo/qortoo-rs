@@ -99,3 +99,5 @@ mod client_sync;
 mod history;
 mod protocol;
 mod snapshots;
+
+mod gc;

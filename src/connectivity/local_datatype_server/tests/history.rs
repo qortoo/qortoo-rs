@@ -21,15 +21,15 @@ fn can_prune_acknowledged_history_without_invalidating_in_flight_pulls() {
     writer.transactions.clear();
     writer.checkpoint.sseq = 4;
     assert!(server.process(&writer, false).unwrap().error.is_none());
-    assert_eq!(server.synced.pruned_sseq, 0);
+    assert_eq!(server.synced.sseq_history_pruned, 0);
     assert_eq!(server.synced.history.len(), 4);
 
     reader.state = DatatypeState::Subscribed;
     reader.checkpoint.sseq = 2;
     let in_flight = server.process(&reader, false).unwrap();
     assert!(in_flight.error.is_none());
-    assert_eq!(in_flight.safe_sseq, 2);
-    assert_eq!(server.synced.pruned_sseq, 2);
+    assert_eq!(server.synced.sseq_history_prunable(), 2);
+    assert_eq!(server.synced.sseq_history_pruned, 2);
     assert_eq!(sseqs(&server.synced.history), vec![3, 4]);
     assert_eq!(sseqs(&in_flight.transactions), vec![3, 4]);
     assert!(Arc::ptr_eq(
@@ -39,13 +39,13 @@ fn can_prune_acknowledged_history_without_invalidating_in_flight_pulls() {
     let retained = Arc::downgrade(&in_flight.transactions[0]);
     reader.checkpoint.sseq = 4;
     assert!(server.process(&reader, false).unwrap().error.is_none());
-    assert_eq!(server.synced.pruned_sseq, 4);
+    assert_eq!(server.synced.sseq_history_pruned, 4);
     assert!(server.synced.history.is_empty());
-    assert_eq!(server.synced.sseq, 4);
+    assert_eq!(server.synced.sseq_at_server, 4);
     assert_eq!(server.synced.lamport, 4);
     assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 4);
     assert_eq!(
-        server.synced.checkpoints[&writer.cuid],
+        server.synced.checkpoints[&writer.cuid].checkpoint(),
         CheckPoint::new(4, 4)
     );
     assert_eq!(in_flight.transactions[0].operations.len(), 1);
@@ -70,7 +70,7 @@ fn can_reject_pruned_progress_before_accepting_new_transactions(#[case] state: D
     pushed.transactions.clear();
     pushed.checkpoint.sseq = 1;
     assert!(server.process(&pushed, false).unwrap().error.is_none());
-    assert_eq!(server.synced.pruned_sseq, 1);
+    assert_eq!(server.synced.sseq_history_pruned, 1);
     let checkpoints = server.synced.checkpoints.clone();
     pushed.state = state;
     pushed.checkpoint.sseq = 0;
@@ -85,11 +85,11 @@ fn can_reject_pruned_progress_before_accepting_new_transactions(#[case] state: D
     assert_eq!(message, "requested server history has been pruned");
     assert_eq!(pulled.state, DatatypeState::Disabled);
     assert!(pulled.transactions.is_empty());
-    assert_eq!(server.synced.sseq, 1);
+    assert_eq!(server.synced.sseq_at_server, 1);
     assert_eq!(server.synced.lamport, 1);
     assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 7);
     assert!(server.synced.history.is_empty());
-    assert_eq!(server.synced.pruned_sseq, 1);
+    assert_eq!(server.synced.sseq_history_pruned, 1);
     if state == DatatypeState::Unsubscribing {
         assert!(server.synced.checkpoints.is_empty());
     } else {
@@ -109,7 +109,7 @@ fn can_deduplicate_retransmissions_at_the_pruned_boundary() {
     pushed.checkpoint.sseq = 1;
     pushed.transactions.clear();
     assert!(server.process(&pushed, false).unwrap().error.is_none());
-    assert_eq!(server.synced.pruned_sseq, 1);
+    assert_eq!(server.synced.sseq_history_pruned, 1);
     pushed.transactions = vec![
         accepted,
         transaction(&pushed.cuid, 2, Operation::new_counter_increase(3)),
@@ -121,12 +121,12 @@ fn can_deduplicate_retransmissions_at_the_pruned_boundary() {
     assert!(repeated.error.is_none());
     assert_eq!(repeated.checkpoint, accepted.checkpoint);
     assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 10);
-    assert_eq!(server.synced.sseq, 2);
+    assert_eq!(server.synced.sseq_at_server, 2);
     assert_eq!(server.synced.history.len(), 1);
     assert_eq!(server.synced.history[0].sseq, 2);
-    assert_eq!(server.synced.pruned_sseq, 1);
+    assert_eq!(server.synced.sseq_history_pruned, 1);
     assert_eq!(
-        server.synced.checkpoints[&pushed.cuid],
+        server.synced.checkpoints[&pushed.cuid].checkpoint(),
         CheckPoint::new(1, 2)
     );
 }
@@ -146,7 +146,7 @@ fn can_defer_pruning_after_failed_unsubscribe_and_preserve_a_delayed_pull() {
     reader.state = DatatypeState::Subscribed;
     reader.checkpoint.sseq = 2;
     assert!(server.process(&reader, false).unwrap().error.is_none());
-    assert_eq!(server.synced.pruned_sseq, 0);
+    assert_eq!(server.synced.sseq_history_pruned, 0);
     writer.state = DatatypeState::Unsubscribing;
     writer.is_readonly = true;
     writer.transactions = vec![transaction(
@@ -157,10 +157,10 @@ fn can_defer_pruning_after_failed_unsubscribe_and_preserve_a_delayed_pull() {
     let failed = server.process(&writer, false).unwrap();
     assert_eq!(failed.error, Some(PushPullError::ReadonlyViolation));
     assert!(!server.synced.checkpoints.contains_key(&writer.cuid));
-    assert_eq!(failed.safe_sseq, 2);
-    assert_eq!(server.synced.pruned_sseq, 0);
+    assert_eq!(server.synced.sseq_history_prunable(), 2);
+    assert_eq!(server.synced.sseq_history_pruned, 0);
     assert_eq!(server.synced.history.len(), 2);
-    assert_eq!(server.synced.sseq, 2);
+    assert_eq!(server.synced.sseq_at_server, 2);
     assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 2);
 
     // The stored acknowledgement is newer, but this request still needs the retained history.
@@ -168,7 +168,7 @@ fn can_defer_pruning_after_failed_unsubscribe_and_preserve_a_delayed_pull() {
     let delayed = server.process(&reader, false).unwrap();
     assert!(delayed.error.is_none());
     assert_eq!(sseqs(&delayed.transactions), vec![1, 2]);
-    assert_eq!(server.synced.pruned_sseq, 2);
+    assert_eq!(server.synced.sseq_history_pruned, 2);
     assert!(server.synced.history.is_empty());
     assert_eq!(delayed.transactions[0].operations.len(), 1);
 }
@@ -184,16 +184,16 @@ fn can_prune_to_the_head_after_the_last_unsubscribe() {
         Operation::new_counter_increase(7),
     )];
     assert!(server.process(&pushed, false).unwrap().error.is_none());
-    assert_eq!(server.synced.pruned_sseq, 0);
+    assert_eq!(server.synced.sseq_history_pruned, 0);
     pushed.state = DatatypeState::Unsubscribing;
     pushed.transactions.clear();
     let pulled = server.process(&pushed, false).unwrap();
     assert!(pulled.error.is_none());
-    assert_eq!(pulled.safe_sseq, 1);
-    assert_eq!(server.synced.pruned_sseq, 1);
+    assert_eq!(server.synced.sseq_history_prunable(), 1);
+    assert_eq!(server.synced.sseq_history_pruned, 1);
     assert!(server.synced.checkpoints.is_empty());
     assert!(server.synced.history.is_empty());
-    assert_eq!(server.synced.sseq, 1);
+    assert_eq!(server.synced.sseq_at_server, 1);
     assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 7);
 }
 
@@ -210,11 +210,14 @@ fn can_disable_a_client_and_discard_pending_transactions_when_history_is_pruned(
         .read()
         .get_wired_datatype(&client.get_cuid())
         .unwrap();
-    assert_eq!(server.read().synced.pruned_sseq, 1);
+    assert_eq!(server.read().synced.sseq_history_pruned, 1);
     counter.increase_by(5).unwrap();
     assert_eq!(wired.core.mutable.read().push_buffer.iter().count(), 1);
     let interceptor = f.interceptor(&client);
-    interceptor.set_before_push(|push| push.checkpoint.sseq = 0);
+    interceptor.set_before_push(|push| {
+        push.checkpoint.sseq = 0;
+        push.sseq_gc_safe = 0;
+    });
     let error = counter.sync().unwrap_err();
     let DatatypeError::ServerRejected(crate::ServerRejectReason::ProtocolViolation(message)) =
         error
@@ -235,11 +238,11 @@ fn can_disable_a_client_and_discard_pending_transactions_when_history_is_pruned(
     );
     let backend = server.read();
     assert_eq!(backend.synced.crdt.as_counter().unwrap().value(), 7);
-    assert_eq!(backend.synced.sseq, 1);
-    assert_eq!(backend.synced.pruned_sseq, 1);
+    assert_eq!(backend.synced.sseq_at_server, 1);
+    assert_eq!(backend.synced.sseq_history_pruned, 1);
     assert!(backend.synced.history.is_empty());
     assert_eq!(
-        backend.synced.checkpoints[&client.get_cuid()],
+        backend.synced.checkpoints[&client.get_cuid()].checkpoint(),
         CheckPoint::new(1, 1)
     );
 }
@@ -254,42 +257,46 @@ fn can_track_readonly_acknowledgements_without_advancing_on_snapshot_delivery() 
         1,
         Operation::new_counter_increase(7),
     )];
-    writer.safe_sseq = u64::MAX;
     let created = server.process(&writer, false).unwrap();
-    assert_eq!(created.safe_sseq, 0);
+    assert_eq!(server.synced.sseq_history_prunable(), 0);
     assert_eq!(created.checkpoint.sseq, 1);
     writer.state = DatatypeState::Subscribed;
     writer.transactions.clear();
     writer.checkpoint.sseq = 1;
-    assert_eq!(server.process(&writer, false).unwrap().safe_sseq, 1);
+    assert!(server.process(&writer, false).unwrap().error.is_none());
+    assert_eq!(server.synced.sseq_history_prunable(), 1);
 
     let mut reader = PushPullPack::new(&attr, DatatypeState::Subscribing);
     reader.cuid = crate::types::uid::Cuid::new();
     reader.is_readonly = true;
     let snapshot = server.process(&reader, false).unwrap();
-    assert_eq!(snapshot.safe_sseq, 1);
-    assert_eq!(server.synced.checkpoints[&reader.cuid].sseq, 1);
+    assert!(snapshot.snapshot_transaction.is_some());
+    assert_eq!(server.synced.sseq_history_prunable(), 1);
+    assert_eq!(server.synced.checkpoints[&reader.cuid].sseq_at_client, 1);
     writer.transactions = vec![transaction(
         &writer.cuid,
         2,
         Operation::new_counter_increase(3),
     )];
-    assert_eq!(server.process(&writer, false).unwrap().safe_sseq, 1);
+    assert!(server.process(&writer, false).unwrap().error.is_none());
+    assert_eq!(server.synced.sseq_history_prunable(), 1);
     writer.transactions.clear();
     writer.checkpoint.sseq = 2;
-    assert_eq!(server.process(&writer, false).unwrap().safe_sseq, 1);
+    assert!(server.process(&writer, false).unwrap().error.is_none());
+    assert_eq!(server.synced.sseq_history_prunable(), 1);
 
     // A repeated subscribe may provide a newer snapshot, but is not its acknowledgement.
     let repeated = server.process(&reader, false).unwrap();
     assert_eq!(repeated.checkpoint.sseq, 2);
-    assert_eq!(repeated.safe_sseq, 1);
+    assert_eq!(server.synced.sseq_history_prunable(), 1);
     reader.state = DatatypeState::Subscribed;
     reader.checkpoint.sseq = 1;
     let replay = server.process(&reader, false).unwrap();
     assert_eq!(replay.transactions.len(), 1);
-    assert_eq!(replay.safe_sseq, 1);
+    assert_eq!(server.synced.sseq_history_prunable(), 1);
     reader.checkpoint.sseq = 2;
-    assert_eq!(server.process(&reader, false).unwrap().safe_sseq, 2);
+    assert!(server.process(&reader, false).unwrap().error.is_none());
+    assert_eq!(server.synced.sseq_history_prunable(), 2);
     reader.checkpoint.sseq = 1;
     let delayed = server.process(&reader, false).unwrap();
     assert!(matches!(
@@ -297,16 +304,18 @@ fn can_track_readonly_acknowledgements_without_advancing_on_snapshot_delivery() 
         Some(PushPullError::ProtocolViolation(_))
     ));
     assert!(delayed.transactions.is_empty());
-    assert_eq!(server.synced.pruned_sseq, 2);
-    assert_eq!(delayed.safe_sseq, 2);
-    assert_eq!(server.synced.checkpoints[&reader.cuid].sseq, 2);
+    assert_eq!(server.synced.sseq_history_pruned, 2);
+    assert_eq!(server.synced.sseq_history_prunable(), 2);
+    assert_eq!(server.synced.checkpoints[&reader.cuid].sseq_at_client, 2);
 
     reader.state = DatatypeState::Unsubscribing;
     reader.checkpoint.sseq = 2;
-    assert_eq!(server.process(&reader, false).unwrap().safe_sseq, 2);
+    assert!(server.process(&reader, false).unwrap().error.is_none());
+    assert_eq!(server.synced.sseq_history_prunable(), 2);
     assert!(!server.synced.checkpoints.contains_key(&reader.cuid));
     writer.state = DatatypeState::Unsubscribing;
-    assert_eq!(server.process(&writer, false).unwrap().safe_sseq, 2);
+    assert!(server.process(&writer, false).unwrap().error.is_none());
+    assert_eq!(server.synced.sseq_history_prunable(), 2);
     assert!(server.synced.checkpoints.is_empty());
 }
 
@@ -343,7 +352,7 @@ fn can_reject_invalid_pushes_without_advancing_applied_progress(#[case] kind: In
         Operation::new_counter_increase(3),
     )];
     server.process(&peer, false).unwrap();
-    assert_eq!(server.synced.sseq, 2);
+    assert_eq!(server.synced.sseq_at_server, 2);
 
     writer.state = DatatypeState::Subscribed;
     writer.checkpoint.sseq = 1;
@@ -365,14 +374,19 @@ fn can_reject_invalid_pushes_without_advancing_applied_progress(#[case] kind: In
             )]
         }
     }
-    writer.safe_sseq = u64::MAX;
     let rejected = server.process(&writer, false).unwrap();
     assert!(rejected.error.is_some());
-    assert_eq!(rejected.safe_sseq, 0);
-    assert_eq!(server.synced.sseq, 2);
+    assert_eq!(server.synced.sseq_history_prunable(), 0);
+    assert_eq!(server.synced.sseq_at_server, 2);
     assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 10);
-    assert_eq!(server.synced.checkpoints[&attr.get_cuid()].sseq, 0);
-    assert_eq!(server.synced.checkpoints[&attr.get_cuid()].cseq, 1);
+    assert_eq!(
+        server.synced.checkpoints[&attr.get_cuid()].sseq_at_client,
+        0
+    );
+    assert_eq!(
+        server.synced.checkpoints[&attr.get_cuid()].cseq_at_server,
+        1
+    );
 }
 
 #[rstest]
@@ -403,7 +417,7 @@ fn can_report_a_consistent_error_for_a_checkpoint_beyond_the_server_head(
         ))
     );
     assert_eq!(pulled.state, DatatypeState::Disabled);
-    assert_eq!(server.synced.sseq, 0);
+    assert_eq!(server.synced.sseq_at_server, 0);
 }
 
 #[test]
@@ -434,7 +448,7 @@ fn can_acknowledge_an_existing_boundary_without_a_prior_response() {
     writer.checkpoint.sseq = 2;
     let pulled = server.process(&writer, false).unwrap();
     assert!(pulled.error.is_none());
-    assert_eq!(server.synced.checkpoints[&writer.cuid].sseq, 2);
+    assert_eq!(server.synced.checkpoints[&writer.cuid].sseq_at_client, 2);
     assert!(pulled.transactions.is_empty());
 }
 
@@ -450,7 +464,7 @@ fn can_exclude_registration_only_handles_from_applied_progress() {
     let waiting = f.subscribe_counter(&pending);
     let server = f.server();
     assert_eq!(server.read().synced.checkpoints.len(), 1);
-    assert_eq!(server.read().synced.safe_sseq(), 1);
+    assert_eq!(server.read().synced.sseq_history_prunable(), 1);
     let unsubscribe = PushPullPack::new(&waiting.get_attr(), DatatypeState::Unsubscribing);
     assert!(
         server

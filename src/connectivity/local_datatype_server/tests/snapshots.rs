@@ -58,8 +58,11 @@ fn can_discard_transactions_committed_while_a_subscription_snapshot_is_in_flight
     assert_eq!(replica.get_value(), 10);
     assert_eq!(source.get_value(), 10);
     let backend = server.read();
-    assert_eq!(backend.synced.sseq, 1);
-    assert_eq!(backend.synced.checkpoints[&client.get_cuid()].cseq, 0);
+    assert_eq!(backend.synced.sseq_at_server, 1);
+    assert_eq!(
+        backend.synced.checkpoints[&client.get_cuid()].cseq_at_server,
+        0
+    );
     assert_eq!(backend.synced.crdt.as_counter().unwrap().value(), 10);
 }
 
@@ -72,7 +75,7 @@ fn can_bootstrap_and_retry_a_snapshot_after_history_is_pruned() {
     source.sync().unwrap();
     source.sync().unwrap();
     let server = f.server();
-    assert_eq!(server.read().synced.pruned_sseq, 1);
+    assert_eq!(server.read().synced.sseq_history_pruned, 1);
     assert!(server.read().synced.history.is_empty());
     source.increase_by(3).unwrap();
     source.sync().unwrap();
@@ -84,17 +87,23 @@ fn can_bootstrap_and_retry_a_snapshot_after_history_is_pruned() {
         .set_after_pull(|_| Err(DatatypeError::SyncFailed("response lost".into()).mapping()));
     assert!(replica.sync().is_err());
     assert_eq!(replica.get_server_version(), 0);
-    assert_eq!(server.read().synced.checkpoints[&reader.get_cuid()].sseq, 1);
-    assert_eq!(server.read().synced.pruned_sseq, 1);
+    assert_eq!(
+        server.read().synced.checkpoints[&reader.get_cuid()].sseq_at_client,
+        1
+    );
+    assert_eq!(server.read().synced.sseq_history_pruned, 1);
     assert_eq!(server.read().synced.history.len(), 1);
     interceptor.set_after_pull(|_| Ok(()));
     replica.sync().unwrap();
     assert_eq!(replica.get_value(), 10);
     assert_eq!(replica.get_server_version(), 2);
-    assert_eq!(server.read().synced.checkpoints[&reader.get_cuid()].sseq, 1);
+    assert_eq!(
+        server.read().synced.checkpoints[&reader.get_cuid()].sseq_at_client,
+        1
+    );
     source.sync().unwrap();
     replica.sync().unwrap();
-    assert_eq!(server.read().synced.pruned_sseq, 2);
+    assert_eq!(server.read().synced.sseq_history_pruned, 2);
     assert!(server.read().synced.history.is_empty());
     replica.increase_by(2).unwrap();
     replica.sync().unwrap();
@@ -121,9 +130,12 @@ fn can_keep_a_failed_snapshot_application_unacknowledged() {
     });
     assert!(replica.sync().is_err());
     let server = f.server();
-    assert_eq!(server.read().synced.checkpoints[&reader.get_cuid()].sseq, 0);
-    assert_eq!(server.read().synced.safe_sseq(), 0);
-    assert_eq!(server.read().synced.pruned_sseq, 0);
+    assert_eq!(
+        server.read().synced.checkpoints[&reader.get_cuid()].sseq_at_client,
+        0
+    );
+    assert_eq!(server.read().synced.sseq_history_prunable(), 0);
+    assert_eq!(server.read().synced.sseq_history_pruned, 0);
     assert_eq!(server.read().synced.history.len(), 1);
     assert_eq!(replica.get_server_version(), 0);
 }

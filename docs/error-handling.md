@@ -184,7 +184,8 @@ checkpoint and fetches a snapshot on the same instance without an intermediate `
 transition or manager detach. The current local CRDT remains observable until the snapshot
 replaces it; its value is not a server acknowledgement. Writes committed while that snapshot
 is in flight are also discarded. Recovery errors and lifecycle changes use the existing handlers.
-A successful recovery completes the original `sync()` successfully. A repeated missing
+A successful recovery completes the original `sync()` successfully. Recovery also clears
+the client GC acknowledgement before requesting the new snapshot. A repeated missing
 subscription during the immediate recovery attempt disables the datatype instead of looping.
 `ResubscribeWithBackOff` remains reserved. History-pruned protocol errors still use
 `Disable` and do not trigger snapshot recovery.

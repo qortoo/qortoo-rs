@@ -33,14 +33,13 @@ fn can_reject_unsupported_deletion_without_changing_backend_state(#[case] create
     let duid = server.duid.clone();
     let crdt = server.synced.crdt.serialize();
     let lamport = server.synced.lamport;
-    let sseq = server.synced.sseq;
+    let sseq = server.synced.sseq_at_server;
     let history = server.synced.history.clone();
     let checkpoints = server.synced.checkpoints.clone();
-    let safe_sseq = server.synced.safe_sseq();
-    let pruned_sseq = server.synced.pruned_sseq;
+    let sseq_history_prunable = server.synced.sseq_history_prunable();
+    let sseq_history_pruned = server.synced.sseq_history_pruned;
 
     pushed.state = DatatypeState::Deleting;
-    pushed.safe_sseq = u64::MAX;
     pushed.transactions = vec![transaction(
         &pushed.cuid,
         if created { 2 } else { 1 },
@@ -54,14 +53,14 @@ fn can_reject_unsupported_deletion_without_changing_backend_state(#[case] create
     assert_eq!(pulled.state, DatatypeState::Disabled);
     assert!(pulled.transactions.is_empty());
     assert!(pulled.snapshot_transaction.is_none());
-    assert_eq!(pulled.safe_sseq, safe_sseq);
+    assert_eq!(server.synced.sseq_history_prunable(), sseq_history_prunable);
     assert_eq!(server.duid, duid);
     assert_eq!(server.is_created(), created);
     assert_eq!(server.synced.crdt.serialize(), crdt);
     assert_eq!(server.synced.lamport, lamport);
-    assert_eq!(server.synced.sseq, sseq);
+    assert_eq!(server.synced.sseq_at_server, sseq);
     assert_eq!(server.synced.history, history);
-    assert_eq!(server.synced.pruned_sseq, pruned_sseq);
+    assert_eq!(server.synced.sseq_history_pruned, sseq_history_pruned);
     assert_eq!(server.synced.checkpoints, checkpoints);
     assert_eq!(server.wired_map.len(), 1);
     assert!(Arc::ptr_eq(
@@ -107,9 +106,9 @@ fn can_reject_nonsequential_new_transactions_without_publishing_batch(#[case] se
     ));
     assert_eq!(server.synced.crdt.serialize(), before);
     assert_eq!(server.synced.history, history);
-    assert_eq!(server.synced.pruned_sseq, 0);
+    assert_eq!(server.synced.sseq_history_pruned, 0);
     assert_eq!(server.synced.checkpoints, checkpoints);
-    assert_eq!(server.synced.sseq, 1);
+    assert_eq!(server.synced.sseq_at_server, 1);
     assert_eq!(server.synced.lamport, 1);
 
     // A retry may still include transactions accepted by an earlier request.
@@ -121,10 +120,10 @@ fn can_reject_nonsequential_new_transactions_without_publishing_batch(#[case] se
     assert!(server.process(&pushed, false).unwrap().error.is_none());
     assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 37);
     assert_eq!(server.synced.history.len(), 2);
-    assert_eq!(server.synced.pruned_sseq, 1);
-    assert_eq!(server.synced.sseq, 3);
+    assert_eq!(server.synced.sseq_history_pruned, 1);
+    assert_eq!(server.synced.sseq_at_server, 3);
     assert_eq!(
-        server.synced.checkpoints[&pushed.cuid],
+        server.synced.checkpoints[&pushed.cuid].checkpoint(),
         CheckPoint::new(1, 3)
     );
 }
@@ -163,14 +162,14 @@ fn can_reject_a_late_batch_failure_without_advancing_backend_state(#[case] data_
     ));
     assert_eq!(server.synced.crdt.serialize(), before);
     assert_eq!(server.synced.history, history);
-    assert_eq!(server.synced.pruned_sseq, 0);
+    assert_eq!(server.synced.sseq_history_pruned, 0);
     assert_eq!(server.synced.checkpoints, checkpoints);
-    assert_eq!(server.synced.sseq, 1);
+    assert_eq!(server.synced.sseq_at_server, 1);
     assert_eq!(server.synced.lamport, 1);
 
     Arc::make_mut(&mut pushed.transactions[1]).operations.pop();
     assert!(server.process(&pushed, false).unwrap().error.is_none());
-    assert_eq!(server.synced.sseq, 3);
+    assert_eq!(server.synced.sseq_at_server, 3);
     assert_eq!(server.synced.lamport, 3);
     let after = server.synced.crdt.serialize();
     assert!(server.process(&pushed, false).unwrap().error.is_none());
@@ -178,7 +177,7 @@ fn can_reject_a_late_batch_failure_without_advancing_backend_state(#[case] data_
     assert!(server.process(&pushed, false).unwrap().error.is_none());
     assert_eq!(server.synced.crdt.serialize(), after);
     assert_eq!(server.synced.history.len(), 3);
-    assert_eq!(server.synced.sseq, 3);
+    assert_eq!(server.synced.sseq_at_server, 3);
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -228,7 +227,7 @@ fn can_keep_a_failed_creation_unpublished(
     assert!(server.synced.checkpoints.is_empty());
     assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 0);
     assert_eq!(server.synced.lamport, 0);
-    assert_eq!(server.synced.sseq, 0);
+    assert_eq!(server.synced.sseq_at_server, 0);
     pushed.duid = attr.get_duid();
     pushed.transactions = vec![transaction(
         &pushed.cuid,

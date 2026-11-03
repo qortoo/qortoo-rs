@@ -59,6 +59,9 @@ impl<'a> PullHandler<'a> {
             // Reclaim only after every response step succeeds, under the same mutable
             // lock as checkpoint advancement. Failed application retains retry data.
             self.mutable.push_buffer.deque(self.mutable.checkpoint.cseq);
+            if self.mutable.push_buffer.is_empty() {
+                self.mutable.sseq_gc_safe = self.mutable.checkpoint.sseq;
+            }
             self.mutable.needs_snapshot = false;
         }
         result
@@ -67,7 +70,8 @@ impl<'a> PullHandler<'a> {
     fn validate_checkpoint(&self) -> Result<(), DatatypeErrorWithAction> {
         let old = &self.mutable.checkpoint;
         let new = &self.pulled_ppp.checkpoint;
-        if new.cseq > self.sent_cseq
+        if self.pulled_ppp.sseq_gc_safe > new.sseq
+            || new.cseq > self.sent_cseq
             || new.cseq < old.cseq
             || new.sseq < old.sseq
             || new.sseq - old.sseq < new.cseq - old.cseq
@@ -268,6 +272,44 @@ mod tests_push_handlers {
     }
 
     #[test]
+    fn can_reject_a_gc_boundary_beyond_the_response_checkpoint() {
+        let mut mutable = buffered_counter();
+        let mut accepted = response(&mutable, CheckPoint::new(3, 3));
+        accepted.sseq_gc_safe = 2;
+        PullHandler::new(&mut accepted, &mut mutable, 3)
+            .apply()
+            .unwrap();
+        assert_eq!(mutable.sseq_gc_safe, 3);
+        let mut invalid = response(&mutable, CheckPoint::new(3, 3));
+        invalid.sseq_gc_safe = 4;
+        assert!(
+            PullHandler::new(&mut invalid, &mut mutable, 3)
+                .apply()
+                .is_err()
+        );
+        assert_eq!(mutable.sseq_gc_safe, 3);
+        assert_eq!(mutable.checkpoint, CheckPoint::new(3, 3));
+        assert_eq!(mutable.crdt.as_counter().unwrap().value(), 3);
+    }
+
+    #[test]
+    fn can_ignore_gc_boundaries_in_error_responses() {
+        let mut mutable = buffered_counter();
+        let mut failed = response(&mutable, CheckPoint::new(3, 3));
+        failed.sseq_gc_safe = u64::MAX;
+        failed.error =
+            Some(crate::errors::push_pull::PushPullError::ServerInternalError("retry".into()));
+        assert!(
+            PullHandler::new(&mut failed, &mut mutable, 3)
+                .apply()
+                .is_err()
+        );
+        assert_eq!(mutable.sseq_gc_safe, 0);
+        assert_eq!(mutable.checkpoint, CheckPoint::default());
+        assert_eq!(mutable.push_buffer.iter().count(), 3);
+    }
+
+    #[test]
     fn can_reclaim_partial_and_duplicate_acknowledgements() {
         let mut mutable = buffered_counter();
         let weak: Vec<_> = mutable.push_buffer.iter().map(Arc::downgrade).collect();
@@ -282,6 +324,7 @@ mod tests_push_handlers {
                 CheckPoint::new(acknowledged, acknowledged)
             );
             assert_eq!(mutable.push_buffer.mem_size, (3 - acknowledged) * tx_size);
+            assert_eq!(mutable.sseq_gc_safe, if acknowledged == 3 { 3 } else { 0 });
             assert_eq!(
                 mutable.push_buffer.first_cseq,
                 if acknowledged == 3 { 0 } else { 2 }

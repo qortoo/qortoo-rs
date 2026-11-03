@@ -139,7 +139,7 @@ fn can_restart_client_sequences_after_unsubscribe_and_resubscribe() {
                 .synced
                 .checkpoints
                 .get(&peer_client.get_cuid())
-                .map(|cp| cp.cseq),
+                .map(|cp| cp.cseq_at_server),
             Some(1)
         );
     }
@@ -178,13 +178,13 @@ fn can_clear_client_progress_when_unsubscribe_rejects_pending_work() {
     assert_eq!(pulled.error, Some(PushPullError::ReadonlyViolation));
     assert!(!server.synced.checkpoints.contains_key(&pushed.cuid));
     assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 7);
-    assert_eq!(server.synced.sseq, 1);
+    assert_eq!(server.synced.sseq_at_server, 1);
     assert_eq!(server.synced.history.len(), 1);
     let repeated = server.process(&pushed, false).unwrap();
     assert!(repeated.error.is_none());
     assert_eq!(repeated.state, DatatypeState::Disabled);
     assert!(server.synced.checkpoints.is_empty());
-    assert_eq!(server.synced.sseq, 1);
+    assert_eq!(server.synced.sseq_at_server, 1);
 }
 
 #[test]
