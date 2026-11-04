@@ -5,6 +5,56 @@ fn sseqs<'a>(txs: impl IntoIterator<Item = &'a Arc<Transaction>>) -> Vec<u64> {
 }
 
 #[test]
+fn can_retain_history_for_the_slowest_of_three_subscribers_until_unsubscribe() {
+    let attr = new_attribute!(DataType::Counter);
+    let mut server = LocalDatatypeServer::new(&attr);
+    let mut writer = PushPullPack::new(&attr, DatatypeState::Creating);
+    writer.transactions = (1..=100)
+        .map(|cseq| transaction(&writer.cuid, cseq, Operation::new_counter_increase(1)))
+        .collect();
+    assert!(server.process(&writer, false).unwrap().error.is_none());
+
+    let mut slow = PushPullPack::new(&attr, DatatypeState::Subscribing);
+    slow.cuid = Cuid::new();
+    slow.is_readonly = true;
+    let mut reader = PushPullPack::new(&attr, DatatypeState::Subscribing);
+    reader.cuid = Cuid::new();
+    reader.is_readonly = true;
+    for subscriber in [&slow, &reader] {
+        assert!(server.process(subscriber, false).unwrap().error.is_none());
+    }
+    writer.state = DatatypeState::Subscribed;
+    writer.transactions.clear();
+    writer.checkpoint.sseq = 100;
+    slow.state = DatatypeState::Subscribed;
+    slow.checkpoint.sseq = 80;
+    reader.state = DatatypeState::Subscribed;
+    reader.checkpoint.sseq = 95;
+    for subscriber in [&writer, &slow, &reader] {
+        assert!(server.process(subscriber, false).unwrap().error.is_none());
+    }
+    assert_eq!(server.synced.sseq_history_prunable(), 80);
+    assert_eq!(server.synced.sseq_history_pruned, 80);
+    assert_eq!(
+        sseqs(&server.synced.history),
+        (81..=100).collect::<Vec<_>>()
+    );
+
+    // Other subscribers' successful syncs cannot release the idle reader's protection.
+    assert!(server.process(&writer, false).unwrap().error.is_none());
+    assert_eq!(server.synced.sseq_history_pruned, 80);
+    slow.state = DatatypeState::Unsubscribing;
+    assert!(server.process(&slow, false).unwrap().error.is_none());
+    assert!(!server.synced.checkpoints.contains_key(&slow.cuid));
+    assert_eq!(server.synced.sseq_history_prunable(), 95);
+    assert_eq!(server.synced.sseq_history_pruned, 95);
+    assert_eq!(
+        sseqs(&server.synced.history),
+        (96..=100).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn can_prune_acknowledged_history_without_invalidating_in_flight_pulls() {
     let attr = new_attribute!(DataType::Counter);
     let mut server = LocalDatatypeServer::new(&attr);

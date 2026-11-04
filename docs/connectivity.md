@@ -184,10 +184,11 @@ subscription; the resulting higher safe boundary can be pruned by a later succes
 Removing the resource after its last local registration and subscription ends remains a
 separate lifecycle action.
 
-Pruning runs at successful request boundaries without a background worker. An idle, readonly,
-or manually synchronized subscriber can hold the safe boundary indefinitely. Subscription
-expiry and generation fencing are not implemented, so pruning does not guarantee a fixed
-memory bound.
+Pruning runs at successful request boundaries without a background worker. `LocalConnectivity`
+does not expire subscriptions by TTL. Elapsed time or a pause in synchronization does not
+remove a subscriber from history or GC protection; an idle subscription remains protected
+until it explicitly unsubscribes. An idle, readonly, or manually synchronized subscriber can
+therefore hold either boundary indefinitely. Pruning does not guarantee a fixed memory bound.
 
 A creation retried after a lost pull receives intervening transactions from other clients as
 well as its deduplicated client checkpoint. This also applies to subscribe-or-create retries
@@ -377,5 +378,6 @@ floor. Snapshot replacement still discards writes committed while waiting for th
 
 These fields provide coordination only. Counter and Variable have no tombstone collection
 hook, and no datatype physically reclaims tombstones here. Candidate acceptance tracking,
-rollback/reference safety, Map integration, subscription expiry, and resource limits remain
-separate work. A GC boundary is not by itself permission to delete arbitrary CRDT metadata.
+rollback/reference safety, Map integration, and resource limits remain separate work.
+Subscription expiry belongs to a future server backend. A GC boundary is not by itself
+permission to delete arbitrary CRDT metadata.
