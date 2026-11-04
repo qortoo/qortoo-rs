@@ -24,7 +24,9 @@ pub struct PushPullPack {
     pub r#type: DataType,
     pub state: DatatypeState,
     pub checkpoint: CheckPoint,
-    pub safe_sseq: u64,
+    /// Push: client GC acknowledgement. Pull: server-issued GC coordination boundary.
+    /// Candidate and reference checks are still required before physical collection.
+    pub sseq_gc_safe: u64,
     pub transactions: Vec<Arc<Transaction>>,
     pub snapshot_transaction: Option<Arc<Transaction>>,
     pub is_readonly: bool,
@@ -41,7 +43,7 @@ impl PushPullPack {
             r#type: attr.r#type.to_owned(),
             state,
             checkpoint: CheckPoint::default(),
-            safe_sseq: 0,
+            sseq_gc_safe: 0,
             transactions: Vec::new(),
             snapshot_transaction: None,
             is_readonly: attr.is_readonly,
@@ -66,14 +68,13 @@ impl PushPullPack {
         self.transactions.iter().filter(move |tx| tx.cseq > cseq)
     }
 
-    pub fn checkpointing(&mut self, cp: &CheckPoint, safe_sseq: u64) {
+    pub fn checkpointing(&mut self, cp: &CheckPoint) {
         let cseq = self
             .transactions
             .last()
             .map(|tx| tx.cseq)
             .unwrap_or(cp.cseq);
         self.checkpoint = CheckPoint::new(cp.sseq, cseq);
-        self.safe_sseq = safe_sseq;
     }
 
     pub fn get_pulled_stub(&self) -> PushPullPack {
@@ -85,7 +86,7 @@ impl PushPullPack {
             r#type: self.r#type,
             state: self.state,
             checkpoint: CheckPoint::default(),
-            safe_sseq: self.safe_sseq,
+            sseq_gc_safe: 0,
             transactions: Vec::new(),
             snapshot_transaction: None,
             is_readonly: self.is_readonly,
@@ -114,7 +115,7 @@ impl Display for PushPullPack {
 
         write!(
             f,
-            "[{:?}/{}/{} {} {} tx:{} s{}:c{}:sf{} {}]",
+            "[{:?}/{}/{} {} {} tx:{} s{}:c{}:gc{} {}]",
             self.r#type,
             self.key,
             self.duid,
@@ -123,7 +124,7 @@ impl Display for PushPullPack {
             self.transactions.len(),
             self.checkpoint.sseq,
             self.checkpoint.cseq,
-            self.safe_sseq,
+            self.sseq_gc_safe,
             err
         )
     }
@@ -165,6 +166,15 @@ mod tests_push_pull_pack {
             assert!(std::ptr::eq(borrowed, &pack.transactions[index]));
         }
         assert!(pack.transactions_after_cseq(4).next().is_none());
+    }
+
+    #[test]
+    fn can_clear_request_boundaries_when_building_a_response_stub() {
+        let attr = new_attribute!(DataType::Counter);
+        let mut pushed = PushPullPack::new(&attr, DatatypeState::Subscribed);
+        pushed.sseq_gc_safe = u64::MAX;
+        let pulled = pushed.get_pulled_stub();
+        assert_eq!(pulled.sseq_gc_safe, 0);
     }
 
     #[test]

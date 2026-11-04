@@ -86,16 +86,16 @@ impl WiredDatatype {
             trace!("ignore {notify}: self-notification");
             return false;
         }
-        let cp_sseq = self.core.mutable.read().checkpoint.sseq;
-        if cp_sseq >= notify.sseq {
+        let sseq_at_client = self.core.mutable.read().checkpoint.sseq;
+        if sseq_at_client >= notify.sseq {
             trace!(
-                "ignore {notify} due to current sseq({cp_sseq}) >= notification.sseq({})",
+                "ignore {notify} due to current sseq({sseq_at_client}) >= notification.sseq({})",
                 notify.sseq
             );
             return false;
         }
         trace!(
-            "schedule push-pull due to current sseq({cp_sseq}) < notification.sseq({})",
+            "schedule push-pull due to current sseq({sseq_at_client}) < notification.sseq({})",
             notify.sseq
         );
         true
@@ -152,6 +152,10 @@ impl WiredDatatype {
 impl MutableDatatype {
     #[instrument(skip_all)]
     fn create_push_pull_pack(&mut self) -> Result<PushPullPack, DatatypeError> {
+        // Recovery must request a snapshot even when the datatype DUID is unchanged.
+        if self.needs_snapshot {
+            return Ok(PushPullPack::new(&self.attr, DatatypeState::Subscribing));
+        }
         let mut ppp = PushPullPack::new(&self.attr, self.get_state());
 
         let (transactions, _tx_size) = self.push_buffer.get_pushing_transactions(
@@ -160,7 +164,8 @@ impl MutableDatatype {
         )?;
 
         ppp.transactions = transactions;
-        ppp.checkpointing(&self.checkpoint, 0);
+        ppp.checkpointing(&self.checkpoint);
+        ppp.sseq_gc_safe = self.sseq_gc_safe;
         Ok(ppp)
     }
 

@@ -138,7 +138,8 @@ pub enum DatatypeError {
     SyncFailed(String) = 210,
     #[error("[DatatypeError] pushBuffer exceeded max size of memory")]
     PushBufferExceededMaxMemSize = 211,
-    /// The server permanently rejected the operation. The datatype transitions to `Disabled`.
+    /// The server rejected the operation. Missing subscriptions trigger snapshot recovery;
+    /// other reasons disable the datatype.
     #[error("[DatatypeError] server rejected: {0:?}")]
     ServerRejected(ServerRejectReason) = 213,
     /// A user value could not be converted to or from its stored JSON representation.
@@ -157,7 +158,8 @@ impl DatatypeError {
     /// - `SyncFailed`       — transient connectivity failure → `RetryWithBackOff`
     /// - `Internal`         — fatal SDK-internal fault → `Disable`
     ///   (reason-level overrides live in [`InternalReason::mapping`])
-    /// - `ServerRejected`   — server permanently rejected the operation → `Disable`
+    /// - `ServerRejected(MissingSubscription)` — discard pending work and fetch a snapshot
+    ///   → `Resubscribe`; other server rejections → `Disable`
     /// - `ReadonlyViolation`— server rejected a write from a readonly client → `Disable`
     /// - `PushBufferExceededMaxMemSize` — the transaction cannot be buffered
     ///   → `RollbackTransaction`
@@ -167,6 +169,9 @@ impl DatatypeError {
         match self {
             DatatypeError::SyncFailed(_) => {
                 DatatypeErrorWithAction::new(self, RecoveryAction::RetryWithBackOff)
+            }
+            DatatypeError::ServerRejected(ServerRejectReason::MissingSubscription(_)) => {
+                DatatypeErrorWithAction::new(self, RecoveryAction::Resubscribe)
             }
             DatatypeError::Internal(_)
             | DatatypeError::ServerRejected(_)
@@ -226,10 +231,10 @@ pub enum RecoveryAction {
     /// never routed through the event loop.
     RollbackTransaction,
     /// Rebuild the replica: reset local state and re-subscribe from a server snapshot
-    /// on the next sync.
+    /// in the current event-loop sync attempt.
     ///
-    /// Reserved: no producer yet. WARNING: the reset discards unpushed transactions in the
-    /// push buffer — a local data-loss policy must be decided before wiring a producer.
+    /// Missing subscriptions discard unpushed transactions and fetch a fresh snapshot.
+    /// The event loop attempts recovery once before disabling a repeated missing subscription.
     Resubscribe,
     /// Same as [`RecoveryAction::Resubscribe`], but waits with exponential backoff first
     /// (e.g., the server is temporarily unavailable).

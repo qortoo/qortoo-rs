@@ -179,3 +179,11 @@ would spend an exchange to learn nothing.
 - [`docs/error-handling.md`](error-handling.md) — the recovery actions that disable or reset a datatype
 - [`docs/handler-system.md`](handler-system.md) — how a transition is reported to the application
 - [`docs/transaction-and-rollback.md`](transaction-and-rollback.md) — the buffered work a state change can affect
+
+
+A missing backend subscription triggers recovery on the same instance: pending transactions
+are discarded, the checkpoint is reset, and the state returns to `SubscribingOrCreating`.
+The recovery exchange requests a snapshot without transactions, even if the DUID is unchanged.
+Snapshot success restores `Subscribed`; recovery does not pass through `Disabled` or detach
+from the client manager. A repeated missing subscription in the immediate recovery attempt
+uses `Disabled`. No additional expiry state is introduced.

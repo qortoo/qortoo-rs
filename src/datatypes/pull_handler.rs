@@ -3,7 +3,7 @@ use tracing::{debug, instrument};
 use crate::{
     DatatypeError, DatatypeState, ServerRejectReason,
     datatypes::{mutable::MutableDatatype, push_buffer::PushBuffer},
-    errors::datatypes::DatatypeErrorWithAction,
+    errors::datatypes::{DatatypeErrorWithAction, RecoveryAction},
     observability::trace::add_span_event,
     types::{checkpoint::CheckPoint, push_pull_pack::PushPullPack},
 };
@@ -59,6 +59,10 @@ impl<'a> PullHandler<'a> {
             // Reclaim only after every response step succeeds, under the same mutable
             // lock as checkpoint advancement. Failed application retains retry data.
             self.mutable.push_buffer.deque(self.mutable.checkpoint.cseq);
+            if self.mutable.push_buffer.is_empty() {
+                self.mutable.sseq_gc_safe = self.mutable.checkpoint.sseq;
+            }
+            self.mutable.needs_snapshot = false;
         }
         result
     }
@@ -66,7 +70,8 @@ impl<'a> PullHandler<'a> {
     fn validate_checkpoint(&self) -> Result<(), DatatypeErrorWithAction> {
         let old = &self.mutable.checkpoint;
         let new = &self.pulled_ppp.checkpoint;
-        if new.cseq > self.sent_cseq
+        if self.pulled_ppp.sseq_gc_safe > new.sseq
+            || new.cseq > self.sent_cseq
             || new.cseq < old.cseq
             || new.sseq < old.sseq
             || new.sseq - old.sseq < new.cseq - old.cseq
@@ -98,7 +103,14 @@ impl<'a> PullHandler<'a> {
     fn handle_error_and_datatype_state(&mut self) -> Result<(), DatatypeErrorWithAction> {
         self.new_state = self.pulled_ppp.state;
         if let Some(sppe) = self.pulled_ppp.error.as_ref() {
-            return Err(sppe.to_datatype_error().mapping());
+            let error = sppe.to_datatype_error().mapping();
+            if matches!(
+                error.recovery,
+                RecoveryAction::Resubscribe | RecoveryAction::ResubscribeWithBackOff
+            ) {
+                self.new_state = self.old_state;
+            }
+            return Err(error);
         }
 
         match self.old_state {
@@ -121,7 +133,10 @@ impl<'a> PullHandler<'a> {
                     self.new_state = DatatypeState::Disabled;
                     self.process_illegal_state_response(self.old_state, self.pulled_ppp.state)?;
                 }
-                if self.pulled_ppp.duid == self.mutable.attr.get_duid() {
+                if !self.mutable.needs_snapshot
+                    && self.pulled_ppp.snapshot_transaction.is_none()
+                    && self.pulled_ppp.duid == self.mutable.attr.get_duid()
+                {
                     self.is_created = true;
                 } else {
                     self.enqueue_step(Self::apply_subscribe_response);
@@ -158,6 +173,14 @@ impl<'a> PullHandler<'a> {
     }
 
     fn apply_subscribe_response(&mut self) -> Result<(), DatatypeErrorWithAction> {
+        if self.mutable.needs_snapshot && self.pulled_ppp.snapshot_transaction.is_none() {
+            return Err(
+                DatatypeError::ServerRejected(ServerRejectReason::ProtocolViolation(
+                    "resubscription requires a snapshot".into(),
+                ))
+                .mapping(),
+            );
+        }
         if let Some(snapshot_tx) = self.pulled_ppp.snapshot_transaction.take() {
             self.mutable
                 .apply_snapshot_transaction(snapshot_tx)
@@ -249,6 +272,44 @@ mod tests_push_handlers {
     }
 
     #[test]
+    fn can_reject_a_gc_boundary_beyond_the_response_checkpoint() {
+        let mut mutable = buffered_counter();
+        let mut accepted = response(&mutable, CheckPoint::new(3, 3));
+        accepted.sseq_gc_safe = 2;
+        PullHandler::new(&mut accepted, &mut mutable, 3)
+            .apply()
+            .unwrap();
+        assert_eq!(mutable.sseq_gc_safe, 3);
+        let mut invalid = response(&mutable, CheckPoint::new(3, 3));
+        invalid.sseq_gc_safe = 4;
+        assert!(
+            PullHandler::new(&mut invalid, &mut mutable, 3)
+                .apply()
+                .is_err()
+        );
+        assert_eq!(mutable.sseq_gc_safe, 3);
+        assert_eq!(mutable.checkpoint, CheckPoint::new(3, 3));
+        assert_eq!(mutable.crdt.as_counter().unwrap().value(), 3);
+    }
+
+    #[test]
+    fn can_ignore_gc_boundaries_in_error_responses() {
+        let mut mutable = buffered_counter();
+        let mut failed = response(&mutable, CheckPoint::new(3, 3));
+        failed.sseq_gc_safe = u64::MAX;
+        failed.error =
+            Some(crate::errors::push_pull::PushPullError::ServerInternalError("retry".into()));
+        assert!(
+            PullHandler::new(&mut failed, &mut mutable, 3)
+                .apply()
+                .is_err()
+        );
+        assert_eq!(mutable.sseq_gc_safe, 0);
+        assert_eq!(mutable.checkpoint, CheckPoint::default());
+        assert_eq!(mutable.push_buffer.iter().count(), 3);
+    }
+
+    #[test]
     fn can_reclaim_partial_and_duplicate_acknowledgements() {
         let mut mutable = buffered_counter();
         let weak: Vec<_> = mutable.push_buffer.iter().map(Arc::downgrade).collect();
@@ -263,6 +324,7 @@ mod tests_push_handlers {
                 CheckPoint::new(acknowledged, acknowledged)
             );
             assert_eq!(mutable.push_buffer.mem_size, (3 - acknowledged) * tx_size);
+            assert_eq!(mutable.sseq_gc_safe, if acknowledged == 3 { 3 } else { 0 });
             assert_eq!(
                 mutable.push_buffer.first_cseq,
                 if acknowledged == 3 { 0 } else { 2 }

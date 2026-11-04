@@ -10,6 +10,7 @@ Qortoo is a Rust SDK for conflict-free replicated data types (CRDTs) with distri
 
 - **English**: Write code comments and shared, tracked documentation in English. Personal plans under `qortoo-harness/.local/plans/` use the user's session language.
 - **Design**: Favor SOLID principles, especially SRP and OCP; check them during review.
+- **Comment Review**: When adding, moving, renaming, or changing code, review adjacent comments and doc comments for accuracy and attachment to the correct item, including attributes. Update or remove stale comments, and inspect their placement in the final diff.
 - **Tooling Ownership**: Keep shared Claude/Codex tooling in `qortoo-harness`. Other repositories carry only their root `AGENTS.md`; do not add `CLAUDE.md` or tracked `.claude/settings.json`. Personal, gitignored agent state is local.
 - **Worktrees**: Create isolated worktrees outside every repository, under `../qortoo-worktrees/` relative to the harness. See `qortoo-harness/docs/repository-hygiene.md`.
 - **Personal Work**: Keep all plans in `qortoo-harness/.local/plans/` and task lists, working notes, and logs under its `.local/`. Never commit personal `.local/` or `.claude/` state. Update the plan's status, checklist, and progress log during the work, including corrections and scope decisions.
