@@ -154,9 +154,13 @@ impl MutableDatatype {
     fn create_push_pull_pack(&mut self) -> Result<PushPullPack, DatatypeError> {
         // Recovery must request a snapshot even when the datatype DUID is unchanged.
         if self.needs_snapshot {
-            return Ok(PushPullPack::new(&self.attr, DatatypeState::Subscribing));
+            return Ok(PushPullPack::with_sub_gen(
+                &self.attr,
+                DatatypeState::Subscribing,
+                self.sub_gen,
+            ));
         }
-        let mut ppp = PushPullPack::new(&self.attr, self.get_state());
+        let mut ppp = PushPullPack::with_sub_gen(&self.attr, self.get_state(), self.sub_gen);
 
         let (transactions, _tx_size) = self.push_buffer.get_pushing_transactions(
             self.checkpoint.cseq + 1,

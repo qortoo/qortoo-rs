@@ -1,4 +1,4 @@
-use tracing::{debug, instrument};
+use tracing::{debug, instrument, warn};
 
 use crate::{
     DatatypeError, DatatypeState, ServerRejectReason,
@@ -42,10 +42,8 @@ impl<'a> PullHandler<'a> {
 
     #[instrument(skip_all, name = "applyPull")]
     pub fn apply(&mut self) -> Result<(), DatatypeErrorWithAction> {
-        // Validate successful response progress before snapshot or CRDT mutations.
-        // Backend errors follow their existing lifecycle and recovery policy.
-        if self.pulled_ppp.error.is_none() {
-            self.validate_checkpoint()?;
+        if !self.validate()? {
+            return Ok(());
         }
         let result = (|| -> Result<(), DatatypeErrorWithAction> {
             self.handle_error_and_datatype_state()?;
@@ -67,7 +65,21 @@ impl<'a> PullHandler<'a> {
         result
     }
 
-    fn validate_checkpoint(&self) -> Result<(), DatatypeErrorWithAction> {
+    fn validate(&self) -> Result<bool, DatatypeErrorWithAction> {
+        // A delayed response from a retired generation must not trigger recovery or apply data.
+        if self.pulled_ppp.sub_gen != self.mutable.sub_gen {
+            warn!(
+                resource_id = %self.pulled_ppp.resource_id(),
+                received_sub_gen = self.pulled_ppp.sub_gen,
+                current_sub_gen = self.mutable.sub_gen,
+                "ignore push-pull response: subscription generation mismatch"
+            );
+            return Ok(false);
+        }
+        // Backend errors follow their existing lifecycle and recovery policy.
+        if self.pulled_ppp.error.is_some() {
+            return Ok(true);
+        }
         let old = &self.mutable.checkpoint;
         let new = &self.pulled_ppp.checkpoint;
         if self.pulled_ppp.sseq_gc_safe > new.sseq
@@ -84,7 +96,7 @@ impl<'a> PullHandler<'a> {
                 .mapping(),
             );
         }
-        Ok(())
+        Ok(true)
     }
 
     fn process_illegal_state_response(
@@ -266,9 +278,36 @@ mod tests_push_handlers {
     }
 
     fn response(mutable: &MutableDatatype, checkpoint: CheckPoint) -> PushPullPack {
-        let mut response = PushPullPack::new(&mutable.attr, DatatypeState::Subscribed);
+        let mut response =
+            PushPullPack::with_sub_gen(&mutable.attr, DatatypeState::Subscribed, mutable.sub_gen);
         response.checkpoint = checkpoint;
         response
+    }
+
+    #[rstest::rstest]
+    #[case::success(false)]
+    #[case::missing_subscription(true)]
+    fn can_ignore_a_retired_generations_response(#[case] missing_subscription: bool) {
+        let mut mutable = buffered_counter();
+        let mut stale = response(&mutable, CheckPoint::new(3, 3));
+        if missing_subscription {
+            stale.error = Some(
+                crate::errors::push_pull::PushPullError::MissingSubscription(
+                    "old generation".into(),
+                ),
+            );
+            stale.state = DatatypeState::Disabled;
+        }
+        mutable.apply_action(crate::errors::datatypes::RecoveryAction::Resubscribe);
+        let generation = mutable.sub_gen;
+        PullHandler::new(&mut stale, &mut mutable, 3)
+            .apply()
+            .unwrap();
+        assert_eq!(mutable.sub_gen, generation);
+        assert_eq!(mutable.checkpoint, CheckPoint::default());
+        assert_eq!(mutable.get_state(), DatatypeState::SubscribingOrCreating);
+        assert!(mutable.needs_snapshot);
+        assert!(mutable.push_buffer.is_empty());
     }
 
     #[test]

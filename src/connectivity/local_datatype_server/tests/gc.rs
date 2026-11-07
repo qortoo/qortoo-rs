@@ -132,7 +132,12 @@ fn can_reset_gc_confirmation_before_automatic_resubscription() {
     let interceptor = f.interceptor(&client);
     let reports = Arc::new(parking_lot::Mutex::new(Vec::new()));
     let observed = reports.clone();
-    interceptor.set_before_push(move |push| observed.lock().push((push.state, push.sseq_gc_safe)));
+    let ids = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let observed_ids = ids.clone();
+    interceptor.set_before_push(move |push| {
+        observed.lock().push((push.state, push.sseq_gc_safe));
+        observed_ids.lock().push(push.sub_gen);
+    });
     counter.increase_by(5).unwrap();
     f.remove_client_subscription(&client);
     counter.sync().unwrap();
@@ -146,6 +151,9 @@ fn can_reset_gc_confirmation_before_automatic_resubscription() {
     assert_eq!(counter.get_value(), 10);
     counter.sync().unwrap();
     assert_eq!(reports.lock()[2], (DatatypeState::Subscribed, 1));
+    let ids = ids.lock();
+    assert_ne!(ids[0], ids[1]);
+    assert_eq!(ids[1], ids[2]);
 }
 
 #[rstest]

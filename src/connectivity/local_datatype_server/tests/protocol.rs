@@ -754,3 +754,207 @@ fn can_reject_push_from_disabled_client() {
     ));
     assert_eq!(counter.get_state(), DatatypeState::Disabled);
 }
+
+#[test]
+fn can_fence_previous_subscription_and_retry_without_reapplying_transactions() {
+    let attr = new_attribute!(DataType::Counter);
+    let mut server = LocalDatatypeServer::new(&attr);
+    let mut push = PushPullPack::new(&attr, DatatypeState::Creating);
+    push.transactions = vec![transaction(
+        &push.cuid,
+        1,
+        Operation::new_counter_increase(1),
+    )];
+    assert!(server.process(&push, false).unwrap().error.is_none());
+    let mut retry = PushPullPack::with_sub_gen(&attr, DatatypeState::Subscribing, push.sub_gen);
+    assert!(server.process(&retry, false).unwrap().error.is_none());
+
+    push.state = DatatypeState::Subscribed;
+    push.transactions.push(transaction(
+        &push.cuid,
+        2,
+        Operation::new_counter_increase(2),
+    ));
+    assert!(server.process(&push, false).unwrap().error.is_none());
+    assert_eq!(server.synced.sseq_at_server, 2);
+    assert!(server.process(&push, false).unwrap().error.is_none());
+    assert_eq!(server.synced.sseq_at_server, 2);
+    let old_id = push.sub_gen;
+    push.transactions.clear();
+    push.state = DatatypeState::Unsubscribing;
+    push.checkpoint.sseq = 2;
+    assert!(server.process(&push, false).unwrap().error.is_none());
+    retry.sub_gen = attr.client_common.next_sub_gen();
+    retry.checkpoint = CheckPoint::default();
+    assert!(server.process(&retry, false).unwrap().error.is_none());
+    push.sub_gen = old_id;
+    push.state = DatatypeState::Subscribed;
+    assert!(server.process(&push, false).unwrap().error.is_some());
+    push.state = DatatypeState::Unsubscribing;
+    assert!(server.process(&push, false).unwrap().error.is_some());
+    assert!(server.synced.checkpoints.contains_key(&push.cuid));
+    assert!(server.process(&retry, false).unwrap().error.is_none());
+}
+
+#[rstest]
+#[case::create(DatatypeState::Creating)]
+#[case::subscribe(DatatypeState::Subscribing)]
+#[case::subscribe_or_create(DatatypeState::SubscribingOrCreating)]
+fn can_replace_only_with_a_valid_new_subscription_generation(#[case] state: DatatypeState) {
+    let attr = new_attribute!(DataType::Counter);
+    let mut server = LocalDatatypeServer::new(&attr);
+    let mut old = PushPullPack::new(&attr, DatatypeState::Creating);
+    old.transactions = vec![transaction(
+        &old.cuid,
+        1,
+        Operation::new_counter_increase(7),
+    )];
+    assert!(server.process(&old, false).unwrap().error.is_none());
+    old.state = DatatypeState::Subscribed;
+    old.checkpoint = CheckPoint::new(1, 1);
+    old.sseq_gc_safe = 1;
+    old.transactions.clear();
+    assert!(server.process(&old, false).unwrap().error.is_none());
+    let previous = server.synced.checkpoints.clone();
+    let mut new = PushPullPack::new(&attr, DatatypeState::Subscribed);
+    assert!(matches!(
+        server.process(&new, false).unwrap().error,
+        Some(PushPullError::MissingSubscription(_))
+    ));
+    assert_eq!(server.synced.checkpoints, previous);
+
+    new.state = state;
+    new.checkpoint.sseq = 2;
+    assert!(matches!(
+        server.process(&new, false).unwrap().error,
+        Some(PushPullError::ProtocolViolation(_))
+    ));
+    assert_eq!(server.synced.checkpoints, previous);
+    new.checkpoint = CheckPoint::new(
+        if state == DatatypeState::Subscribing {
+            0
+        } else {
+            1
+        },
+        0,
+    );
+    new.transactions = vec![transaction(
+        &new.cuid,
+        2,
+        Operation::new_counter_increase(10),
+    )];
+    assert!(matches!(
+        server.process(&new, false).unwrap().error,
+        Some(PushPullError::ProtocolViolation(_))
+    ));
+    assert_eq!(server.synced.checkpoints, previous);
+    assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 7);
+
+    new.transactions.clear();
+    assert!(server.process(&new, false).unwrap().error.is_none());
+    let checkpoint = &server.synced.checkpoints[&new.cuid];
+    assert_eq!(checkpoint.sub_gen, new.sub_gen);
+    assert_eq!(checkpoint.cseq_at_server, 0);
+    assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 7);
+    for state in [
+        DatatypeState::Creating,
+        DatatypeState::Subscribing,
+        DatatypeState::SubscribingOrCreating,
+        DatatypeState::Subscribed,
+        DatatypeState::Unsubscribing,
+    ] {
+        old.state = state;
+        let checkpoints = server.synced.checkpoints.clone();
+        assert!(matches!(
+            server.process(&old, false).unwrap().error,
+            Some(PushPullError::MissingSubscription(_))
+        ));
+        assert_eq!(server.synced.checkpoints, checkpoints);
+    }
+    new.state = DatatypeState::Subscribed;
+    new.checkpoint.sseq = 1;
+    new.transactions = vec![transaction(
+        &new.cuid,
+        1,
+        Operation::new_counter_increase(3),
+    )];
+    assert!(server.process(&new, false).unwrap().error.is_none());
+    assert!(server.process(&new, false).unwrap().error.is_none());
+    assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 10);
+    let progress = server.synced.checkpoints.clone();
+    new.state = state;
+    new.transactions.clear();
+    let retry = server.process(&new, false).unwrap();
+    assert!(retry.error.is_none());
+    assert_eq!(retry.checkpoint.cseq, 1);
+    assert_eq!(server.synced.checkpoints, progress);
+}
+
+#[test]
+fn can_accept_a_delayed_subscription_start_after_unsubscribe_without_a_tombstone() {
+    let attr = new_attribute!(DataType::Counter);
+    let mut server = LocalDatatypeServer::new(&attr);
+    let mut old = PushPullPack::new(&attr, DatatypeState::Creating);
+    assert!(server.process(&old, false).unwrap().error.is_none());
+    let mut new = PushPullPack::new(&attr, DatatypeState::Subscribing);
+    assert!(server.process(&new, false).unwrap().error.is_none());
+    new.state = DatatypeState::Unsubscribing;
+    assert!(server.process(&new, false).unwrap().error.is_none());
+    assert!(server.synced.checkpoints.is_empty());
+    old.state = DatatypeState::Subscribing;
+    assert!(server.process(&old, false).unwrap().error.is_none());
+    assert_eq!(server.synced.checkpoints[&old.cuid].sub_gen, old.sub_gen);
+}
+
+#[test]
+fn can_preserve_the_gc_floor_when_a_new_generation_creates_with_transactions() {
+    let attr = new_attribute!(DataType::Counter);
+    let mut server = LocalDatatypeServer::new(&attr);
+    let mut push = PushPullPack::new(&attr, DatatypeState::Creating);
+    push.transactions = vec![transaction(
+        &push.cuid,
+        1,
+        Operation::new_counter_increase(7),
+    )];
+    assert!(server.process(&push, false).unwrap().error.is_none());
+    push.state = DatatypeState::Subscribed;
+    push.transactions.clear();
+    push.checkpoint = CheckPoint::new(1, 1);
+    push.sseq_gc_safe = 1;
+    assert!(server.process(&push, false).unwrap().error.is_none());
+    let mut peer = PushPullPack::new(&attr, DatatypeState::Subscribing);
+    peer.cuid = Cuid::new();
+    assert!(server.process(&peer, false).unwrap().error.is_none());
+    peer.state = DatatypeState::Subscribed;
+    peer.checkpoint.sseq = 1;
+    peer.transactions = vec![transaction(
+        &peer.cuid,
+        1,
+        Operation::new_counter_increase(2),
+    )];
+    assert!(server.process(&peer, false).unwrap().error.is_none());
+    peer.checkpoint = CheckPoint::new(2, 1);
+    peer.sseq_gc_safe = 2;
+    peer.transactions.clear();
+    assert!(server.process(&peer, false).unwrap().error.is_none());
+    let mut renewed = PushPullPack::new(&attr, DatatypeState::Creating);
+    renewed.checkpoint.sseq = 1;
+    renewed.transactions = vec![transaction(
+        &renewed.cuid,
+        1,
+        Operation::new_counter_increase(3),
+    )];
+    let response = server.process(&renewed, false).unwrap();
+    assert!(response.error.is_none());
+    assert_eq!(response.checkpoint, CheckPoint::new(3, 1));
+    assert_eq!(response.sseq_gc_safe, 1);
+    assert_eq!(response.transactions.len(), 1);
+    assert_eq!(server.synced.checkpoints[&renewed.cuid].sseq_at_client, 1);
+    assert_eq!(
+        server.synced.checkpoints[&renewed.cuid].sseq_gc_for_client,
+        1
+    );
+    assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 12);
+    assert!(server.process(&renewed, false).unwrap().error.is_none());
+    assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 12);
+}

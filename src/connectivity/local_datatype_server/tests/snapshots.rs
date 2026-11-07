@@ -146,7 +146,7 @@ fn can_serve_an_empty_backend_snapshot_before_any_writes() {
     let mut server = LocalDatatypeServer::new(&attr);
     let create = PushPullPack::new(&attr, DatatypeState::Creating);
     assert!(server.process(&create, false).unwrap().error.is_none());
-    let subscribe = PushPullPack::new(&attr, DatatypeState::Subscribing);
+    let subscribe = PushPullPack::with_sub_gen(&attr, DatatypeState::Subscribing, create.sub_gen);
     let pulled = server.process(&subscribe, false).unwrap();
     let snapshot = pulled.snapshot_transaction.unwrap();
     assert_eq!(snapshot.sseq, 0);

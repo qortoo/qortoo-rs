@@ -115,7 +115,26 @@ Registration alone does not create the resource, and creation can succeed withou
 Active logical subscriptions are stored in
 `SyncedState.checkpoints`: each entry pairs accepted client `cseq` with reported applied
 server `sseq`. Readonly and empty subscriptions also have entries; unsubscribe removes the
-entry, clearing both progress boundaries together.
+entry, clearing both progress boundaries together. Each subscription has a `u64` generation
+(`sub_gen`), allocated by a client-wide atomic counter shared by all its datatypes. New
+subscriptions and recovery allocate a larger generation; retries retain it. Datatype
+push/pull exchanges remain independent, with one exchange in flight per datatype.
+A CUID belongs to one running client instance and is not reused after restart.
+
+The backend compares generations within each datatype's active CUID entry. Older requests,
+and newer requests that do not start a subscription, return `MissingSubscription` without
+changing the active subscription. A valid newer `Creating`, `Subscribing`, or
+`SubscribingOrCreating` request replaces it with fresh progress; failed validation or batch
+application retains the old entry. Same-generation retries preserve accepted client sequences
+and GC progress, so accepted transactions are not applied twice. Clients ignore responses
+from retired generations, including errors, before applying data or triggering recovery.
+Recovery discards this client's unaccepted pending work and requests a snapshot; accepted
+server data and other clients' transactions remain intact.
+
+Unsubscribe deletes the active generation along with its progress.
+Consequently, a delayed old `Subscribing` request arriving after unsubscribe can establish a
+subscription again. Server restart also clears generation tracking. Generation comparison
+is not authentication or transport security.
 
 Datatype deletion is unsupported. A direct `Deleting` request to the local backend returns
 `ProtocolViolation("datatype deletion is not supported")` with response state `Disabled`.

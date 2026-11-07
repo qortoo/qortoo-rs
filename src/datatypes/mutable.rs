@@ -34,6 +34,7 @@ pub struct MutableDatatype {
     /// Applied sseq recorded after a successful pull leaves no pending transactions;
     /// reported as sseq_gc_safe in the next push so older buffered writes cannot outlive GC.
     pub(super) sseq_gc_safe: u64,
+    pub(super) sub_gen: u64,
     pub(super) needs_snapshot: bool,
     state: DatatypeState,
     tx_record: TxRecord,
@@ -54,6 +55,7 @@ impl MutableDatatype {
             tx_record: TxRecord::new(state, op_id.clone()),
             checkpoint: CheckPoint::default(),
             sseq_gc_safe: 0,
+            sub_gen: attr.client_common.next_sub_gen(),
             needs_snapshot: false,
             handlers_manager: HandlersManager::new(attr.clone(), handlers),
             effects: Default::default(),
@@ -160,6 +162,7 @@ impl MutableDatatype {
             RecoveryAction::NotifyOnly | RecoveryAction::RetryWithBackOff => {}
             RecoveryAction::RollbackTransaction => self.do_rollback(),
             RecoveryAction::Resubscribe | RecoveryAction::ResubscribeWithBackOff => {
+                self.sub_gen = self.attr.client_common.next_sub_gen();
                 self.checkpoint = CheckPoint::default();
                 self.sseq_gc_safe = 0;
                 self.needs_snapshot = true;
@@ -257,6 +260,35 @@ mod tests_mutable_datatype {
         operations::{Operation, transaction::Transaction},
         types::uid::Cuid,
     };
+
+    #[test]
+    fn can_share_generations_across_datatypes_and_recovery() {
+        use std::sync::Arc;
+
+        use crate::{datatypes::common::Attribute, errors::datatypes::RecoveryAction};
+
+        let first_attr = new_attribute!(DataType::Counter);
+        let second_attr = Arc::new(Attribute::new(
+            "another".into(),
+            DataType::Counter,
+            first_attr.client_common.clone(),
+            Default::default(),
+            false,
+        ));
+        let mut first =
+            super::MutableDatatype::new(first_attr.clone(), Default::default(), Default::default());
+        let first_generation = first.sub_gen;
+        let second =
+            super::MutableDatatype::new(second_attr, Default::default(), Default::default());
+        assert!(first_generation < second.sub_gen);
+        first.apply_action(RecoveryAction::RetryWithBackOff);
+        assert_eq!(first.sub_gen, first_generation);
+        first.apply_action(RecoveryAction::Resubscribe);
+        assert!(second.sub_gen < first.sub_gen);
+        let replacement =
+            super::MutableDatatype::new(first_attr, Default::default(), Default::default());
+        assert!(first.sub_gen < replacement.sub_gen);
+    }
 
     #[test]
     #[instrument]

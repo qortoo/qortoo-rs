@@ -19,6 +19,7 @@ use crate::{
 pub struct PushPullPack {
     pub collection: ArcStr,
     pub cuid: Cuid,
+    pub sub_gen: u64,
     pub duid: Duid,
     pub key: ArcStr,
     pub r#type: DataType,
@@ -34,10 +35,16 @@ pub struct PushPullPack {
 }
 
 impl PushPullPack {
+    /// Creates a pack with a new subscription generation. Reuse it for subsequent requests.
     pub fn new(attr: &Attribute, state: DatatypeState) -> Self {
+        Self::with_sub_gen(attr, state, attr.client_common.next_sub_gen())
+    }
+
+    pub fn with_sub_gen(attr: &Attribute, state: DatatypeState, sub_gen: u64) -> Self {
         Self {
             collection: attr.client_common.collection.clone(),
             cuid: attr.client_common.cuid.clone(),
+            sub_gen,
             duid: attr.get_duid(),
             key: attr.key.clone(),
             r#type: attr.r#type.to_owned(),
@@ -81,6 +88,7 @@ impl PushPullPack {
         PushPullPack {
             collection: self.collection.clone(),
             cuid: self.cuid.clone(),
+            sub_gen: self.sub_gen,
             duid: self.duid.clone(),
             key: self.key.clone(),
             r#type: self.r#type,

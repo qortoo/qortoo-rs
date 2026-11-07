@@ -515,7 +515,11 @@ fn can_exclude_registration_only_handles_from_applied_progress() {
     let server = f.server();
     assert_eq!(server.read().synced.checkpoints.len(), 1);
     assert_eq!(server.read().synced.sseq_history_prunable(), 1);
-    let unsubscribe = PushPullPack::new(&waiting.get_attr(), DatatypeState::Unsubscribing);
+    let unsubscribe = PushPullPack::with_sub_gen(
+        &waiting.get_attr(),
+        DatatypeState::Unsubscribing,
+        waiting.get_attr().client_common.next_sub_gen(),
+    );
     assert!(
         server
             .write()
