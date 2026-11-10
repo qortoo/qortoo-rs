@@ -205,8 +205,8 @@ just waiting for the timer.
 | A timed retry fires on its own once the backoff delay elapses | `can_auto_retry_after_backoff_timeout` in `src/datatypes/event_loop.rs` |
 | A successful manual retry clears backoff so no extra timed retry follows | `can_block_extra_retry_after_successful_manual_retry` in `src/datatypes/event_loop.rs` |
 | A disabling failure stops the loop and nothing retries afterward | `can_handle_pause_sync_error_without_auto_retry_loop` in `src/datatypes/event_loop.rs` |
-| A realtime push notifies the other clients subscribed to the same datatype | `can_notify_other_clients_after_realtime_push` in `src/connectivity/local_connectivity.rs` |
-| Manual and realtime backends differ in when an exchange actually happens | `can_compare_manual_and_realtime_local_connectivity` in `src/connectivity/local_connectivity.rs` |
+| A realtime push notifies the other clients subscribed to the same datatype | `can_notify_other_clients_after_realtime_push` in `src/connectivity/local_connectivity/tests.rs` |
+| Manual and realtime backends differ in when an exchange actually happens | `can_compare_manual_and_realtime_local_connectivity` in `src/connectivity/local_connectivity/tests.rs` |
 | Unsubscribing leaves buffered work to be synchronized rather than discarding it | `can_unsubscribe_with_pending_transactions` in `src/datatypes/datatype.rs` |
 | Unsubscribing resolves under a realtime backend without an explicit `sync()` | `can_auto_sync_unsubscribe_in_realtime` in `src/datatypes/datatype.rs` |
 | Unsubscribing resolves under a manual backend once `sync()` is called | `can_sync_unsubscribe_to_disabled` in `src/datatypes/datatype.rs` |

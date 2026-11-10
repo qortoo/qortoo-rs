@@ -51,23 +51,16 @@ macro_rules! datatype_server_instrument {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct SubscriptionCheckpoint {
-    pub(super) sub_gen: u64,
+pub(super) struct Subscription {
     pub(super) sseq_at_client: u64,
     pub(super) cseq_at_server: u64,
     // Includes the bootstrap floor, not just the client's reported acknowledgement.
     pub(super) sseq_gc_for_client: u64,
 }
 
-impl SubscriptionCheckpoint {
-    pub(super) fn new(
-        sub_gen: u64,
-        sseq_at_client: u64,
-        cseq_at_server: u64,
-        sseq_gc_for_client: u64,
-    ) -> Self {
+impl Subscription {
+    pub(super) fn new(sseq_at_client: u64, cseq_at_server: u64, sseq_gc_for_client: u64) -> Self {
         Self {
-            sub_gen,
             sseq_at_client,
             cseq_at_server,
             sseq_gc_for_client,
@@ -86,7 +79,7 @@ struct SyncedState {
     lamport: u64,
     sseq_at_server: u64,
     // Active subscriptions: accepted client cseq and reported applied server sseq.
-    checkpoints: HashMap<Cuid, SubscriptionCheckpoint>,
+    checkpoints: HashMap<Cuid, Subscription>,
     history: VecDeque<Arc<Transaction>>,
     sseq_history_pruned: u64,
     sseq_gc_safe: u64,
@@ -115,12 +108,10 @@ impl SyncedState {
         &mut self,
         pushed: &PushPullPack,
         initial_sseq: u64,
-    ) -> &mut SubscriptionCheckpoint {
+    ) -> &mut Subscription {
         self.checkpoints
             .entry(pushed.cuid.clone())
-            .or_insert_with(|| {
-                SubscriptionCheckpoint::new(pushed.sub_gen, initial_sseq, 0, self.sseq_gc_safe)
-            })
+            .or_insert_with(|| Subscription::new(initial_sseq, 0, self.sseq_gc_safe))
     }
 
     fn push_transactions(&mut self, pushed: &PushPullPack) -> Result<(u64, bool), PushPullError> {
@@ -216,6 +207,7 @@ pub struct LocalDatatypeServer {
     // Nil until a creation request succeeds.
     duid: Duid,
     synced: SyncedState,
+    pub(super) max_sub_gens: HashMap<Cuid, u64>,
 }
 
 impl Display for LocalDatatypeServer {
@@ -232,8 +224,9 @@ impl Display for LocalDatatypeServer {
 }
 
 impl LocalDatatypeServer {
-    pub fn new(attr: &Attribute) -> Self {
+    pub(super) fn new(attr: &Attribute, max_sub_gens: HashMap<Cuid, u64>) -> Self {
         Self {
+            max_sub_gens,
             wired_map: HashMap::new(),
             sender_map: HashMap::new(),
             synced: SyncedState::new(attr.r#type),
@@ -385,34 +378,60 @@ impl LocalDatatypeServer {
         }
     }
 
-    /// Dispatches one pushed pack to the state-specific processor.
-    pub fn process(
-        &mut self,
-        pushed: &PushPullPack,
-        is_realtime: bool,
-    ) -> Result<PushPullPack, ConnectivityError> {
-        let mut pulled = pushed.get_pulled_stub();
-        let existing = self.synced.checkpoints.get(&pushed.cuid);
+    /// Returns an immediate response when the subscription generation cannot be processed.
+    fn pre_process(&self, pushed: &PushPullPack, max_sub_gen: Option<u64>) -> Option<PushPullPack> {
+        let active = self.synced.checkpoints.contains_key(&pushed.cuid);
+        if !active && max_sub_gen.is_some_and(|generation| pushed.sub_gen <= generation) {
+            let mut pulled = pushed.get_pulled_stub();
+            pulled.sseq_gc_safe = self.synced.sseq_gc_safe;
+            return Some(if pushed.state == DatatypeState::Unsubscribing {
+                pulled.state = DatatypeState::Disabled;
+                pulled
+            } else {
+                pulled.with_error(PushPullError::MissingSubscription(
+                    "retired subscription generation".into(),
+                ))
+            });
+        }
         let starts_subscription = matches!(
             pushed.state,
             DatatypeState::Creating
                 | DatatypeState::Subscribing
                 | DatatypeState::SubscribingOrCreating
         );
-        if existing.is_some_and(|checkpoint| {
-            pushed.sub_gen < checkpoint.sub_gen
-                || (pushed.sub_gen > checkpoint.sub_gen && !starts_subscription)
-        }) {
-            return Ok(pulled.with_error(PushPullError::MissingSubscription(
-                "subscription generation mismatch".into(),
-            )));
+        if active
+            && max_sub_gen.is_some_and(|generation| {
+                pushed.sub_gen < generation || (pushed.sub_gen > generation && !starts_subscription)
+            })
+        {
+            return Some(
+                pushed
+                    .get_pulled_stub()
+                    .with_error(PushPullError::MissingSubscription(
+                        "subscription generation mismatch".into(),
+                    )),
+            );
+        }
+        None
+    }
+
+    /// Dispatches one pushed pack to the state-specific processor.
+    pub fn process(
+        &mut self,
+        pushed: &PushPullPack,
+        is_realtime: bool,
+    ) -> Result<PushPullPack, ConnectivityError> {
+        let max_sub_gen = self.max_sub_gens.get(&pushed.cuid).copied();
+        if let Some(pulled) = self.pre_process(pushed, max_sub_gen) {
+            return Ok(pulled);
         }
         // Stage a fresh generation; failed validation or batch application must retain the old progress.
-        let previous = if existing.is_some_and(|checkpoint| pushed.sub_gen > checkpoint.sub_gen) {
+        let previous = if max_sub_gen.is_some_and(|generation| pushed.sub_gen > generation) {
             self.synced.checkpoints.remove(&pushed.cuid)
         } else {
             None
         };
+        let mut pulled = pushed.get_pulled_stub();
         let result = match pushed.state {
             DatatypeState::Creating => self.process_creating(pushed, &mut pulled),
             DatatypeState::Subscribing => self.process_subscribing(pushed, &mut pulled),
@@ -426,6 +445,24 @@ impl LocalDatatypeServer {
             DatatypeState::Deleting => self.process_deleting(),
             DatatypeState::Disabled => self.process_disabled(),
         };
+        Ok(self.post_process(pushed, pulled, result, previous, max_sub_gen))
+    }
+
+    fn post_process(
+        &mut self,
+        pushed: &PushPullPack,
+        mut pulled: PushPullPack,
+        result: Result<(), PushPullError>,
+        previous: Option<Subscription>,
+        max_sub_gen: Option<u64>,
+    ) -> PushPullPack {
+        // Unsubscribe closes its generation even when the final batch is rejected.
+        if (result.is_ok() || pushed.state == DatatypeState::Unsubscribing)
+            && max_sub_gen.is_none_or(|generation| pushed.sub_gen > generation)
+        {
+            self.max_sub_gens
+                .insert(pushed.cuid.clone(), pushed.sub_gen);
+        }
         if let Err(error) = result {
             if let Some(previous) = previous {
                 self.synced
@@ -448,7 +485,7 @@ impl LocalDatatypeServer {
             }
         }
         pulled.sseq_gc_safe = self.synced.sseq_gc_safe;
-        Ok(pulled)
+        pulled
     }
 
     datatype_server_instrument! {
@@ -542,16 +579,12 @@ impl LocalDatatypeServer {
         pulled: &mut PushPullPack,
         is_realtime: bool,
     ) -> Result<(), PushPullError> {
-        // If the client's datatype is not subscribed on this server, skip push processing to avoid
-        // polluting checkpoints, and return Disabled directly since that is the desired state.
-        if !self.synced.checkpoints.contains_key(&pushed.cuid) {
+        let result = if self.synced.checkpoints.contains_key(&pushed.cuid) {
+            self.process_push_pull(pushed, pulled, DatatypeState::Disabled, is_realtime)
+        } else {
             pulled.state = DatatypeState::Disabled;
-            self.wired_map.remove(&pushed.cuid);
-            self.sender_map.remove(&pushed.cuid);
-            return Ok(());
-        }
-
-        let result = self.process_push_pull(pushed, pulled, DatatypeState::Disabled, is_realtime);
+            Ok(())
+        };
 
         // Always clean up client subscription regardless of error: the client will be Disabled
         // either way, and leaving stale entries would cause infinite unsubscribe retry loops.
@@ -582,7 +615,6 @@ impl LocalDatatypeServer {
         pushed: &PushPullPack,
         pulled: &mut PushPullPack,
     ) -> Result<(), PushPullError> {
-        // shortcut: Unsubscribe forgets generations; retain tombstones if delayed starts must be fenced.
         self.validate_subscription(pushed)?;
         let initial = self.synced.sseq_history_prunable();
         pulled.duid = self.duid.clone();

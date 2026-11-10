@@ -121,20 +121,36 @@ subscriptions and recovery allocate a larger generation; retries retain it. Data
 push/pull exchanges remain independent, with one exchange in flight per datatype.
 A CUID belongs to one running client instance and is not reused after restart.
 
-The backend compares generations within each datatype's active CUID entry. Older requests,
+Each `LocalDatatypeServer` owns a `HashMap<Cuid, u64>` of maximum subscription generations
+for its resource, including active and ended subscriptions. The existing server lock protects
+this map; generation lookup and recording take no additional lock. Datatype servers decide
+when to reject requests or record a generation. Checkpoint presence determines whether a subscription is active. Older requests,
 and newer requests that do not start a subscription, return `MissingSubscription` without
 changing the active subscription. A valid newer `Creating`, `Subscribing`, or
 `SubscribingOrCreating` request replaces it with fresh progress; failed validation or batch
-application retains the old entry. Same-generation retries preserve accepted client sequences
-and GC progress, so accepted transactions are not applied twice. Clients ignore responses
+application retains both the old progress and maximum generation. Same-generation retries
+preserve accepted client sequences and GC progress, so accepted transactions are not applied twice. Clients ignore responses
 from retired generations, including errors, before applying data or triggering recovery.
 Recovery discards this client's unaccepted pending work and requests a snapshot; accepted
 server data and other clients' transactions remain intact.
 
-Unsubscribe deletes the active generation along with its progress.
-Consequently, a delayed old `Subscribing` request arriving after unsubscribe can establish a
-subscription again. Server restart also clears generation tracking. Generation comparison
-is not authentication or transport security.
+Unsubscribe removes active checkpoint, client sequence, and GC progress while keeping the
+maximum generation in the client record, including when its final batch fails. With no active
+subscription, requests at or below that bound return `MissingSubscription`; repeated unsubscribe instead succeeds
+with `Disabled` without accepting transactions or removing a newly registered handle.
+A newer valid start can establish fresh progress. An older unsubscribe cannot end a newer
+active subscription.
+
+These maximum generations survive removal and recreation of the resource within the same
+`LocalConnectivity`. The live server, CRDT, and history are released when the last registration
+and subscription end. At removal, the server's generation map moves into `LocalConnectivity`;
+registration moves it back into the replacement server. Active servers and retained maps
+share one registry lock, so removal and restoration are atomic with respect to registration
+and request processing. Requests for an absent resource consult its retained map.
+These records retain one generation upper bound per resource/CUID and accumulate
+without expiry for the backend's lifetime. A new backend clears them:
+there is no durable restart fence. Generation comparison is not authentication or transport
+security.
 
 Datatype deletion is unsupported. A direct `Deleting` request to the local backend returns
 `ProtocolViolation("datatype deletion is not supported")` with response state `Disabled`.
@@ -169,7 +185,8 @@ logical subscribers, including the requesting client and readonly subscribers. W
 registration alone does not enter this calculation. A new subscription starts at the existing
 history boundary; resending its snapshot preserves its previous applied boundary. The history
 boundary is not transmitted to clients. Unsubscribe processes the final push, removes the
-subscription and its sequence metadata, and recomputes the boundary over the remaining subscribers.
+subscription and its active sequence metadata, retains its maximum subscription generation, and recomputes
+the boundary over the remaining subscribers.
 `LocalDatatypeServer::process` creates the response, converts state-specific errors into
 Disabled responses, and sets the server-issued GC boundary. Private state-specific processors update
 the shared response and return `PushPullError` on rejection. Creation, subscription, and
@@ -315,10 +332,11 @@ free of conditional compilation while still keeping the capability out of produc
 | Refusals: unsubscribed pusher, type mismatch, disabled client, readonly with work | `can_reject_subscribed_push_from_unsubscribed_client`, `can_reject_type_mismatch_in_subscribed_push`, `can_reject_push_from_disabled_client`, `can_reject_readonly_unsubscribing_with_transactions` in `src/connectivity/local_datatype_server.rs` |
 | Unsubscribing a client that was never subscribed is not an error | `can_unsubscribe_not_subscribed_client_gracefully` in `src/connectivity/local_datatype_server.rs` |
 | Backend snapshots survive removal of client registrations | `can_subscribe_from_backend_state_after_clients_are_removed` in `src/connectivity/local_datatype_server.rs` |
-| A creator can unsubscribe without changing snapshot ownership | `can_keep_serving_snapshots_after_the_creator_unsubscribes` in `src/connectivity/local_connectivity.rs` |
-| Per-resource state is discarded when the last client leaves | `can_remove_server_when_last_client_unsubscribes` in `src/connectivity/local_connectivity.rs` |
-| Realtime and manual differ in when work moves | `can_compare_manual_and_realtime_local_connectivity` in `src/connectivity/local_connectivity.rs` |
-| A realtime push notifies the other clients | `can_notify_other_clients_after_realtime_push` in `src/connectivity/local_connectivity.rs` |
+| A creator can unsubscribe without changing snapshot ownership | `can_keep_serving_snapshots_after_the_creator_unsubscribes` in `src/connectivity/local_connectivity/tests.rs` |
+| Live resource state is discarded when the last client leaves | `can_remove_server_when_last_client_unsubscribes` in `src/connectivity/local_connectivity/tests.rs` |
+| Retired generations fence delayed starts across resource recreation | `can_preserve_client_generation_bounds_across_resource_recreation` in `src/connectivity/local_connectivity/tests.rs`, `can_fence_retired_generations_and_accept_a_fresh_subscription` in `src/connectivity/local_datatype_server/tests/protocol.rs` |
+| Realtime and manual differ in when work moves | `can_compare_manual_and_realtime_local_connectivity` in `src/connectivity/local_connectivity/tests.rs` |
+| A realtime push notifies the other clients | `can_notify_other_clients_after_realtime_push` in `src/connectivity/local_connectivity/tests.rs` |
 | The default backend's answers, including its edge cases | `can_deal_with_edge_cases_in_null_connectivity` in `src/connectivity/null_connectivity.rs` |
 
 ## Related Concepts

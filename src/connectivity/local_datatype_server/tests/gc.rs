@@ -91,7 +91,7 @@ fn can_preserve_the_bootstrap_floor_without_acknowledging_a_lost_snapshot() {
 #[test]
 fn can_include_readonly_gc_reports_and_ignore_delayed_confirmations() {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let mut writer = PushPullPack::new(&attr, DatatypeState::Creating);
     writer.transactions = (1..=3)
         .map(|seq| transaction(&writer.cuid, seq, Operation::new_counter_increase(1)))
@@ -161,7 +161,7 @@ fn can_reset_gc_confirmation_before_automatic_resubscription() {
 #[case::invalid_batch(false)]
 fn can_reject_gc_reports_without_publishing_progress(#[case] above_checkpoint: bool) {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let mut pushed = PushPullPack::new(&attr, DatatypeState::Creating);
     pushed.transactions = vec![transaction(
         &pushed.cuid,

@@ -159,7 +159,7 @@ fn can_restart_client_sequences_after_unsubscribe_and_resubscribe() {
 #[test]
 fn can_clear_client_progress_when_unsubscribe_rejects_pending_work() {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let mut pushed = PushPullPack::new(&attr, DatatypeState::Creating);
     pushed.transactions = vec![transaction(
         &pushed.cuid,
@@ -177,6 +177,10 @@ fn can_clear_client_progress_when_unsubscribe_rejects_pending_work() {
     let pulled = server.process(&pushed, false).unwrap();
     assert_eq!(pulled.error, Some(PushPullError::ReadonlyViolation));
     assert!(!server.synced.checkpoints.contains_key(&pushed.cuid));
+    assert_eq!(
+        server.max_sub_gens.get(&pushed.cuid).copied(),
+        Some(pushed.sub_gen)
+    );
     assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 7);
     assert_eq!(server.synced.sseq_at_server, 1);
     assert_eq!(server.synced.history.len(), 1);
@@ -185,6 +189,12 @@ fn can_clear_client_progress_when_unsubscribe_rejects_pending_work() {
     assert_eq!(repeated.state, DatatypeState::Disabled);
     assert!(server.synced.checkpoints.is_empty());
     assert_eq!(server.synced.sseq_at_server, 1);
+    pushed.state = DatatypeState::Creating;
+    assert!(matches!(
+        server.process(&pushed, false).unwrap().error,
+        Some(PushPullError::MissingSubscription(_))
+    ));
+    assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 7);
 }
 
 #[test]

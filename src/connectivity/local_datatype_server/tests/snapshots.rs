@@ -143,7 +143,7 @@ fn can_keep_a_failed_snapshot_application_unacknowledged() {
 #[test]
 fn can_serve_an_empty_backend_snapshot_before_any_writes() {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let create = PushPullPack::new(&attr, DatatypeState::Creating);
     assert!(server.process(&create, false).unwrap().error.is_none());
     let subscribe = PushPullPack::with_sub_gen(&attr, DatatypeState::Subscribing, create.sub_gen);
@@ -166,7 +166,7 @@ fn can_serve_a_snapshot_without_accessing_client_state(#[case] keep_busy_handle:
         DatatypeState::Subscribed,
         WiredInterceptor::new_arc(),
     );
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let (sender, _) = crossbeam_channel::unbounded();
     server.insert_client_item(wired.clone(), sender);
     let mut create = PushPullPack::new(&attr, DatatypeState::Creating);

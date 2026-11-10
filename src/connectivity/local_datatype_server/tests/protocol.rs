@@ -14,7 +14,7 @@ fn can_reject_unsupported_deletion_without_changing_backend_state(#[case] create
         DatatypeState::Creating,
         WiredInterceptor::new_arc(),
     );
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let (sender, receiver) = crossbeam_channel::unbounded();
     server.insert_client_item(wired.clone(), sender);
     let mut pushed = PushPullPack::new(&attr, DatatypeState::Creating);
@@ -77,7 +77,7 @@ fn can_reject_unsupported_deletion_without_changing_backend_state(#[case] create
 #[case::backward_sequence(&[2, 3, 2, 4])]
 fn can_reject_nonsequential_new_transactions_without_publishing_batch(#[case] sequences: &[u64]) {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let mut pushed = PushPullPack::new(&attr, DatatypeState::Creating);
     let accepted = transaction(&pushed.cuid, 1, Operation::new_counter_increase(7));
     pushed.transactions = vec![accepted.clone()];
@@ -133,7 +133,7 @@ fn can_reject_nonsequential_new_transactions_without_publishing_batch(#[case] se
 #[case(DataType::Variable)]
 fn can_reject_a_late_batch_failure_without_advancing_backend_state(#[case] data_type: DataType) {
     let attr = new_attribute!(data_type);
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let operation = |value: i64| match data_type {
         DataType::Counter => Operation::new_counter_increase(value),
         DataType::Variable => {
@@ -204,7 +204,7 @@ fn can_keep_a_failed_creation_unpublished(
     #[case] state: DatatypeState,
 ) {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let mut pushed = PushPullPack::new(&attr, state);
     let mut tx = (*transaction(&pushed.cuid, 1, Operation::new_counter_increase(7))).clone();
     match mutation {
@@ -758,7 +758,7 @@ fn can_reject_push_from_disabled_client() {
 #[test]
 fn can_fence_previous_subscription_and_retry_without_reapplying_transactions() {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let mut push = PushPullPack::new(&attr, DatatypeState::Creating);
     push.transactions = vec![transaction(
         &push.cuid,
@@ -802,7 +802,7 @@ fn can_fence_previous_subscription_and_retry_without_reapplying_transactions() {
 #[case::subscribe_or_create(DatatypeState::SubscribingOrCreating)]
 fn can_replace_only_with_a_valid_new_subscription_generation(#[case] state: DatatypeState) {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let mut old = PushPullPack::new(&attr, DatatypeState::Creating);
     old.transactions = vec![transaction(
         &old.cuid,
@@ -822,6 +822,10 @@ fn can_replace_only_with_a_valid_new_subscription_generation(#[case] state: Data
         Some(PushPullError::MissingSubscription(_))
     ));
     assert_eq!(server.synced.checkpoints, previous);
+    assert_eq!(
+        server.max_sub_gens.get(&old.cuid).copied(),
+        Some(old.sub_gen)
+    );
 
     new.state = state;
     new.checkpoint.sseq = 2;
@@ -830,6 +834,10 @@ fn can_replace_only_with_a_valid_new_subscription_generation(#[case] state: Data
         Some(PushPullError::ProtocolViolation(_))
     ));
     assert_eq!(server.synced.checkpoints, previous);
+    assert_eq!(
+        server.max_sub_gens.get(&old.cuid).copied(),
+        Some(old.sub_gen)
+    );
     new.checkpoint = CheckPoint::new(
         if state == DatatypeState::Subscribing {
             0
@@ -848,12 +856,19 @@ fn can_replace_only_with_a_valid_new_subscription_generation(#[case] state: Data
         Some(PushPullError::ProtocolViolation(_))
     ));
     assert_eq!(server.synced.checkpoints, previous);
+    assert_eq!(
+        server.max_sub_gens.get(&old.cuid).copied(),
+        Some(old.sub_gen)
+    );
     assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 7);
 
     new.transactions.clear();
     assert!(server.process(&new, false).unwrap().error.is_none());
     let checkpoint = &server.synced.checkpoints[&new.cuid];
-    assert_eq!(checkpoint.sub_gen, new.sub_gen);
+    assert_eq!(
+        server.max_sub_gens.get(&new.cuid).copied(),
+        Some(new.sub_gen)
+    );
     assert_eq!(checkpoint.cseq_at_server, 0);
     assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 7);
     for state in [
@@ -891,25 +906,68 @@ fn can_replace_only_with_a_valid_new_subscription_generation(#[case] state: Data
 }
 
 #[test]
-fn can_accept_a_delayed_subscription_start_after_unsubscribe_without_a_tombstone() {
+fn can_fence_retired_generations_and_accept_a_fresh_subscription() {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let mut old = PushPullPack::new(&attr, DatatypeState::Creating);
     assert!(server.process(&old, false).unwrap().error.is_none());
     let mut new = PushPullPack::new(&attr, DatatypeState::Subscribing);
     assert!(server.process(&new, false).unwrap().error.is_none());
     new.state = DatatypeState::Unsubscribing;
     assert!(server.process(&new, false).unwrap().error.is_none());
+    let crdt = server.synced.crdt.serialize();
+    let head = server.synced.sseq_at_server;
+    let gc = server.synced.sseq_gc_safe;
+    for generation in [old.sub_gen, new.sub_gen] {
+        old.sub_gen = generation;
+        old.transactions = vec![transaction(
+            &old.cuid,
+            1,
+            Operation::new_counter_increase(9),
+        )];
+        for state in [
+            DatatypeState::Creating,
+            DatatypeState::Subscribing,
+            DatatypeState::SubscribingOrCreating,
+            DatatypeState::Subscribed,
+        ] {
+            old.state = state;
+            assert!(matches!(
+                server.process(&old, false).unwrap().error,
+                Some(PushPullError::MissingSubscription(_))
+            ));
+        }
+        old.state = DatatypeState::Unsubscribing;
+        let response = server.process(&old, false).unwrap();
+        assert!(response.error.is_none());
+        assert_eq!(response.state, DatatypeState::Disabled);
+    }
     assert!(server.synced.checkpoints.is_empty());
-    old.state = DatatypeState::Subscribing;
-    assert!(server.process(&old, false).unwrap().error.is_none());
-    assert_eq!(server.synced.checkpoints[&old.cuid].sub_gen, old.sub_gen);
+    assert_eq!(server.synced.crdt.serialize(), crdt);
+    assert_eq!(server.synced.sseq_at_server, head);
+    assert_eq!(server.synced.sseq_gc_safe, gc);
+    assert!(server.synced.history.is_empty());
+    let fresh = PushPullPack::new(&attr, DatatypeState::Subscribing);
+    assert!(server.process(&fresh, false).unwrap().error.is_none());
+    assert_eq!(
+        server.max_sub_gens.get(&fresh.cuid).copied(),
+        Some(fresh.sub_gen)
+    );
+    old.state = DatatypeState::Unsubscribing;
+    assert!(matches!(
+        server.process(&old, false).unwrap().error,
+        Some(PushPullError::MissingSubscription(_))
+    ));
+    assert_eq!(
+        server.max_sub_gens.get(&fresh.cuid).copied(),
+        Some(fresh.sub_gen)
+    );
 }
 
 #[test]
 fn can_preserve_the_gc_floor_when_a_new_generation_creates_with_transactions() {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let mut push = PushPullPack::new(&attr, DatatypeState::Creating);
     push.transactions = vec![transaction(
         &push.cuid,

@@ -7,7 +7,7 @@ fn sseqs<'a>(txs: impl IntoIterator<Item = &'a Arc<Transaction>>) -> Vec<u64> {
 #[test]
 fn can_retain_history_for_the_slowest_of_three_subscribers_until_unsubscribe() {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let mut writer = PushPullPack::new(&attr, DatatypeState::Creating);
     writer.transactions = (1..=100)
         .map(|cseq| transaction(&writer.cuid, cseq, Operation::new_counter_increase(1)))
@@ -57,7 +57,7 @@ fn can_retain_history_for_the_slowest_of_three_subscribers_until_unsubscribe() {
 #[test]
 fn can_prune_acknowledged_history_without_invalidating_in_flight_pulls() {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let mut writer = PushPullPack::new(&attr, DatatypeState::Creating);
     writer.transactions = (1..=4)
         .map(|cseq| transaction(&writer.cuid, cseq, Operation::new_counter_increase(1)))
@@ -111,7 +111,7 @@ fn can_prune_acknowledged_history_without_invalidating_in_flight_pulls() {
 #[case::unsubscribing(DatatypeState::Unsubscribing)]
 fn can_reject_pruned_progress_before_accepting_new_transactions(#[case] state: DatatypeState) {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let mut pushed = PushPullPack::new(&attr, DatatypeState::Creating);
     let accepted = transaction(&pushed.cuid, 1, Operation::new_counter_increase(7));
     pushed.transactions = vec![accepted.clone()];
@@ -150,7 +150,7 @@ fn can_reject_pruned_progress_before_accepting_new_transactions(#[case] state: D
 #[test]
 fn can_deduplicate_retransmissions_at_the_pruned_boundary() {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let mut pushed = PushPullPack::new(&attr, DatatypeState::Creating);
     let accepted = transaction(&pushed.cuid, 1, Operation::new_counter_increase(7));
     pushed.transactions = vec![accepted.clone()];
@@ -184,7 +184,7 @@ fn can_deduplicate_retransmissions_at_the_pruned_boundary() {
 #[test]
 fn can_defer_pruning_after_failed_unsubscribe_and_preserve_a_delayed_pull() {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let mut writer = PushPullPack::new(&attr, DatatypeState::Creating);
     writer.transactions = (1..=2)
         .map(|cseq| transaction(&writer.cuid, cseq, Operation::new_counter_increase(1)))
@@ -226,7 +226,7 @@ fn can_defer_pruning_after_failed_unsubscribe_and_preserve_a_delayed_pull() {
 #[test]
 fn can_prune_to_the_head_after_the_last_unsubscribe() {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let mut pushed = PushPullPack::new(&attr, DatatypeState::Creating);
     pushed.transactions = vec![transaction(
         &pushed.cuid,
@@ -300,7 +300,7 @@ fn can_disable_a_client_and_discard_pending_transactions_when_history_is_pruned(
 #[test]
 fn can_track_readonly_acknowledgements_without_advancing_on_snapshot_delivery() {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let mut writer = PushPullPack::new(&attr, DatatypeState::Creating);
     writer.transactions = vec![transaction(
         &writer.cuid,
@@ -384,7 +384,7 @@ enum InvalidPushKind {
 #[case::failed_batch(InvalidPushKind::FailedBatch)]
 fn can_reject_invalid_pushes_without_advancing_applied_progress(#[case] kind: InvalidPushKind) {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let mut writer = PushPullPack::new(&attr, DatatypeState::Creating);
     writer.transactions = vec![transaction(
         &writer.cuid,
@@ -452,7 +452,7 @@ fn can_report_a_consistent_error_for_a_checkpoint_beyond_the_server_head(
     #[case] created: bool,
 ) {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let mut pushed = PushPullPack::new(&attr, DatatypeState::Creating);
     if created {
         assert!(server.process(&pushed, false).unwrap().error.is_none());
@@ -473,7 +473,7 @@ fn can_report_a_consistent_error_for_a_checkpoint_beyond_the_server_head(
 #[test]
 fn can_acknowledge_an_existing_boundary_without_a_prior_response() {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let mut writer = PushPullPack::new(&attr, DatatypeState::Creating);
     writer.transactions = vec![transaction(
         &writer.cuid,
