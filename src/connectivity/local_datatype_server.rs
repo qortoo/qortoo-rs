@@ -98,6 +98,18 @@ impl SyncedState {
         }
     }
 
+    fn has_active_subscription(&self, cuid: &Cuid) -> bool {
+        self.checkpoints.contains_key(cuid)
+    }
+
+    fn is_ahead_of_server(&self, sseq: u64) -> bool {
+        sseq > self.sseq_at_server
+    }
+
+    fn requires_pruned_history(&self, sseq: u64) -> bool {
+        sseq < self.sseq_history_pruned
+    }
+
     fn cseq_at_server(&self, cuid: &Cuid) -> u64 {
         self.checkpoints
             .get(cuid)
@@ -268,7 +280,7 @@ impl LocalDatatypeServer {
 
     fn validate_progress(&self, pushed: &PushPullPack) -> Result<(), PushPullError> {
         self.validate_gc_ack(pushed)?;
-        if !self.synced.checkpoints.contains_key(&pushed.cuid) {
+        if !self.synced.has_active_subscription(&pushed.cuid) {
             return Err(PushPullError::MissingSubscription(format!(
                 "cuid '{}' has no active datatype subscription on this server",
                 pushed.cuid
@@ -279,12 +291,12 @@ impl LocalDatatypeServer {
                 ERR_INVALID_IDENTITY.into(),
             ));
         }
-        if pushed.checkpoint.sseq > self.synced.sseq_at_server {
+        if self.synced.is_ahead_of_server(pushed.checkpoint.sseq) {
             return Err(PushPullError::ProtocolViolation(
                 ERR_INVALID_CHECKPOINT.into(),
             ));
         }
-        if pushed.checkpoint.sseq < self.synced.sseq_history_pruned {
+        if self.synced.requires_pruned_history(pushed.checkpoint.sseq) {
             return Err(PushPullError::ProtocolViolation(ERR_HISTORY_PRUNED.into()));
         }
         Ok(())
@@ -292,24 +304,28 @@ impl LocalDatatypeServer {
 
     fn validate_creation(&self, pushed: &PushPullPack) -> Result<(), PushPullError> {
         self.validate_gc_ack(pushed)?;
-        // If already created, an error should occur,
-        // but if the DUID is the same, it is considered a duplicate transmission case and is allowed.
         if self.is_created() && self.duid != pushed.duid {
             return Err(PushPullError::CreateFailed(ERR_ALREADY_EXISTS.into()));
+        }
+        // Existing resources require a snapshot before a new generation can write.
+        if self.is_created() && !self.synced.has_active_subscription(&pushed.cuid) {
+            return Err(PushPullError::MissingSubscription(
+                "creation retry requires an active subscription generation".into(),
+            ));
         }
         if pushed.duid.is_nil() || self.r#type != pushed.r#type {
             return Err(PushPullError::ProtocolViolation(
                 ERR_INVALID_CREATION.into(),
             ));
         }
-        if pushed.checkpoint.sseq > self.synced.sseq_at_server {
+        if self.synced.is_ahead_of_server(pushed.checkpoint.sseq) {
             return Err(PushPullError::ProtocolViolation(
                 ERR_INVALID_CHECKPOINT.into(),
             ));
         }
-        if self.synced.checkpoints.contains_key(&pushed.cuid) {
+        if self.synced.has_active_subscription(&pushed.cuid) {
             self.validate_progress(pushed)?;
-        } else if pushed.checkpoint.sseq < self.synced.sseq_history_pruned {
+        } else if self.synced.requires_pruned_history(pushed.checkpoint.sseq) {
             return Err(PushPullError::ProtocolViolation(ERR_HISTORY_PRUNED.into()));
         }
         if pushed.is_readonly {
@@ -341,12 +357,12 @@ impl LocalDatatypeServer {
             ));
         }
 
-        if pushed.checkpoint.sseq > self.synced.sseq_at_server {
+        if self.synced.is_ahead_of_server(pushed.checkpoint.sseq) {
             return Err(PushPullError::ProtocolViolation(
                 ERR_INVALID_CHECKPOINT.into(),
             ));
         }
-        if !self.synced.checkpoints.contains_key(&pushed.cuid) && pushed.checkpoint.sseq != 0 {
+        if !self.synced.has_active_subscription(&pushed.cuid) && pushed.checkpoint.sseq != 0 {
             return Err(PushPullError::ProtocolViolation(
                 ERR_INVALID_SUBSCRIPTION_CHECKPOINT.into(),
             ));
@@ -380,7 +396,7 @@ impl LocalDatatypeServer {
 
     /// Returns an immediate response when the subscription generation cannot be processed.
     fn pre_process(&self, pushed: &PushPullPack, max_sub_gen: Option<u64>) -> Option<PushPullPack> {
-        let active = self.synced.checkpoints.contains_key(&pushed.cuid);
+        let active = self.synced.has_active_subscription(&pushed.cuid);
         if !active && max_sub_gen.is_some_and(|generation| pushed.sub_gen <= generation) {
             let mut pulled = pushed.get_pulled_stub();
             pulled.sseq_gc_safe = self.synced.sseq_gc_safe;
@@ -579,7 +595,7 @@ impl LocalDatatypeServer {
         pulled: &mut PushPullPack,
         is_realtime: bool,
     ) -> Result<(), PushPullError> {
-        let result = if self.synced.checkpoints.contains_key(&pushed.cuid) {
+        let result = if self.synced.has_active_subscription(&pushed.cuid) {
             self.process_push_pull(pushed, pulled, DatatypeState::Disabled, is_realtime)
         } else {
             pulled.state = DatatypeState::Disabled;

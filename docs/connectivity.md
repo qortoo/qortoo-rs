@@ -126,9 +126,15 @@ for its resource, including active and ended subscriptions. The existing server 
 this map; generation lookup and recording take no additional lock. Datatype servers decide
 when to reject requests or record a generation. Checkpoint presence determines whether a subscription is active. Older requests,
 and newer requests that do not start a subscription, return `MissingSubscription` without
-changing the active subscription. A valid newer `Creating`, `Subscribing`, or
-`SubscribingOrCreating` request replaces it with fresh progress; failed validation or batch
-application retains both the old progress and maximum generation. Same-generation retries
+changing the active subscription. A valid newer `Subscribing` request replaces it with fresh
+progress; `SubscribingOrCreating` does so through its snapshot subscription branch when the
+requested DUID differs. On an existing resource with the same DUID, `Creating` and the
+creation branch of `SubscribingOrCreating` accept only retries of the same active generation.
+A newer generation or a CUID without an active subscription receives `MissingSubscription`,
+with or without transactions, and must recover through a snapshot before writing. Initial
+creation of an uncreated resource remains allowed; `Creating` with a different DUID still
+returns `CreateFailed`. Failed validation or batch application retains both the old progress
+and maximum generation. Same-generation retries
 preserve accepted client sequences and GC progress, so accepted transactions are not applied twice. Clients ignore responses
 from retired generations, including errors, before applying data or triggering recovery.
 Recovery discards this client's unaccepted pending work and requests a snapshot; accepted
@@ -334,6 +340,7 @@ free of conditional compilation while still keeping the capability out of produc
 | Backend snapshots survive removal of client registrations | `can_subscribe_from_backend_state_after_clients_are_removed` in `src/connectivity/local_datatype_server.rs` |
 | A creator can unsubscribe without changing snapshot ownership | `can_keep_serving_snapshots_after_the_creator_unsubscribes` in `src/connectivity/local_connectivity/tests.rs` |
 | Live resource state is discarded when the last client leaves | `can_remove_server_when_last_client_unsubscribes` in `src/connectivity/local_connectivity/tests.rs` |
+| Same-DUID creation in a new generation requires snapshot recovery | `can_require_a_snapshot_before_recreating_an_existing_resource` in `src/connectivity/local_datatype_server/tests/protocol.rs`, `can_recover_a_new_creation_generation_with_a_snapshot` in `src/connectivity/local_datatype_server/tests/client_sync.rs` |
 | Retired generations fence delayed starts across resource recreation | `can_preserve_client_generation_bounds_across_resource_recreation` in `src/connectivity/local_connectivity/tests.rs`, `can_fence_retired_generations_and_accept_a_fresh_subscription` in `src/connectivity/local_datatype_server/tests/protocol.rs` |
 | Realtime and manual differ in when work moves | `can_compare_manual_and_realtime_local_connectivity` in `src/connectivity/local_connectivity/tests.rs` |
 | A realtime push notifies the other clients | `can_notify_other_clients_after_realtime_push` in `src/connectivity/local_connectivity/tests.rs` |
@@ -355,7 +362,8 @@ When a request is rejected with `MissingSubscription`, the client discards pendi
 transactions and its old checkpoint, then requests a backend snapshot on the same instance.
 The local lifecycle uses `SubscribingOrCreating`, but the recovery packet uses the existing
 transaction-free `Subscribing` request. This keeps same-DUID recovery separate from normal
-creation retries, without changing server identity checks or adding subscription generations.
+creation retries. Recovery allocates a new subscription generation while retaining the server
+identity checks.
 The client applies the recovery snapshot even when its DUID is unchanged. Local writes made
 while waiting for that snapshot are replaced along with the old local state.
 

@@ -45,7 +45,7 @@ fn can_retain_history_for_the_slowest_of_three_subscribers_until_unsubscribe() {
     assert_eq!(server.synced.sseq_history_pruned, 80);
     slow.state = DatatypeState::Unsubscribing;
     assert!(server.process(&slow, false).unwrap().error.is_none());
-    assert!(!server.synced.checkpoints.contains_key(&slow.cuid));
+    assert!(!server.synced.has_active_subscription(&slow.cuid));
     assert_eq!(server.synced.sseq_history_prunable(), 95);
     assert_eq!(server.synced.sseq_history_pruned, 95);
     assert_eq!(
@@ -206,7 +206,7 @@ fn can_defer_pruning_after_failed_unsubscribe_and_preserve_a_delayed_pull() {
     )];
     let failed = server.process(&writer, false).unwrap();
     assert_eq!(failed.error, Some(PushPullError::ReadonlyViolation));
-    assert!(!server.synced.checkpoints.contains_key(&writer.cuid));
+    assert!(!server.synced.has_active_subscription(&writer.cuid));
     assert_eq!(server.synced.sseq_history_prunable(), 2);
     assert_eq!(server.synced.sseq_history_pruned, 0);
     assert_eq!(server.synced.history.len(), 2);
@@ -362,7 +362,7 @@ fn can_track_readonly_acknowledgements_without_advancing_on_snapshot_delivery() 
     reader.checkpoint.sseq = 2;
     assert!(server.process(&reader, false).unwrap().error.is_none());
     assert_eq!(server.synced.sseq_history_prunable(), 2);
-    assert!(!server.synced.checkpoints.contains_key(&reader.cuid));
+    assert!(!server.synced.has_active_subscription(&reader.cuid));
     writer.state = DatatypeState::Unsubscribing;
     assert!(server.process(&writer, false).unwrap().error.is_none());
     assert_eq!(server.synced.sseq_history_prunable(), 2);
