@@ -50,15 +50,15 @@ macro_rules! datatype_server_instrument {
     };
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct SubscriptionCheckpoint {
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Subscription {
     pub(super) sseq_at_client: u64,
     pub(super) cseq_at_server: u64,
     // Includes the bootstrap floor, not just the client's reported acknowledgement.
     pub(super) sseq_gc_for_client: u64,
 }
 
-impl SubscriptionCheckpoint {
+impl Subscription {
     pub(super) fn new(sseq_at_client: u64, cseq_at_server: u64, sseq_gc_for_client: u64) -> Self {
         Self {
             sseq_at_client,
@@ -79,7 +79,7 @@ struct SyncedState {
     lamport: u64,
     sseq_at_server: u64,
     // Active subscriptions: accepted client cseq and reported applied server sseq.
-    checkpoints: HashMap<Cuid, SubscriptionCheckpoint>,
+    checkpoints: HashMap<Cuid, Subscription>,
     history: VecDeque<Arc<Transaction>>,
     sseq_history_pruned: u64,
     sseq_gc_safe: u64,
@@ -98,13 +98,36 @@ impl SyncedState {
         }
     }
 
+    fn has_active_subscription(&self, cuid: &Cuid) -> bool {
+        self.checkpoints.contains_key(cuid)
+    }
+
+    fn is_ahead_of_server(&self, sseq: u64) -> bool {
+        sseq > self.sseq_at_server
+    }
+
+    fn requires_pruned_history(&self, sseq: u64) -> bool {
+        sseq < self.sseq_history_pruned
+    }
+
+    fn cseq_at_server(&self, cuid: &Cuid) -> u64 {
+        self.checkpoints
+            .get(cuid)
+            .map_or(0, |checkpoint| checkpoint.cseq_at_server)
+    }
+
+    fn get_or_insert_checkpoint(
+        &mut self,
+        pushed: &PushPullPack,
+        initial_sseq: u64,
+    ) -> &mut Subscription {
+        self.checkpoints
+            .entry(pushed.cuid.clone())
+            .or_insert_with(|| Subscription::new(initial_sseq, 0, self.sseq_gc_safe))
+    }
+
     fn push_transactions(&mut self, pushed: &PushPullPack) -> Result<(u64, bool), PushPullError> {
-        let checkpoint = self
-            .checkpoints
-            .get(&pushed.cuid)
-            .copied()
-            .unwrap_or_else(|| SubscriptionCheckpoint::new(self.sseq_history_prunable(), 0, 0));
-        let previous_cseq = checkpoint.cseq_at_server;
+        let previous_cseq = self.cseq_at_server(&pushed.cuid);
         let mut incoming = pushed.transactions_after_cseq(previous_cseq).peekable();
         if incoming.peek().is_none() {
             return Ok((previous_cseq, false));
@@ -142,9 +165,7 @@ impl SyncedState {
         self.lamport = lamport;
         self.sseq_at_server = sseq;
         self.history.extend(transactions);
-        self.checkpoints
-            .entry(pushed.cuid.clone())
-            .or_insert(checkpoint)
+        self.get_or_insert_checkpoint(pushed, pushed.checkpoint.sseq)
             .cseq_at_server = cseq;
         Ok((cseq, true))
     }
@@ -198,6 +219,7 @@ pub struct LocalDatatypeServer {
     // Nil until a creation request succeeds.
     duid: Duid,
     synced: SyncedState,
+    pub(super) max_sub_gens: HashMap<Cuid, u64>,
 }
 
 impl Display for LocalDatatypeServer {
@@ -214,8 +236,9 @@ impl Display for LocalDatatypeServer {
 }
 
 impl LocalDatatypeServer {
-    pub fn new(attr: &Attribute) -> Self {
+    pub(super) fn new(attr: &Attribute, max_sub_gens: HashMap<Cuid, u64>) -> Self {
         Self {
+            max_sub_gens,
             wired_map: HashMap::new(),
             sender_map: HashMap::new(),
             synced: SyncedState::new(attr.r#type),
@@ -257,7 +280,7 @@ impl LocalDatatypeServer {
 
     fn validate_progress(&self, pushed: &PushPullPack) -> Result<(), PushPullError> {
         self.validate_gc_ack(pushed)?;
-        if !self.synced.checkpoints.contains_key(&pushed.cuid) {
+        if !self.synced.has_active_subscription(&pushed.cuid) {
             return Err(PushPullError::MissingSubscription(format!(
                 "cuid '{}' has no active datatype subscription on this server",
                 pushed.cuid
@@ -268,12 +291,12 @@ impl LocalDatatypeServer {
                 ERR_INVALID_IDENTITY.into(),
             ));
         }
-        if pushed.checkpoint.sseq > self.synced.sseq_at_server {
+        if self.synced.is_ahead_of_server(pushed.checkpoint.sseq) {
             return Err(PushPullError::ProtocolViolation(
                 ERR_INVALID_CHECKPOINT.into(),
             ));
         }
-        if pushed.checkpoint.sseq < self.synced.sseq_history_pruned {
+        if self.synced.requires_pruned_history(pushed.checkpoint.sseq) {
             return Err(PushPullError::ProtocolViolation(ERR_HISTORY_PRUNED.into()));
         }
         Ok(())
@@ -281,23 +304,29 @@ impl LocalDatatypeServer {
 
     fn validate_creation(&self, pushed: &PushPullPack) -> Result<(), PushPullError> {
         self.validate_gc_ack(pushed)?;
-        // If already created, an error should occur,
-        // but if the DUID is the same, it is considered a duplicate transmission case and is allowed.
         if self.is_created() && self.duid != pushed.duid {
             return Err(PushPullError::CreateFailed(ERR_ALREADY_EXISTS.into()));
+        }
+        // Existing resources require a snapshot before a new generation can write.
+        if self.is_created() && !self.synced.has_active_subscription(&pushed.cuid) {
+            return Err(PushPullError::MissingSubscription(
+                "creation retry requires an active subscription generation".into(),
+            ));
         }
         if pushed.duid.is_nil() || self.r#type != pushed.r#type {
             return Err(PushPullError::ProtocolViolation(
                 ERR_INVALID_CREATION.into(),
             ));
         }
-        if pushed.checkpoint.sseq > self.synced.sseq_at_server {
+        if self.synced.is_ahead_of_server(pushed.checkpoint.sseq) {
             return Err(PushPullError::ProtocolViolation(
                 ERR_INVALID_CHECKPOINT.into(),
             ));
         }
-        if self.is_created() {
+        if self.synced.has_active_subscription(&pushed.cuid) {
             self.validate_progress(pushed)?;
+        } else if self.synced.requires_pruned_history(pushed.checkpoint.sseq) {
+            return Err(PushPullError::ProtocolViolation(ERR_HISTORY_PRUNED.into()));
         }
         if pushed.is_readonly {
             return Err(PushPullError::ReadonlyViolation);
@@ -328,12 +357,12 @@ impl LocalDatatypeServer {
             ));
         }
 
-        if pushed.checkpoint.sseq > self.synced.sseq_at_server {
+        if self.synced.is_ahead_of_server(pushed.checkpoint.sseq) {
             return Err(PushPullError::ProtocolViolation(
                 ERR_INVALID_CHECKPOINT.into(),
             ));
         }
-        if !self.synced.checkpoints.contains_key(&pushed.cuid) && pushed.checkpoint.sseq != 0 {
+        if !self.synced.has_active_subscription(&pushed.cuid) && pushed.checkpoint.sseq != 0 {
             return Err(PushPullError::ProtocolViolation(
                 ERR_INVALID_SUBSCRIPTION_CHECKPOINT.into(),
             ));
@@ -357,16 +386,49 @@ impl LocalDatatypeServer {
         initial: u64,
     ) {
         // Only a new subscription or transaction-free creation needs insertion; neither has accepted client transactions.
-        let checkpoint = self
-            .synced
-            .checkpoints
-            .entry(pushed.cuid.clone())
-            .or_insert_with(|| SubscriptionCheckpoint::new(initial, 0, self.synced.sseq_gc_safe));
+        let checkpoint = self.synced.get_or_insert_checkpoint(pushed, initial);
         // A bootstrap push has not applied the snapshot that this pull will provide.
         if pulled.snapshot_transaction.is_none() {
             checkpoint.sseq_at_client = checkpoint.sseq_at_client.max(pushed.checkpoint.sseq);
             checkpoint.sseq_gc_for_client = checkpoint.sseq_gc_for_client.max(pushed.sseq_gc_safe);
         }
+    }
+
+    /// Returns an immediate response when the subscription generation cannot be processed.
+    fn pre_process(&self, pushed: &PushPullPack, max_sub_gen: Option<u64>) -> Option<PushPullPack> {
+        let active = self.synced.has_active_subscription(&pushed.cuid);
+        if !active && max_sub_gen.is_some_and(|generation| pushed.sub_gen <= generation) {
+            let mut pulled = pushed.get_pulled_stub();
+            pulled.sseq_gc_safe = self.synced.sseq_gc_safe;
+            return Some(if pushed.state == DatatypeState::Unsubscribing {
+                pulled.state = DatatypeState::Disabled;
+                pulled
+            } else {
+                pulled.with_error(PushPullError::MissingSubscription(
+                    "retired subscription generation".into(),
+                ))
+            });
+        }
+        let starts_subscription = matches!(
+            pushed.state,
+            DatatypeState::Creating
+                | DatatypeState::Subscribing
+                | DatatypeState::SubscribingOrCreating
+        );
+        if active
+            && max_sub_gen.is_some_and(|generation| {
+                pushed.sub_gen < generation || (pushed.sub_gen > generation && !starts_subscription)
+            })
+        {
+            return Some(
+                pushed
+                    .get_pulled_stub()
+                    .with_error(PushPullError::MissingSubscription(
+                        "subscription generation mismatch".into(),
+                    )),
+            );
+        }
+        None
     }
 
     /// Dispatches one pushed pack to the state-specific processor.
@@ -375,6 +437,16 @@ impl LocalDatatypeServer {
         pushed: &PushPullPack,
         is_realtime: bool,
     ) -> Result<PushPullPack, ConnectivityError> {
+        let max_sub_gen = self.max_sub_gens.get(&pushed.cuid).copied();
+        if let Some(pulled) = self.pre_process(pushed, max_sub_gen) {
+            return Ok(pulled);
+        }
+        // Stage a fresh generation; failed validation or batch application must retain the old progress.
+        let previous = if max_sub_gen.is_some_and(|generation| pushed.sub_gen > generation) {
+            self.synced.checkpoints.remove(&pushed.cuid)
+        } else {
+            None
+        };
         let mut pulled = pushed.get_pulled_stub();
         let result = match pushed.state {
             DatatypeState::Creating => self.process_creating(pushed, &mut pulled),
@@ -389,7 +461,30 @@ impl LocalDatatypeServer {
             DatatypeState::Deleting => self.process_deleting(),
             DatatypeState::Disabled => self.process_disabled(),
         };
+        Ok(self.post_process(pushed, pulled, result, previous, max_sub_gen))
+    }
+
+    fn post_process(
+        &mut self,
+        pushed: &PushPullPack,
+        mut pulled: PushPullPack,
+        result: Result<(), PushPullError>,
+        previous: Option<Subscription>,
+        max_sub_gen: Option<u64>,
+    ) -> PushPullPack {
+        // Unsubscribe closes its generation even when the final batch is rejected.
+        if (result.is_ok() || pushed.state == DatatypeState::Unsubscribing)
+            && max_sub_gen.is_none_or(|generation| pushed.sub_gen > generation)
+        {
+            self.max_sub_gens
+                .insert(pushed.cuid.clone(), pushed.sub_gen);
+        }
         if let Err(error) = result {
+            if let Some(previous) = previous {
+                self.synced
+                    .checkpoints
+                    .insert(pushed.cuid.clone(), previous);
+            }
             pulled = pulled.with_error(error);
         } else {
             // Retain response Arcs before removing history needed by a delayed request.
@@ -406,7 +501,7 @@ impl LocalDatatypeServer {
             }
         }
         pulled.sseq_gc_safe = self.synced.sseq_gc_safe;
-        Ok(pulled)
+        pulled
     }
 
     datatype_server_instrument! {
@@ -500,16 +595,12 @@ impl LocalDatatypeServer {
         pulled: &mut PushPullPack,
         is_realtime: bool,
     ) -> Result<(), PushPullError> {
-        // If the client's datatype is not subscribed on this server, skip push processing to avoid
-        // polluting checkpoints, and return Disabled directly since that is the desired state.
-        if !self.synced.checkpoints.contains_key(&pushed.cuid) {
+        let result = if self.synced.has_active_subscription(&pushed.cuid) {
+            self.process_push_pull(pushed, pulled, DatatypeState::Disabled, is_realtime)
+        } else {
             pulled.state = DatatypeState::Disabled;
-            self.wired_map.remove(&pushed.cuid);
-            self.sender_map.remove(&pushed.cuid);
-            return Ok(());
-        }
-
-        let result = self.process_push_pull(pushed, pulled, DatatypeState::Disabled, is_realtime);
+            Ok(())
+        };
 
         // Always clean up client subscription regardless of error: the client will be Disabled
         // either way, and leaving stale entries would cause infinite unsubscribe retry loops.
@@ -544,7 +635,10 @@ impl LocalDatatypeServer {
         let initial = self.synced.sseq_history_prunable();
         pulled.duid = self.duid.clone();
         let snapshot = self.synced.get_subscribe_snapshot();
-        pulled.checkpoint.sseq = snapshot.sseq;
+        pulled.checkpoint = CheckPoint::new(
+            snapshot.sseq,
+            self.synced.cseq_at_server(&pushed.cuid),
+        );
         pulled.snapshot_transaction = Some(Arc::new(snapshot));
         pulled.state = DatatypeState::Subscribed;
         self.update_subscription_progress(pushed, pulled, initial);

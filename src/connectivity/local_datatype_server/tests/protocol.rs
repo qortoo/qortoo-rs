@@ -14,7 +14,7 @@ fn can_reject_unsupported_deletion_without_changing_backend_state(#[case] create
         DatatypeState::Creating,
         WiredInterceptor::new_arc(),
     );
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let (sender, receiver) = crossbeam_channel::unbounded();
     server.insert_client_item(wired.clone(), sender);
     let mut pushed = PushPullPack::new(&attr, DatatypeState::Creating);
@@ -77,7 +77,7 @@ fn can_reject_unsupported_deletion_without_changing_backend_state(#[case] create
 #[case::backward_sequence(&[2, 3, 2, 4])]
 fn can_reject_nonsequential_new_transactions_without_publishing_batch(#[case] sequences: &[u64]) {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let mut pushed = PushPullPack::new(&attr, DatatypeState::Creating);
     let accepted = transaction(&pushed.cuid, 1, Operation::new_counter_increase(7));
     pushed.transactions = vec![accepted.clone()];
@@ -133,7 +133,7 @@ fn can_reject_nonsequential_new_transactions_without_publishing_batch(#[case] se
 #[case(DataType::Variable)]
 fn can_reject_a_late_batch_failure_without_advancing_backend_state(#[case] data_type: DataType) {
     let attr = new_attribute!(data_type);
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let operation = |value: i64| match data_type {
         DataType::Counter => Operation::new_counter_increase(value),
         DataType::Variable => {
@@ -204,7 +204,7 @@ fn can_keep_a_failed_creation_unpublished(
     #[case] state: DatatypeState,
 ) {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let mut pushed = PushPullPack::new(&attr, state);
     let mut tx = (*transaction(&pushed.cuid, 1, Operation::new_counter_increase(7))).clone();
     match mutation {
@@ -753,4 +753,300 @@ fn can_reject_push_from_disabled_client() {
         DatatypeError::ServerRejected(_)
     ));
     assert_eq!(counter.get_state(), DatatypeState::Disabled);
+}
+
+#[test]
+fn can_fence_previous_subscription_and_retry_without_reapplying_transactions() {
+    let attr = new_attribute!(DataType::Counter);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
+    let mut push = PushPullPack::new(&attr, DatatypeState::Creating);
+    push.transactions = vec![transaction(
+        &push.cuid,
+        1,
+        Operation::new_counter_increase(1),
+    )];
+    assert!(server.process(&push, false).unwrap().error.is_none());
+    let mut retry = PushPullPack::with_sub_gen(&attr, DatatypeState::Subscribing, push.sub_gen);
+    assert!(server.process(&retry, false).unwrap().error.is_none());
+
+    push.state = DatatypeState::Subscribed;
+    push.transactions.push(transaction(
+        &push.cuid,
+        2,
+        Operation::new_counter_increase(2),
+    ));
+    assert!(server.process(&push, false).unwrap().error.is_none());
+    assert_eq!(server.synced.sseq_at_server, 2);
+    assert!(server.process(&push, false).unwrap().error.is_none());
+    assert_eq!(server.synced.sseq_at_server, 2);
+    let old_id = push.sub_gen;
+    push.transactions.clear();
+    push.state = DatatypeState::Unsubscribing;
+    push.checkpoint.sseq = 2;
+    assert!(server.process(&push, false).unwrap().error.is_none());
+    retry.sub_gen = attr.client_common.next_sub_gen();
+    retry.checkpoint = CheckPoint::default();
+    assert!(server.process(&retry, false).unwrap().error.is_none());
+    push.sub_gen = old_id;
+    push.state = DatatypeState::Subscribed;
+    assert!(server.process(&push, false).unwrap().error.is_some());
+    push.state = DatatypeState::Unsubscribing;
+    assert!(server.process(&push, false).unwrap().error.is_some());
+    assert!(server.synced.has_active_subscription(&push.cuid));
+    assert!(server.process(&retry, false).unwrap().error.is_none());
+}
+
+#[rstest]
+#[case::subscribe(DatatypeState::Subscribing)]
+#[case::subscribe_or_create(DatatypeState::SubscribingOrCreating)]
+fn can_replace_only_with_a_valid_new_subscription_generation(#[case] state: DatatypeState) {
+    let attr = new_attribute!(DataType::Counter);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
+    let mut old = PushPullPack::new(&attr, DatatypeState::Creating);
+    old.transactions = vec![transaction(
+        &old.cuid,
+        1,
+        Operation::new_counter_increase(7),
+    )];
+    assert!(server.process(&old, false).unwrap().error.is_none());
+    old.state = DatatypeState::Subscribed;
+    old.checkpoint = CheckPoint::new(1, 1);
+    old.sseq_gc_safe = 1;
+    old.transactions.clear();
+    assert!(server.process(&old, false).unwrap().error.is_none());
+    let previous = server.synced.checkpoints.clone();
+    let mut new = PushPullPack::new(&attr, DatatypeState::Subscribed);
+    assert!(matches!(
+        server.process(&new, false).unwrap().error,
+        Some(PushPullError::MissingSubscription(_))
+    ));
+    assert_eq!(server.synced.checkpoints, previous);
+    assert_eq!(
+        server.max_sub_gens.get(&old.cuid).copied(),
+        Some(old.sub_gen)
+    );
+
+    new.state = state;
+    if state == DatatypeState::SubscribingOrCreating {
+        new.duid = Duid::new();
+    }
+    new.checkpoint.sseq = 2;
+    assert!(matches!(
+        server.process(&new, false).unwrap().error,
+        Some(PushPullError::ProtocolViolation(_))
+    ));
+    assert_eq!(server.synced.checkpoints, previous);
+    assert_eq!(
+        server.max_sub_gens.get(&old.cuid).copied(),
+        Some(old.sub_gen)
+    );
+    new.checkpoint = CheckPoint::default();
+    new.transactions = vec![transaction(
+        &new.cuid,
+        2,
+        Operation::new_counter_increase(10),
+    )];
+    assert!(matches!(
+        server.process(&new, false).unwrap().error,
+        Some(PushPullError::ProtocolViolation(_))
+    ));
+    assert_eq!(server.synced.checkpoints, previous);
+    assert_eq!(
+        server.max_sub_gens.get(&old.cuid).copied(),
+        Some(old.sub_gen)
+    );
+    assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 7);
+
+    new.transactions.clear();
+    let snapshot = server.process(&new, false).unwrap();
+    assert!(snapshot.error.is_none());
+    assert!(snapshot.snapshot_transaction.is_some());
+    new.duid = snapshot.duid;
+    let checkpoint = &server.synced.checkpoints[&new.cuid];
+    assert_eq!(
+        server.max_sub_gens.get(&new.cuid).copied(),
+        Some(new.sub_gen)
+    );
+    assert_eq!(checkpoint.cseq_at_server, 0);
+    assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 7);
+    for state in [
+        DatatypeState::Creating,
+        DatatypeState::Subscribing,
+        DatatypeState::SubscribingOrCreating,
+        DatatypeState::Subscribed,
+        DatatypeState::Unsubscribing,
+    ] {
+        old.state = state;
+        let checkpoints = server.synced.checkpoints.clone();
+        assert!(matches!(
+            server.process(&old, false).unwrap().error,
+            Some(PushPullError::MissingSubscription(_))
+        ));
+        assert_eq!(server.synced.checkpoints, checkpoints);
+    }
+    new.state = DatatypeState::Subscribed;
+    new.checkpoint.sseq = 1;
+    new.transactions = vec![transaction(
+        &new.cuid,
+        1,
+        Operation::new_counter_increase(3),
+    )];
+    assert!(server.process(&new, false).unwrap().error.is_none());
+    assert!(server.process(&new, false).unwrap().error.is_none());
+    assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 10);
+    let progress = server.synced.checkpoints.clone();
+    new.state = state;
+    new.transactions.clear();
+    let retry = server.process(&new, false).unwrap();
+    assert!(retry.error.is_none());
+    assert_eq!(retry.checkpoint.cseq, 1);
+    assert_eq!(server.synced.checkpoints, progress);
+}
+
+#[test]
+fn can_fence_retired_generations_and_accept_a_fresh_subscription() {
+    let attr = new_attribute!(DataType::Counter);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
+    let mut old = PushPullPack::new(&attr, DatatypeState::Creating);
+    assert!(server.process(&old, false).unwrap().error.is_none());
+    let mut new = PushPullPack::new(&attr, DatatypeState::Subscribing);
+    assert!(server.process(&new, false).unwrap().error.is_none());
+    new.state = DatatypeState::Unsubscribing;
+    assert!(server.process(&new, false).unwrap().error.is_none());
+    let crdt = server.synced.crdt.serialize();
+    let head = server.synced.sseq_at_server;
+    let gc = server.synced.sseq_gc_safe;
+    for generation in [old.sub_gen, new.sub_gen] {
+        old.sub_gen = generation;
+        old.transactions = vec![transaction(
+            &old.cuid,
+            1,
+            Operation::new_counter_increase(9),
+        )];
+        for state in [
+            DatatypeState::Creating,
+            DatatypeState::Subscribing,
+            DatatypeState::SubscribingOrCreating,
+            DatatypeState::Subscribed,
+        ] {
+            old.state = state;
+            assert!(matches!(
+                server.process(&old, false).unwrap().error,
+                Some(PushPullError::MissingSubscription(_))
+            ));
+        }
+        old.state = DatatypeState::Unsubscribing;
+        let response = server.process(&old, false).unwrap();
+        assert!(response.error.is_none());
+        assert_eq!(response.state, DatatypeState::Disabled);
+    }
+    assert!(server.synced.checkpoints.is_empty());
+    assert_eq!(server.synced.crdt.serialize(), crdt);
+    assert_eq!(server.synced.sseq_at_server, head);
+    assert_eq!(server.synced.sseq_gc_safe, gc);
+    assert!(server.synced.history.is_empty());
+    let fresh = PushPullPack::new(&attr, DatatypeState::Subscribing);
+    assert!(server.process(&fresh, false).unwrap().error.is_none());
+    assert_eq!(
+        server.max_sub_gens.get(&fresh.cuid).copied(),
+        Some(fresh.sub_gen)
+    );
+    old.state = DatatypeState::Unsubscribing;
+    assert!(matches!(
+        server.process(&old, false).unwrap().error,
+        Some(PushPullError::MissingSubscription(_))
+    ));
+    assert_eq!(
+        server.max_sub_gens.get(&fresh.cuid).copied(),
+        Some(fresh.sub_gen)
+    );
+}
+
+#[rstest]
+#[case::active(true, false)]
+#[case::retired(false, false)]
+#[case::unknown(false, true)]
+fn can_require_a_snapshot_before_recreating_an_existing_resource(
+    #[case] active: bool,
+    #[case] unknown: bool,
+    #[values(DatatypeState::Creating, DatatypeState::SubscribingOrCreating)] state: DatatypeState,
+    #[values(false, true)] with_transactions: bool,
+) {
+    let attr = new_attribute!(DataType::Counter);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
+    let mut push = PushPullPack::new(&attr, DatatypeState::Creating);
+    push.transactions = vec![transaction(
+        &push.cuid,
+        1,
+        Operation::new_counter_increase(7),
+    )];
+    assert!(server.process(&push, false).unwrap().error.is_none());
+    push.state = DatatypeState::Subscribed;
+    push.transactions.clear();
+    push.checkpoint = CheckPoint::new(1, 1);
+    push.sseq_gc_safe = 1;
+    assert!(server.process(&push, false).unwrap().error.is_none());
+    let mut peer = PushPullPack::new(&attr, DatatypeState::Subscribing);
+    peer.cuid = Cuid::new();
+    assert!(server.process(&peer, false).unwrap().error.is_none());
+    if !active {
+        push.state = DatatypeState::Unsubscribing;
+        assert!(server.process(&push, false).unwrap().error.is_none());
+    }
+    let mut renewed = PushPullPack::new(&attr, state);
+    if unknown {
+        renewed.cuid = Cuid::new();
+    }
+    renewed.checkpoint.sseq = 1;
+    if with_transactions {
+        renewed.transactions = vec![transaction(
+            &renewed.cuid,
+            1,
+            Operation::new_counter_increase(3),
+        )];
+    }
+    let crdt = server.synced.crdt.serialize();
+    let checkpoints = server.synced.checkpoints.clone();
+    let generations = server.max_sub_gens.clone();
+    let history = server.synced.history.clone();
+    let head = server.synced.sseq_at_server;
+    let lamport = server.synced.lamport;
+    let pruned = server.synced.sseq_history_pruned;
+    let gc = server.synced.sseq_gc_safe;
+    for _ in 0..2 {
+        let response = server.process(&renewed, false).unwrap();
+        assert!(matches!(
+            response.error,
+            Some(PushPullError::MissingSubscription(_))
+        ));
+        assert!(response.transactions.is_empty());
+        assert!(response.snapshot_transaction.is_none());
+        assert_eq!(response.sseq_gc_safe, gc);
+        assert_eq!(server.duid, attr.get_duid());
+        assert_eq!(server.synced.crdt.serialize(), crdt);
+        assert_eq!(server.synced.checkpoints, checkpoints);
+        assert_eq!(server.max_sub_gens, generations);
+        assert_eq!(server.synced.history, history);
+        assert_eq!(server.synced.sseq_at_server, head);
+        assert_eq!(server.synced.lamport, lamport);
+        assert_eq!(server.synced.sseq_history_pruned, pruned);
+        assert_eq!(server.synced.sseq_gc_safe, gc);
+    }
+    renewed.state = DatatypeState::Subscribing;
+    renewed.transactions.clear();
+    renewed.checkpoint = CheckPoint::default();
+    let snapshot = server.process(&renewed, false).unwrap();
+    assert!(snapshot.error.is_none());
+    assert!(snapshot.snapshot_transaction.is_some());
+    assert_eq!(snapshot.checkpoint, CheckPoint::new(head, 0));
+    assert_eq!(server.max_sub_gens[&renewed.cuid], renewed.sub_gen);
+    renewed.state = DatatypeState::Subscribed;
+    renewed.checkpoint = snapshot.checkpoint;
+    renewed.transactions = vec![transaction(
+        &renewed.cuid,
+        1,
+        Operation::new_counter_increase(4),
+    )];
+    assert!(server.process(&renewed, false).unwrap().error.is_none());
+    assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 11);
 }

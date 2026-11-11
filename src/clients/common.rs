@@ -1,6 +1,9 @@
 use std::{
     fmt::{Debug, Display, Formatter},
-    sync::{Arc, Weak},
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use parking_lot::RwLock;
@@ -20,6 +23,7 @@ pub struct ClientCommon {
     pub handle: Handle,
     pub connectivity: Arc<dyn Connectivity>,
     datatype_manager: RwLock<Weak<RwLock<DatatypeManager>>>,
+    last_sub_gen: AtomicU64,
 }
 
 impl ClientCommon {
@@ -37,7 +41,17 @@ impl ClientCommon {
             cuid,
             connectivity,
             datatype_manager: RwLock::new(Weak::new()),
+            last_sub_gen: AtomicU64::new(0),
         })
+    }
+
+    pub(crate) fn next_sub_gen(&self) -> u64 {
+        self.last_sub_gen
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                value.checked_add(1)
+            })
+            .expect("subscription generation exhausted")
+            + 1
     }
 
     pub(crate) fn set_datatype_manager(&self, manager: Weak<RwLock<DatatypeManager>>) {

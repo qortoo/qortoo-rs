@@ -133,7 +133,7 @@ fn can_restart_client_sequences_after_unsubscribe_and_resubscribe() {
     let server = f.server();
     {
         let server = server.read();
-        assert!(!server.synced.checkpoints.contains_key(&client.get_cuid()));
+        assert!(!server.synced.has_active_subscription(&client.get_cuid()));
         assert_eq!(
             server
                 .synced
@@ -159,7 +159,7 @@ fn can_restart_client_sequences_after_unsubscribe_and_resubscribe() {
 #[test]
 fn can_clear_client_progress_when_unsubscribe_rejects_pending_work() {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let mut pushed = PushPullPack::new(&attr, DatatypeState::Creating);
     pushed.transactions = vec![transaction(
         &pushed.cuid,
@@ -176,7 +176,11 @@ fn can_clear_client_progress_when_unsubscribe_rejects_pending_work() {
     )];
     let pulled = server.process(&pushed, false).unwrap();
     assert_eq!(pulled.error, Some(PushPullError::ReadonlyViolation));
-    assert!(!server.synced.checkpoints.contains_key(&pushed.cuid));
+    assert!(!server.synced.has_active_subscription(&pushed.cuid));
+    assert_eq!(
+        server.max_sub_gens.get(&pushed.cuid).copied(),
+        Some(pushed.sub_gen)
+    );
     assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 7);
     assert_eq!(server.synced.sseq_at_server, 1);
     assert_eq!(server.synced.history.len(), 1);
@@ -185,6 +189,12 @@ fn can_clear_client_progress_when_unsubscribe_rejects_pending_work() {
     assert_eq!(repeated.state, DatatypeState::Disabled);
     assert!(server.synced.checkpoints.is_empty());
     assert_eq!(server.synced.sseq_at_server, 1);
+    pushed.state = DatatypeState::Creating;
+    assert!(matches!(
+        server.process(&pushed, false).unwrap().error,
+        Some(PushPullError::MissingSubscription(_))
+    ));
+    assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 7);
 }
 
 #[test]
@@ -279,4 +289,75 @@ fn can_unsubscribe_not_subscribed_client_gracefully() {
     assert_eq!(counter1.get_state(), DatatypeState::Unsubscribing);
     counter1.sync().unwrap();
     assert_eq!(counter1.get_state(), DatatypeState::Disabled);
+}
+
+#[rstest]
+#[case::create(DatatypeState::Creating)]
+#[case::subscribe_or_create(DatatypeState::SubscribingOrCreating)]
+fn can_recover_a_new_creation_generation_with_a_snapshot(#[case] state: DatatypeState) {
+    let f = TestFixture::new(get_test_ids!());
+    let client = f.client("creator");
+    let counter = f.create_counter(&client);
+    let server = f.server();
+    let wired = server
+        .read()
+        .get_wired_datatype(&client.get_cuid())
+        .unwrap();
+    // Seed an older accepted generation with the same client and datatype identities.
+    let mut seed = PushPullPack::with_sub_gen(&wired.core.attr, DatatypeState::Creating, 0);
+    seed.transactions = vec![transaction(
+        &seed.cuid,
+        1,
+        Operation::new_counter_increase(7),
+    )];
+    assert!(
+        server
+            .write()
+            .process(&seed, false)
+            .unwrap()
+            .error
+            .is_none()
+    );
+    counter.increase_by(5).unwrap();
+    let observed = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let requests = observed.clone();
+    let interceptor = f.interceptor(&client);
+    interceptor.set_before_push(move |push| {
+        if push.state == DatatypeState::Creating {
+            push.state = state;
+            assert!(!push.transactions.is_empty());
+        } else {
+            assert_eq!(push.state, DatatypeState::Subscribing);
+            assert!(push.transactions.is_empty());
+            assert_eq!(push.checkpoint, CheckPoint::default());
+        }
+        requests.lock().push(push.state);
+    });
+    let writing_counter = counter.clone();
+    interceptor.set_after_pull(move |pull| {
+        if pull.snapshot_transaction.is_some() {
+            writing_counter.increase_by(3).unwrap();
+        } else {
+            assert!(matches!(
+                pull.error,
+                Some(PushPullError::MissingSubscription(_))
+            ));
+        }
+        Ok(())
+    });
+    counter.sync().unwrap();
+    interceptor
+        .set_before_push(|_| {})
+        .set_after_pull(|_| Ok(()));
+    assert_eq!(*observed.lock(), vec![state, DatatypeState::Subscribing]);
+    assert_eq!(counter.get_state(), DatatypeState::Subscribed);
+    assert_eq!(counter.get_value(), 7);
+    assert_eq!(counter.get_synced_client_version(), 0);
+    assert_eq!(wired.core.mutable.read().push_buffer.iter().count(), 0);
+    assert_eq!(server.read().synced.sseq_at_server, 1);
+    counter.increase_by(4).unwrap();
+    counter.sync().unwrap();
+    assert_eq!(counter.get_value(), 11);
+    assert_eq!(server.read().synced.crdt.as_counter().unwrap().value(), 11);
+    assert_eq!(counter.get_synced_client_version(), 1);
 }

@@ -15,8 +15,14 @@ use crate::{
     connectivity::{Connectivity, local_datatype_server::LocalDatatypeServer},
     datatypes::{event_loop::Event, wired::WiredDatatype},
     errors::{connectivity::ConnectivityError, push_pull::PushPullError},
-    types::{common::ResourceID, push_pull_pack::PushPullPack},
+    types::{common::ResourceID, push_pull_pack::PushPullPack, uid::Cuid},
 };
+
+#[derive(Default)]
+struct LocalDatatypeServers {
+    active: HashMap<ResourceID, Arc<RwLock<LocalDatatypeServer>>>,
+    retired_sub_gens: HashMap<ResourceID, HashMap<Cuid, u64>>,
+}
 
 /// An in-memory connectivity backend for local testing and development.
 ///
@@ -33,6 +39,10 @@ use crate::{
 /// By default, `LocalConnectivity` operates in realtime mode, where changes
 /// are automatically synchronized. Use [`set_realtime(false)`](Self::set_realtime)
 /// to switch to manual mode, requiring explicit [`sync()`](crate::Datatype::sync) calls.
+///
+/// Client records retain the maximum subscription generation per resource for this
+/// backend's lifetime, including after unsubscribe or resource removal. This costs
+/// one upper bound per resource/CUID; a new backend clears these in-memory records.
 ///
 /// # Examples
 ///
@@ -69,7 +79,7 @@ use crate::{
 /// ```
 #[allow(dead_code)]
 pub struct LocalConnectivity {
-    datatype_servers: RwLock<HashMap<ResourceID, Arc<RwLock<LocalDatatypeServer>>>>,
+    datatype_servers: RwLock<LocalDatatypeServers>,
     is_realtime: AtomicBool,
 }
 
@@ -88,7 +98,7 @@ impl LocalConnectivity {
     /// ```
     pub fn new_arc() -> Arc<Self> {
         Arc::new(Self {
-            datatype_servers: RwLock::new(HashMap::new()),
+            datatype_servers: RwLock::default(),
             is_realtime: AtomicBool::new(true),
         })
     }
@@ -99,7 +109,7 @@ impl LocalConnectivity {
         resource_id: &str,
     ) -> Option<Arc<RwLock<LocalDatatypeServer>>> {
         let datatypes = self.datatype_servers.read();
-        datatypes.get(resource_id).cloned()
+        datatypes.active.get(resource_id).cloned()
     }
 
     /// Sets whether this connectivity operates in realtime mode.
@@ -161,14 +171,15 @@ impl Connectivity for LocalConnectivity {
         let attr = wired.core.attr.clone();
         let resource_id = attr.resource_id();
 
-        let server = {
-            let mut datatypes = self.datatype_servers.write();
-            datatypes
-                .entry(resource_id)
-                .or_insert_with(|| Arc::new(RwLock::new(LocalDatatypeServer::new(&attr))))
-                .clone()
-        };
-
+        let mut datatypes = self.datatype_servers.write();
+        let LocalDatatypeServers {
+            active,
+            retired_sub_gens,
+        } = &mut *datatypes;
+        let server = active.entry(resource_id.clone()).or_insert_with(|| {
+            let max_sub_gens = retired_sub_gens.remove(&resource_id).unwrap_or_default();
+            Arc::new(RwLock::new(LocalDatatypeServer::new(&attr, max_sub_gens)))
+        });
         server.write().insert_client_item(wired, sender);
     }
 
@@ -181,9 +192,22 @@ impl Connectivity for LocalConnectivity {
     fn push_pull(&self, pushed: &PushPullPack) -> Result<PushPullPack, ConnectivityError> {
         let resource_id = pushed.resource_id();
 
-        let Some(server_with_lock) = self.get_local_datatype_server(&resource_id) else {
+        // Keep registration and removal from replacing the resource during processing.
+        let datatypes = self.datatype_servers.read();
+        let Some(server_with_lock) = datatypes.active.get(&resource_id).cloned() else {
             let mut pulled = pushed.get_pulled_stub();
-            pulled.error = Some(PushPullError::ResourceNotFound(resource_id.clone()));
+            let retired = datatypes
+                .retired_sub_gens
+                .get(&resource_id)
+                .and_then(|generations| generations.get(&pushed.cuid))
+                .is_some_and(|generation| pushed.sub_gen <= *generation);
+            pulled.error = match (retired, pushed.state) {
+                (true, DatatypeState::Unsubscribing) => None,
+                (true, _) => Some(PushPullError::MissingSubscription(
+                    "retired subscription generation".into(),
+                )),
+                (false, _) => Some(PushPullError::ResourceNotFound(resource_id.clone())),
+            };
             pulled.state = DatatypeState::Disabled;
             return Ok(pulled);
         };
@@ -196,13 +220,22 @@ impl Connectivity for LocalConnectivity {
             )
         };
 
+        drop(datatypes);
         if should_remove_server {
             let mut datatypes = self.datatype_servers.write();
             if datatypes
+                .active
                 .get(&resource_id)
                 .is_some_and(|server| Arc::ptr_eq(server, &server_with_lock))
             {
-                datatypes.remove(&resource_id);
+                let mut server = server_with_lock.write();
+                if server.is_empty() {
+                    let max_sub_gens = std::mem::take(&mut server.max_sub_gens);
+                    datatypes
+                        .retired_sub_gens
+                        .insert(resource_id.clone(), max_sub_gens);
+                    datatypes.active.remove(&resource_id);
+                }
             }
         }
 
@@ -215,298 +248,4 @@ impl Connectivity for LocalConnectivity {
 }
 
 #[cfg(test)]
-mod tests_local_connectivity {
-    use std::{
-        sync::{Arc, mpsc},
-        time::Duration,
-    };
-
-    use tracing::instrument;
-
-    use crate::{
-        Client, Datatype, DatatypeState,
-        connectivity::local_connectivity::LocalConnectivity,
-        utils::test_utils::{get_test_collection_name, get_test_func_name, get_test_ids},
-    };
-
-    struct DropSignal(mpsc::Sender<()>);
-
-    impl Drop for DropSignal {
-        fn drop(&mut self) {
-            let _ = self.0.send(());
-        }
-    }
-
-    #[rstest::rstest]
-    #[case::registered(false)]
-    #[case::subscribed(true)]
-    fn can_release_local_client_ownership_without_unsubscribing(#[case] sync: bool) {
-        let connectivity = LocalConnectivity::new_arc();
-        connectivity.set_realtime(false);
-        let (collection, key, resource_id) = get_test_ids!();
-        let client = Client::builder(collection, "drop-only")
-            .with_connectivity(connectivity.clone())
-            .build()
-            .unwrap();
-        let counter = client.create_datatype(key).build_counter().unwrap();
-        if sync {
-            counter.increase_by(7).unwrap();
-            counter.sync().unwrap();
-        }
-        let wired = connectivity
-            .get_local_datatype_server(&resource_id)
-            .unwrap()
-            .read()
-            .get_wired_datatype(&client.get_cuid())
-            .unwrap();
-        let weak_wired = Arc::downgrade(&wired);
-        let weak_common = Arc::downgrade(&wired.core.attr.client_common);
-        let weak_backend = Arc::downgrade(&connectivity);
-        let (dropped_tx, dropped_rx) = mpsc::channel();
-        let lifetime = DropSignal(dropped_tx);
-        wired.get_wired_interceptor().set_before_push(move |_| {
-            let _keep_alive = &lifetime;
-        });
-        drop(wired);
-        drop(client);
-        drop(counter);
-        // Stop acknowledgement precedes loop exit. Wait for wired destruction, not a sleep.
-        dropped_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert!(weak_wired.upgrade().is_none());
-        assert!(weak_common.upgrade().is_none());
-        // Backend history can outlive clients without retaining their runtime owners.
-        assert!(
-            connectivity
-                .get_local_datatype_server(&resource_id)
-                .is_some()
-        );
-        drop(connectivity);
-        assert!(weak_backend.upgrade().is_none());
-    }
-
-    #[test]
-    fn can_keep_an_in_flight_exchange_alive_until_stop_is_processed() {
-        let connectivity = LocalConnectivity::new_arc();
-        connectivity.set_realtime(false);
-        let (collection, key, resource_id) = get_test_ids!();
-        let client = Client::builder(collection, "in-flight-drop")
-            .with_connectivity(connectivity.clone())
-            .build()
-            .unwrap();
-        let counter = client.create_datatype(key).build_counter().unwrap();
-        counter.sync().unwrap();
-        let wired = connectivity
-            .get_local_datatype_server(&resource_id)
-            .unwrap()
-            .read()
-            .get_wired_datatype(&client.get_cuid())
-            .unwrap();
-        let weak_wired = Arc::downgrade(&wired);
-        let weak_common = Arc::downgrade(&wired.core.attr.client_common);
-        let (entered_tx, entered_rx) = crossbeam_channel::bounded(1);
-        let (release_tx, release_rx) = crossbeam_channel::bounded(1);
-        let (dropped_tx, dropped_rx) = mpsc::channel();
-        let lifetime = DropSignal(dropped_tx);
-        wired.get_wired_interceptor().set_before_push(move |_| {
-            let _keep_alive = &lifetime;
-            entered_tx.send(()).unwrap();
-            release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        });
-        drop(wired);
-        connectivity.set_realtime(true);
-        counter.increase().unwrap();
-        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        drop(client);
-        // Drop's bounded stop wait can finish while the exchange is blocked.
-        drop(counter);
-        assert!(weak_wired.upgrade().is_some());
-        assert!(dropped_rx.try_recv().is_err());
-        release_tx.send(()).unwrap();
-        dropped_rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert!(weak_wired.upgrade().is_none());
-        assert!(weak_common.upgrade().is_none());
-    }
-
-    #[test]
-    #[instrument]
-    fn can_compare_manual_and_realtime_local_connectivity() {
-        let lc_manual = LocalConnectivity::new_arc();
-        lc_manual.set_realtime(false);
-        let client_manual = Client::builder(get_test_collection_name!(), "manual client")
-            .with_connectivity(lc_manual)
-            .build()
-            .unwrap();
-        let counter_manual = client_manual
-            .create_datatype("manual")
-            .build_counter()
-            .unwrap();
-
-        let lc_realtime = LocalConnectivity::new_arc();
-        let client_realtime = Client::builder(get_test_collection_name!(), "realtime client")
-            .with_connectivity(lc_realtime)
-            .build()
-            .unwrap();
-        let counter_realtime = client_realtime
-            .create_datatype("realtime")
-            .build_counter()
-            .unwrap();
-
-        awaitility::at_most(Duration::from_secs(1))
-            .poll_interval(Duration::from_micros(100))
-            .until(|| counter_realtime.get_state() == DatatypeState::Subscribed);
-        assert_ne!(counter_realtime.get_state(), counter_manual.get_state());
-
-        counter_manual.sync().unwrap();
-        assert_eq!(counter_manual.get_state(), DatatypeState::Subscribed);
-    }
-
-    #[test]
-    #[instrument]
-    fn can_notify_other_clients_after_realtime_push() {
-        let connectivity = LocalConnectivity::new_arc();
-        let (collection, key, _) = get_test_ids!();
-        let client1 = Client::builder(collection.clone(), "client1")
-            .with_connectivity(connectivity.clone())
-            .build()
-            .unwrap();
-        let client2 = Client::builder(collection, "client2")
-            .with_connectivity(connectivity)
-            .build()
-            .unwrap();
-
-        let counter1 = client1
-            .create_datatype(key.clone())
-            .build_counter()
-            .unwrap();
-        awaitility::at_most(Duration::from_secs(1))
-            .poll_interval(Duration::from_micros(100))
-            .until(|| counter1.get_state() == DatatypeState::Subscribed);
-
-        let counter2 = client2.subscribe_datatype(key).build_counter().unwrap();
-        awaitility::at_most(Duration::from_secs(1))
-            .poll_interval(Duration::from_micros(100))
-            .until(|| counter2.get_state() == DatatypeState::Subscribed);
-
-        counter1.increase_by(7).unwrap();
-
-        awaitility::at_most(Duration::from_secs(1))
-            .poll_interval(Duration::from_micros(100))
-            .until(|| counter2.get_value() == 7);
-        assert_eq!(counter1.get_server_version(), counter2.get_server_version());
-    }
-
-    #[test]
-    #[instrument]
-    fn does_not_notify_other_clients_in_manual_mode() {
-        let connectivity = LocalConnectivity::new_arc();
-        connectivity.set_realtime(false);
-        let (collection, key, _) = get_test_ids!();
-        let client1 = Client::builder(collection.clone(), "client1")
-            .with_connectivity(connectivity.clone())
-            .build()
-            .unwrap();
-        let client2 = Client::builder(collection, "client2")
-            .with_connectivity(connectivity)
-            .build()
-            .unwrap();
-
-        let counter1 = client1
-            .create_datatype(key.clone())
-            .build_counter()
-            .unwrap();
-        counter1.sync().unwrap();
-
-        let counter2 = client2.subscribe_datatype(key).build_counter().unwrap();
-        counter2.sync().unwrap();
-
-        counter1.increase_by(7).unwrap();
-        counter1.sync().unwrap();
-
-        std::thread::sleep(Duration::from_millis(100));
-        assert_eq!(counter2.get_value(), 0);
-
-        counter2.sync().unwrap();
-        assert_eq!(counter2.get_value(), 7);
-    }
-
-    #[test]
-    #[instrument]
-    fn can_keep_serving_snapshots_after_the_creator_unsubscribes() {
-        let connectivity = LocalConnectivity::new_arc();
-        connectivity.set_realtime(false);
-        let (collection, key, _) = get_test_ids!();
-        let client1 = Client::builder(collection.clone(), "client1")
-            .with_connectivity(connectivity.clone())
-            .build()
-            .unwrap();
-        let client2 = Client::builder(collection.clone(), "client2")
-            .with_connectivity(connectivity.clone())
-            .build()
-            .unwrap();
-        let client3 = Client::builder(collection, "client3")
-            .with_connectivity(connectivity.clone())
-            .build()
-            .unwrap();
-
-        let counter1 = client1
-            .create_datatype(key.clone())
-            .build_counter()
-            .unwrap();
-        counter1.increase_by(7).unwrap();
-        counter1.sync().unwrap();
-
-        let counter2 = client2
-            .subscribe_datatype(key.clone())
-            .build_counter()
-            .unwrap();
-        counter2.sync().unwrap();
-        assert_eq!(counter2.get_value(), 7);
-
-        counter1.unsubscribe().unwrap();
-        counter1.sync().unwrap();
-        assert_eq!(counter1.get_state(), DatatypeState::Disabled);
-
-        counter2.increase_by(5).unwrap();
-        counter2.sync().unwrap();
-
-        let counter3 = client3.subscribe_datatype(key).build_counter().unwrap();
-        counter3.sync().unwrap();
-        assert_eq!(counter3.get_value(), 12);
-    }
-
-    #[test]
-    #[instrument]
-    fn can_remove_server_when_last_client_unsubscribes() {
-        let connectivity = LocalConnectivity::new_arc();
-        connectivity.set_realtime(false);
-        let (collection, key, resource_id) = get_test_ids!();
-        let client1 = Client::builder(collection.clone(), "client1")
-            .with_connectivity(connectivity.clone())
-            .build()
-            .unwrap();
-        let client2 = Client::builder(collection, "client2")
-            .with_connectivity(connectivity.clone())
-            .build()
-            .unwrap();
-
-        let counter1 = client1
-            .create_datatype(key.clone())
-            .build_counter()
-            .unwrap();
-        counter1.increase_by(7).unwrap();
-        counter1.sync().unwrap();
-
-        counter1.unsubscribe().unwrap();
-        counter1.sync().unwrap();
-        assert!(
-            connectivity
-                .get_local_datatype_server(&resource_id)
-                .is_none()
-        );
-
-        let counter2 = client2.create_datatype(key).build_counter().unwrap();
-        counter2.sync().unwrap();
-        assert_eq!(counter2.get_value(), 0);
-        assert_eq!(counter2.get_state(), DatatypeState::Subscribed);
-    }
-}
+mod tests;

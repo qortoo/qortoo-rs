@@ -91,7 +91,7 @@ fn can_preserve_the_bootstrap_floor_without_acknowledging_a_lost_snapshot() {
 #[test]
 fn can_include_readonly_gc_reports_and_ignore_delayed_confirmations() {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let mut writer = PushPullPack::new(&attr, DatatypeState::Creating);
     writer.transactions = (1..=3)
         .map(|seq| transaction(&writer.cuid, seq, Operation::new_counter_increase(1)))
@@ -132,7 +132,12 @@ fn can_reset_gc_confirmation_before_automatic_resubscription() {
     let interceptor = f.interceptor(&client);
     let reports = Arc::new(parking_lot::Mutex::new(Vec::new()));
     let observed = reports.clone();
-    interceptor.set_before_push(move |push| observed.lock().push((push.state, push.sseq_gc_safe)));
+    let ids = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let observed_ids = ids.clone();
+    interceptor.set_before_push(move |push| {
+        observed.lock().push((push.state, push.sseq_gc_safe));
+        observed_ids.lock().push(push.sub_gen);
+    });
     counter.increase_by(5).unwrap();
     f.remove_client_subscription(&client);
     counter.sync().unwrap();
@@ -146,6 +151,9 @@ fn can_reset_gc_confirmation_before_automatic_resubscription() {
     assert_eq!(counter.get_value(), 10);
     counter.sync().unwrap();
     assert_eq!(reports.lock()[2], (DatatypeState::Subscribed, 1));
+    let ids = ids.lock();
+    assert_ne!(ids[0], ids[1]);
+    assert_eq!(ids[1], ids[2]);
 }
 
 #[rstest]
@@ -153,7 +161,7 @@ fn can_reset_gc_confirmation_before_automatic_resubscription() {
 #[case::invalid_batch(false)]
 fn can_reject_gc_reports_without_publishing_progress(#[case] above_checkpoint: bool) {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default());
     let mut pushed = PushPullPack::new(&attr, DatatypeState::Creating);
     pushed.transactions = vec![transaction(
         &pushed.cuid,
