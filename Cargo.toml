@@ -5,7 +5,9 @@ members = ["qortoo-ffi"]
 name = "qortoo"
 version = "0.1.0"
 edition = "2024"
-# Except for the first time, the rust version will be kept at least one year behind the latest release and update it quarterly.
+# Rust version policy: Kept at least one year behind the latest release and updated quarterly.
+# - Initial set: 2025-08-16 (set to 1.87.0, originally released 2025-05-15)
+# - Next scheduled review/bump: ~2027-02-13 (target: 1.88.0, released 2025-06-26)
 rust-version = "1.87.0"
 
 [features]
@@ -55,14 +57,14 @@ tracing-opentelemetry = { version = "^0.34.0", default-features = false, optiona
 
 tracing = "^0.1.44"
 nanoid = "^0.5.0"
-tokio = { version = "^1.53.2", features = ["full"] }
+tokio = { version = "^1.54.1", features = ["full"] }
 parking_lot = "^0.12.5"
 time = { version = "^0.3.45", features = [
     "formatting",
     "local-offset",
     "macros",
 ] }
-itoa = "^1.0.18"
+itoa = "^1.0.19"
 derive_more = { version = "^2.1.1", features = ["display", "debug"] }
 chrono = "^0.4.45"
 thiserror = "^2.0.21"
@@ -74,7 +76,7 @@ btparse = "^0.2.0"
 strum_macros = "^0.28.0"
 regex = "^1.13.1"
 serde = "^1.0.229"
-serde_json = "^1.0.152"
+serde_json = "^1.0.154"
 dyn-fmt = "^0.4.3"
 backon = { version = "^1.6.0", default-features = false, features = ["tokio-sleep"] }
 metrics = "^0.24.6"
@@ -102,7 +104,7 @@ required-features = ["observability-trace"]
 [dev-dependencies]
 rstest = "^0.27.0"
 awaitility = "^0.4.1"
-tokio = { version = "^1.53.2", features = ["full", "test-util"] }
+tokio = { version = "^1.54.1", features = ["full", "test-util"] }
 metrics-util = { version = "^0.20.4", features = ["debugging"] }
 serial_test = "^4.0.1"
 tracing-subscriber = { version = "^0.3.23", features = [
@@ -126,4 +128,4 @@ opentelemetry-otlp = { version = "0.33.1", default-features = false, features = 
     "grpc-tonic",
 ]}
 tracing-opentelemetry = { version = "^0.34.0", default-features = false }
-pyroscope = { version = "^2.1.1", features = ["backend-pprof-rs"] }
+pyroscope = { version = "^2.1.5", features = ["backend-pprof-rs"] }
