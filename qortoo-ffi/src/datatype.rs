@@ -21,14 +21,12 @@ use qortoo::{BoxedError, ClientError, Datatype, DatatypeBuilder, DatatypeError, 
 
 use crate::{
     client::QortooClient,
-    error::{
-        QORTOO_ERR_INVALID_ARGUMENT, QortooError, clear_err, client_error_code,
-        datatype_error_code, set_err,
-    },
+    error::{QORTOO_ERR_INVALID_ARGUMENT, QortooError, clear_err, set_err},
     handler::{
         ForeignHandlerCtx, QortooOnErrorCallback, QortooOnStateChangeCallback,
         QortooUserdataDropCallback, make_foreign_handler,
     },
+    messages::ffi as msg,
     observability::with_remote_parent,
     util::{cstr_arg, ffi_guard, to_owned_c_string},
 };
@@ -152,7 +150,7 @@ pub(crate) unsafe fn build_datatype<H: DatatypeHandle>(
                 userdata_drop: opts.handler_userdata_drop,
             });
             let Some(client) = client.as_ref() else {
-                set_err(err_out, QORTOO_ERR_INVALID_ARGUMENT, "client is null");
+                set_err(err_out, QORTOO_ERR_INVALID_ARGUMENT, msg::NULL_CLIENT);
                 return ptr::null_mut();
             };
             let Some(key) = cstr_arg(key, "key", err_out) else {
@@ -183,7 +181,7 @@ pub(crate) unsafe fn build_datatype<H: DatatypeHandle>(
             match H::build(builder) {
                 Ok(inner) => Box::into_raw(Box::new(H::wrap(inner))),
                 Err(e) => {
-                    set_err(err_out, client_error_code(&e), &e.to_string());
+                    set_err(err_out, e.code(), &e.to_string());
                     ptr::null_mut()
                 }
             }
@@ -226,7 +224,7 @@ pub(crate) unsafe fn datatype_ref<'a, H: DatatypeHandle>(
     err_out: *mut QortooError,
 ) -> Option<&'a H::Inner> {
     let Some(handle) = (unsafe { handle.as_ref() }) else {
-        unsafe { boundary_err(err_out, &format!("{} is null", H::NAME)) };
+        unsafe { boundary_err(err_out, &msg::null_argument(H::NAME)) };
         return None;
     };
     match handle.inner() {
@@ -235,7 +233,7 @@ pub(crate) unsafe fn datatype_ref<'a, H: DatatypeHandle>(
         // in practice: a handle only ever holds the datatype its own constructor
         // built. Reported rather than assumed away.
         None => {
-            unsafe { boundary_err(err_out, &format!("handle is not a {}", H::NAME)) };
+            unsafe { boundary_err(err_out, &msg::wrong_handle_type(H::NAME)) };
             None
         }
     }
@@ -249,7 +247,7 @@ unsafe fn shared_ref<'a>(
     match unsafe { datatype.as_ref() } {
         Some(datatype) => Some(datatype.datatype()),
         None => {
-            unsafe { boundary_err(err_out, "datatype is null") };
+            unsafe { boundary_err(err_out, msg::NULL_DATATYPE) };
             None
         }
     }
@@ -263,7 +261,7 @@ unsafe fn boundary_err(err_out: *mut QortooError, message: &str) {
 /// Reports a `DatatypeError` through `err_out`; success leaves `err_out` cleared.
 fn report_datatype_result(result: Result<(), DatatypeError>, err_out: *mut QortooError) {
     if let Err(e) = result {
-        unsafe { set_err(err_out, datatype_error_code(&e), &e.to_string()) };
+        unsafe { set_err(err_out, e.code(), &e.to_string()) };
     }
 }
 
@@ -502,7 +500,7 @@ fn run_transaction<H: DatatypeHandle>(
         if code == 0 {
             Ok(())
         } else {
-            Err(format!("aborted by foreign callback (code {code})").into())
+            Err(msg::foreign_callback_aborted(code).into())
         }
     });
     report_datatype_result(result, err_out);

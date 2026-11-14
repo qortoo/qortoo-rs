@@ -10,7 +10,7 @@ use std::net::{SocketAddr, ToSocketAddrs};
 
 #[cfg(feature = "observability-trace")]
 use crate::constants;
-use crate::errors::observability::ObservabilityError;
+use crate::errors::{messages::observability as msg, observability::ObservabilityError};
 
 /// Service name reported to the trace backend when the caller does not set one.
 #[cfg(feature = "observability-trace")]
@@ -138,9 +138,8 @@ pub fn resolve_log_filter(setting: Option<String>) -> Result<String, Observabili
     let filter = setting
         .or_else(|| std::env::var("RUST_LOG").ok())
         .unwrap_or_else(|| DEFAULT_LOG_FILTER.to_string());
-    tracing_subscriber::EnvFilter::try_new(&filter).map_err(|e| {
-        ObservabilityError::InvalidConfig(format!("invalid log filter '{filter}': {e}"))
-    })?;
+    tracing_subscriber::EnvFilter::try_new(&filter)
+        .map_err(|e| ObservabilityError::InvalidConfig(msg::invalid_log_filter(&filter, &e)))?;
     Ok(filter)
 }
 
@@ -161,15 +160,9 @@ pub fn resolve_metrics_listen_addr(
 ) -> Result<SocketAddr, ObservabilityError> {
     let raw = setting.unwrap_or_else(|| DEFAULT_METRICS_LISTEN_ADDR.to_string());
     raw.to_socket_addrs()
-        .map_err(|e| {
-            ObservabilityError::InvalidConfig(format!("invalid metrics_listen_addr '{raw}': {e}"))
-        })?
+        .map_err(|e| ObservabilityError::InvalidConfig(msg::invalid_metrics_address(&raw, &e)))?
         .next()
-        .ok_or_else(|| {
-            ObservabilityError::InvalidConfig(format!(
-                "metrics_listen_addr '{raw}' resolved to no address"
-            ))
-        })
+        .ok_or_else(|| ObservabilityError::InvalidConfig(msg::missing_metrics_address(&raw)))
 }
 
 #[cfg(test)]

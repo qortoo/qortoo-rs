@@ -9,7 +9,7 @@
 #include <stdlib.h>
 
 /**
- * Error code used when a panic crosses the FFI boundary or an error variant is unknown.
+ * Error code used when a Rust panic is caught at the FFI boundary.
  */
 #define QORTOO_ERR_INTERNAL_FFI 999
 

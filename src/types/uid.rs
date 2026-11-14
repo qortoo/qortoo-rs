@@ -8,7 +8,10 @@ use std::{
 use nanoid::nanoid;
 
 use crate::{
-    errors::datatypes::{DatatypeError, deserialize_error},
+    errors::{
+        datatypes::{DatatypeError, deserialize_error},
+        messages::snapshot as msg,
+    },
     types::common::ArcStr,
 };
 
@@ -43,13 +46,14 @@ impl Uid {
     pub(crate) fn from_bytes(encoded: &[u8]) -> Result<Self, DatatypeError> {
         if encoded.len() != UID_LEN {
             return Err(deserialize_error(
-                "uid",
-                format_args!("expected {UID_LEN} bytes, got {}", encoded.len()),
+                msg::UID_CONTEXT,
+                msg::length_mismatch(UID_LEN, encoded.len()),
             ));
         }
         let value = std::str::from_utf8(encoded)
-            .map_err(|_| deserialize_error("uid", "not valid UTF-8"))?;
-        Self::try_from(value).map_err(|_| deserialize_error("uid", "invalid format"))
+            .map_err(|_| deserialize_error(msg::UID_CONTEXT, msg::INVALID_UTF8))?;
+        Self::try_from(value)
+            .map_err(|_| deserialize_error(msg::UID_CONTEXT, msg::INVALID_UID_DETAIL))
     }
 
     fn validate(s: &str) -> bool {
@@ -89,7 +93,7 @@ impl TryFrom<String> for Uid {
         if Self::validate(&value) {
             Ok(Self(value.into()))
         } else {
-            Err("Invalid UID format")
+            Err(msg::INVALID_UID_FORMAT)
         }
     }
 }
@@ -101,7 +105,7 @@ impl TryFrom<&str> for Uid {
         if Self::validate(value) {
             Ok(Self(Arc::from(value)))
         } else {
-            Err("Invalid UID format")
+            Err(msg::INVALID_UID_FORMAT)
         }
     }
 }
@@ -224,7 +228,10 @@ mod tests_uid {
             let uid = result.unwrap();
             assert_eq!(uid.to_string(), input);
         } else {
-            assert!(result.is_err());
+            assert_eq!(
+                result.unwrap_err(),
+                "invalid UID format: expected 16 ASCII letters, digits, '-' or '_'"
+            );
         }
     }
 
@@ -236,7 +243,10 @@ mod tests_uid {
             let uid = result.unwrap();
             assert_eq!(uid.as_ref(), input);
         } else {
-            assert!(result.is_err());
+            assert_eq!(
+                result.unwrap_err(),
+                "invalid UID format: expected 16 ASCII letters, digits, '-' or '_'"
+            );
         }
     }
 }

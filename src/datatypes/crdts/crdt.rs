@@ -7,7 +7,8 @@ use super::{
     variable_crdt::VariableCrdt,
 };
 use crate::{
-    DataType, DatatypeError, errors::datatypes::InternalReason,
+    DataType, DatatypeError,
+    errors::{datatypes::InternalReason, messages::datatype as msg},
     types::operation_context::OperationContext,
 };
 
@@ -79,10 +80,10 @@ impl Crdt {
             (Crdt::Variable(v), RollbackAction::Variable(action)) => {
                 v.apply_rollback_action(action)
             }
-            _ => Err(InternalReason::ExecuteOperation(
-                "rollback action does not match crdt".to_owned(),
-            )
-            .into_error()),
+            _ => Err(
+                InternalReason::ExecuteOperation(msg::ROLLBACK_ACTION_MISMATCH.to_owned())
+                    .into_error(),
+            ),
         }
     }
 
@@ -261,10 +262,9 @@ mod tests_crdt {
 
         let error = counter.apply_rollback_action(rollback_action).unwrap_err();
 
-        assert!(
-            error
-                .to_string()
-                .contains("rollback action does not match crdt")
+        assert_eq!(
+            error.to_string(),
+            "[E202] internal error: execute operation: rollback action does not match the CRDT type"
         );
         let counter = counter.as_counter().expect("expected a counter crdt");
         assert_eq!(counter.value(), 0);

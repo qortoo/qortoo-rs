@@ -17,7 +17,7 @@ use serde::{
     de::{DeserializeOwned, IgnoredAny},
 };
 
-use crate::errors::datatypes::DatatypeError;
+use crate::errors::{datatypes::DatatypeError, messages::value as msg};
 
 /// Encodes a user value into compact JSON bytes.
 pub(crate) fn encode_json_value<T: Serialize + ?Sized>(
@@ -25,7 +25,7 @@ pub(crate) fn encode_json_value<T: Serialize + ?Sized>(
 ) -> Result<Box<[u8]>, DatatypeError> {
     serde_json::to_vec(value)
         .map(Vec::into_boxed_slice)
-        .map_err(|error| value_conversion_error("encode", error))
+        .map_err(|error| value_conversion_error(msg::ENCODE, error))
 }
 
 /// Validates that `bytes` is exactly one UTF-8 JSON value and returns it unchanged.
@@ -39,9 +39,9 @@ pub(crate) fn validate_json_value(bytes: &[u8]) -> Result<Box<[u8]>, DatatypeErr
     // so the whole input is checked here first; `from_str` then rejects anything that
     // is not exactly one value, trailing content included.
     let json =
-        std::str::from_utf8(bytes).map_err(|error| value_conversion_error("decode", error))?;
+        std::str::from_utf8(bytes).map_err(|error| value_conversion_error(msg::DECODE, error))?;
     serde_json::from_str::<IgnoredAny>(json)
-        .map_err(|error| value_conversion_error("decode", error))?;
+        .map_err(|error| value_conversion_error(msg::DECODE, error))?;
     Ok(Box::from(bytes))
 }
 
@@ -50,11 +50,11 @@ pub(crate) fn validate_json_value(bytes: &[u8]) -> Result<Box<[u8]>, DatatypeErr
 /// Rejects input that is not exactly one JSON value. JSON `null` decodes only into
 /// nullable destinations such as `Option<T>` or `serde_json::Value`.
 pub(crate) fn decode_json_value<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, DatatypeError> {
-    serde_json::from_slice(bytes).map_err(|error| value_conversion_error("decode", error))
+    serde_json::from_slice(bytes).map_err(|error| value_conversion_error(msg::DECODE, error))
 }
 
 fn value_conversion_error(direction: &str, error: impl Display) -> DatatypeError {
-    DatatypeError::ValueConversion(format!("{direction}: {error}"))
+    DatatypeError::ValueConversion(msg::conversion(direction, error))
 }
 
 #[cfg(test)]

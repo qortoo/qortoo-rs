@@ -18,7 +18,8 @@ use qortoo::{
 };
 
 use crate::{
-    error::{QortooError, clear_err, observability_error_code, set_err},
+    error::{QortooError, clear_err, set_err},
+    messages::ffi as msg,
     util::{cstr_arg, ffi_guard},
 };
 
@@ -75,7 +76,7 @@ pub unsafe extern "C" fn qortoo_observability_init(
                 return;
             };
             if let Err(e) = qortoo::init_observability(settings) {
-                set_err(err_out, observability_error_code(&e), &e.to_string());
+                set_err(err_out, e.code(), &e.to_string());
             }
         })
     }
@@ -98,7 +99,7 @@ pub unsafe extern "C" fn qortoo_observability_shutdown(timeout_ms: u64, err_out:
                 ms => Duration::from_millis(ms),
             };
             if let Err(e) = qortoo::shutdown_observability(timeout) {
-                set_err(err_out, observability_error_code(&e), &e.to_string());
+                set_err(err_out, e.code(), &e.to_string());
             }
         })
     }
@@ -111,8 +112,8 @@ fn log_format_from_i32(value: i32) -> Result<LogFormat, ObservabilityError> {
         0 => Ok(LogFormat::Off),
         1 => Ok(LogFormat::Json),
         2 => Ok(LogFormat::Text),
-        other => Err(ObservabilityError::InvalidConfig(format!(
-            "unknown log_format {other} (expected 0=off, 1=json, 2=text)"
+        other => Err(ObservabilityError::InvalidConfig(msg::unknown_log_format(
+            other,
         ))),
     }
 }
@@ -144,7 +145,7 @@ unsafe fn build_settings(
     let metrics_listen_addr = optional_arg!(metrics_listen_addr);
 
     let fail = |e: ObservabilityError| {
-        unsafe { set_err(err_out, observability_error_code(&e), &e.to_string()) };
+        unsafe { set_err(err_out, e.code(), &e.to_string()) };
         None::<ObservabilitySettings>
     };
 

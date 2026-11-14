@@ -2,6 +2,10 @@ use std::fmt::Display;
 
 use thiserror::Error;
 
+use crate::errors::messages::{
+    datatype as datatype_msg, snapshot as snapshot_msg, sync as sync_msg, value as value_msg,
+};
+
 /// Internal SDK error reason, used by the event loop for action routing.
 ///
 /// Not exposed to users. Internal callers use this to construct `DatatypeError::Internal`
@@ -12,14 +16,14 @@ pub(crate) enum InternalReason {
     ///
     /// Route: `apply_snapshot_transaction()` → `pull_handler::apply_subscribe_response()`
     /// → `mapping()` → `RecoveryAction::Disable`.
-    #[error("deserialize: {0}")]
+    #[error("{prefix}{0}", prefix = snapshot_msg::DESERIALIZE_PREFIX)]
     Deserialize(String),
     /// A CRDT operation failed to execute.
     ///
     /// Routes:
     /// - remote: `execute_transactions()` → `mapping()` → `RecoveryAction::Disable`
     /// - local: returned directly to the user API caller (does not reach the event loop)
-    #[error("execute operation: {0}")]
+    #[error("{prefix}{0}", prefix = datatype_msg::EXECUTE_OPERATION_PREFIX)]
     ExecuteOperation(String),
     /// An event-loop channel operation failed.
     ///
@@ -28,7 +32,7 @@ pub(crate) enum InternalReason {
     ///   bypassing `mapping()` (the loop is stopping anyway)
     /// - send/response failures and stopped-loop rejections: returned directly to the
     ///   API caller (e.g., `sync()`), without event-loop routing
-    #[error("event loop: {0}")]
+    #[error("{prefix}{0}", prefix = sync_msg::EVENT_LOOP_PREFIX)]
     EventLoop(String),
     /// Cseq was non-sequential in the push buffer.
     ///
@@ -36,13 +40,13 @@ pub(crate) enum InternalReason {
     /// erased into `DatatypeError::Internal`:
     /// `enqueue()` → `end_transaction()` → `RecoveryAction::RollbackTransaction`
     /// (the unbuffered transaction is rolled back and the datatype stays alive).
-    #[error("non-sequential cseq in push buffer")]
+    #[error("{}", sync_msg::NON_SEQUENTIAL_CSEQ)]
     NonSequentialCseq,
     /// The push buffer could not provide the transactions to push (cseq out of range).
     ///
     /// Route: `create_push_pull_pack()` → `do_push_pull()` → `mapping()`
     /// → `RecoveryAction::Disable`.
-    #[error("failed to get pushing transactions")]
+    #[error("{}", sync_msg::GET_PUSHING_TRANSACTIONS_FAILED)]
     GetPushingTransactions,
 }
 
@@ -73,7 +77,7 @@ impl InternalReason {
 
 /// Constructs a deserialization error with a stable component context.
 pub(crate) fn deserialize_error(context: &str, message: impl Display) -> DatatypeError {
-    InternalReason::Deserialize(format!("{context}: {message}")).into_error()
+    InternalReason::Deserialize(snapshot_msg::with_context(context, &message)).into_error()
 }
 
 /// Reason a server permanently rejected a datatype operation.
@@ -91,6 +95,18 @@ pub enum ServerRejectReason {
     MissingSubscription(String),
     /// The push violated the wire protocol (e.g., unexpected state transition, type mismatch).
     ProtocolViolation(String),
+}
+
+impl Display for ServerRejectReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (prefix, detail) = match self {
+            Self::CreateFailed(detail) => (sync_msg::CREATE_FAILED_PREFIX, detail),
+            Self::ResourceNotFound(detail) => (sync_msg::RESOURCE_NOT_FOUND_PREFIX, detail),
+            Self::MissingSubscription(detail) => (sync_msg::MISSING_SUBSCRIPTION_PREFIX, detail),
+            Self::ProtocolViolation(detail) => (sync_msg::PROTOCOL_VIOLATION_PREFIX, detail),
+        };
+        write!(f, "{prefix}{detail}")
+    }
 }
 
 /// Errors that can occur while working with Qortoo datatypes.
@@ -112,46 +128,63 @@ pub enum DatatypeError {
     /// Returned when a closure passed to `transaction` returns an error or when the
     /// transactional context cannot be committed. The datatype state is left unchanged
     /// if a rollback succeeds.
-    #[error("[DatatypeError] transaction failed: {0}")]
+    #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = datatype_msg::TRANSACTION_FAILED_PREFIX)]
     TransactionFailed(String) = 201,
     /// An internal SDK error that is not caused by user code.
     ///
     /// The message describes the internal failure. This error is not user-actionable;
     /// please report it as a bug.
-    #[error("[DatatypeError] internal error: {0}")]
+    #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = datatype_msg::INTERNAL_PREFIX)]
     Internal(String) = 202,
     /// Access denied for a reason other than state or readonly flag (e.g., key not managed by this client).
-    #[error("[DatatypeError] disallowed to {0}")]
+    #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = datatype_msg::DISALLOWED_PREFIX)]
     Disallowed(String) = 205,
     /// Write rejected because the datatype state does not allow writes.
-    #[error("[DatatypeError] not writable: {0}")]
+    #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = datatype_msg::NOT_WRITABLE_PREFIX)]
     NotWritable(String) = 206,
     /// Write rejected because the datatype is configured as readonly.
-    #[error("[DatatypeError] readonly violation")]
+    #[error("[E{code}] {}", datatype_msg::READONLY_VIOLATION, code = self.code())]
     ReadonlyViolation = 207,
 
     /// A transient sync failure that warrants a retry with backoff.
     ///
     /// The connectivity backend failed to complete the push-pull exchange.
     /// The datatype state is not changed; the event loop will retry with exponential backoff.
-    #[error("[DatatypeError] sync failed: {0}")]
+    #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = sync_msg::SYNC_FAILED_PREFIX)]
     SyncFailed(String) = 210,
-    #[error("[DatatypeError] pushBuffer exceeded max size of memory")]
+    #[error("[E{code}] {}", datatype_msg::PUSH_BUFFER_EXCEEDED_MAX_MEM_SIZE, code = self.code())]
     PushBufferExceededMaxMemSize = 211,
     /// The server rejected the operation. Missing subscriptions trigger snapshot recovery;
     /// other reasons disable the datatype.
-    #[error("[DatatypeError] server rejected: {0:?}")]
+    #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = sync_msg::SERVER_REJECTED_PREFIX)]
     ServerRejected(ServerRejectReason) = 213,
     /// A user value could not be converted to or from its stored JSON representation.
     ///
     /// Returned directly to the API caller when encoding a value into JSON bytes or
     /// decoding stored JSON bytes into the requested type fails. The datatype state is
     /// unchanged, and this error is never routed through the event loop.
-    #[error("[DatatypeError] value conversion failed: {0}")]
+    #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = value_msg::CONVERSION_PREFIX)]
     ValueConversion(String) = 214,
 }
 
 impl DatatypeError {
+    /// Returns the stable numeric diagnostic code shared with language bindings.
+    ///
+    /// Use this value for programmatic decisions rather than parsing the message.
+    pub const fn code(&self) -> i32 {
+        match self {
+            Self::TransactionFailed(_) => 201,
+            Self::Internal(_) => 202,
+            Self::Disallowed(_) => 205,
+            Self::NotWritable(_) => 206,
+            Self::ReadonlyViolation => 207,
+            Self::SyncFailed(_) => 210,
+            Self::PushBufferExceededMaxMemSize => 211,
+            Self::ServerRejected(_) => 213,
+            Self::ValueConversion(_) => 214,
+        }
+    }
+
     /// Converts this error into its recovery action.
     ///
     /// This is the single source of truth for action routing. Variants handled here:

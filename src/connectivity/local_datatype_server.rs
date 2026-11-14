@@ -10,7 +10,7 @@ use tracing::{instrument, trace};
 use crate::{
     DataType, DatatypeState,
     datatypes::{Crdt, common::Attribute, event_loop::Event, wired::WiredDatatype},
-    errors::{connectivity::ConnectivityError, push_pull::PushPullError},
+    errors::{connectivity::ConnectivityError, messages::sync as msg, push_pull::PushPullError},
     operations::{Operation, transaction::Transaction},
     types::{
         checkpoint::CheckPoint,
@@ -21,18 +21,6 @@ use crate::{
         uid::{Cuid, Duid},
     },
 };
-
-const ERR_INVALID_GC_ACK: &str = "GC acknowledgement exceeds applied checkpoint";
-const ERR_INVALID_TRANSACTION: &str = "invalid transaction identity or client sequence";
-const ERR_INVALID_IDENTITY: &str = "invalid datatype identity";
-const ERR_INVALID_CHECKPOINT: &str = "checkpoint exceeds the server head";
-const ERR_HISTORY_PRUNED: &str = "requested server history has been pruned";
-const ERR_ALREADY_EXISTS: &str = "already exist";
-const ERR_INVALID_CREATION: &str = "invalid creation DUID or type";
-const ERR_DISABLED_PUSH: &str = "disabled client attempted push";
-const ERR_DELETING_UNSUPPORTED: &str = "datatype deletion is not supported";
-const ERR_SUBSCRIBING_PUSH: &str = "cannot push transactions when subscribing";
-const ERR_INVALID_SUBSCRIPTION_CHECKPOINT: &str = "invalid subscription checkpoint";
 
 macro_rules! datatype_server_instrument {
     ($(#[$attr:meta])* $vis:vis fn $name:ident $($rest:tt)*) => {
@@ -145,7 +133,7 @@ impl SyncedState {
                 || tx.operations.is_empty()
             {
                 return Err(PushPullError::ProtocolViolation(
-                    ERR_INVALID_TRANSACTION.into(),
+                    msg::INVALID_TRANSACTION.into(),
                 ));
             }
             for operation in tx.iter() {
@@ -273,7 +261,7 @@ impl LocalDatatypeServer {
 
     fn validate_gc_ack(&self, pushed: &PushPullPack) -> Result<(), PushPullError> {
         if pushed.sseq_gc_safe > pushed.checkpoint.sseq {
-            return Err(PushPullError::ProtocolViolation(ERR_INVALID_GC_ACK.into()));
+            return Err(PushPullError::ProtocolViolation(msg::INVALID_GC_ACK.into()));
         }
         Ok(())
     }
@@ -281,23 +269,22 @@ impl LocalDatatypeServer {
     fn validate_progress(&self, pushed: &PushPullPack) -> Result<(), PushPullError> {
         self.validate_gc_ack(pushed)?;
         if !self.synced.has_active_subscription(&pushed.cuid) {
-            return Err(PushPullError::MissingSubscription(format!(
-                "cuid '{}' has no active datatype subscription on this server",
-                pushed.cuid
-            )));
+            return Err(PushPullError::MissingSubscription(
+                msg::missing_active_subscription(&pushed.cuid),
+            ));
         }
         if self.duid != pushed.duid || self.r#type != pushed.r#type {
             return Err(PushPullError::ProtocolViolation(
-                ERR_INVALID_IDENTITY.into(),
+                msg::INVALID_IDENTITY.into(),
             ));
         }
         if self.synced.is_ahead_of_server(pushed.checkpoint.sseq) {
             return Err(PushPullError::ProtocolViolation(
-                ERR_INVALID_CHECKPOINT.into(),
+                msg::INVALID_CHECKPOINT.into(),
             ));
         }
         if self.synced.requires_pruned_history(pushed.checkpoint.sseq) {
-            return Err(PushPullError::ProtocolViolation(ERR_HISTORY_PRUNED.into()));
+            return Err(PushPullError::ProtocolViolation(msg::HISTORY_PRUNED.into()));
         }
         Ok(())
     }
@@ -305,28 +292,28 @@ impl LocalDatatypeServer {
     fn validate_creation(&self, pushed: &PushPullPack) -> Result<(), PushPullError> {
         self.validate_gc_ack(pushed)?;
         if self.is_created() && self.duid != pushed.duid {
-            return Err(PushPullError::CreateFailed(ERR_ALREADY_EXISTS.into()));
+            return Err(PushPullError::CreateFailed(msg::ALREADY_EXISTS.into()));
         }
         // Existing resources require a snapshot before a new generation can write.
         if self.is_created() && !self.synced.has_active_subscription(&pushed.cuid) {
             return Err(PushPullError::MissingSubscription(
-                "creation retry requires an active subscription generation".into(),
+                msg::CREATION_REQUIRES_SUBSCRIPTION.into(),
             ));
         }
         if pushed.duid.is_nil() || self.r#type != pushed.r#type {
             return Err(PushPullError::ProtocolViolation(
-                ERR_INVALID_CREATION.into(),
+                msg::INVALID_CREATION.into(),
             ));
         }
         if self.synced.is_ahead_of_server(pushed.checkpoint.sseq) {
             return Err(PushPullError::ProtocolViolation(
-                ERR_INVALID_CHECKPOINT.into(),
+                msg::INVALID_CHECKPOINT.into(),
             ));
         }
         if self.synced.has_active_subscription(&pushed.cuid) {
             self.validate_progress(pushed)?;
         } else if self.synced.requires_pruned_history(pushed.checkpoint.sseq) {
-            return Err(PushPullError::ProtocolViolation(ERR_HISTORY_PRUNED.into()));
+            return Err(PushPullError::ProtocolViolation(msg::HISTORY_PRUNED.into()));
         }
         if pushed.is_readonly {
             return Err(PushPullError::ReadonlyViolation);
@@ -337,34 +324,30 @@ impl LocalDatatypeServer {
     fn validate_subscription(&self, pushed: &PushPullPack) -> Result<(), PushPullError> {
         self.validate_gc_ack(pushed)?;
         if !self.is_created() {
-            return Err(PushPullError::ResourceNotFound(format!(
-                "{} '{}' not exists",
+            return Err(PushPullError::ResourceNotFound(msg::resource_not_found(
                 pushed.r#type,
                 pushed.resource_id(),
             )));
         }
         if self.r#type != pushed.r#type {
-            return Err(PushPullError::ResourceNotFound(format!(
-                "mismatched types for '{}': pushed type-{} but existed type {}",
-                pushed.resource_id(),
-                pushed.r#type,
-                self.r#type,
-            )));
+            return Err(PushPullError::ResourceNotFound(
+                msg::resource_type_mismatch(pushed.resource_id(), pushed.r#type, self.r#type),
+            ));
         }
         if !pushed.transactions.is_empty() {
             return Err(PushPullError::ProtocolViolation(
-                ERR_SUBSCRIBING_PUSH.into(),
+                msg::SUBSCRIBING_PUSH.into(),
             ));
         }
 
         if self.synced.is_ahead_of_server(pushed.checkpoint.sseq) {
             return Err(PushPullError::ProtocolViolation(
-                ERR_INVALID_CHECKPOINT.into(),
+                msg::INVALID_CHECKPOINT.into(),
             ));
         }
         if !self.synced.has_active_subscription(&pushed.cuid) && pushed.checkpoint.sseq != 0 {
             return Err(PushPullError::ProtocolViolation(
-                ERR_INVALID_SUBSCRIPTION_CHECKPOINT.into(),
+                msg::INVALID_SUBSCRIPTION_CHECKPOINT.into(),
             ));
         }
         Ok(())
@@ -405,7 +388,7 @@ impl LocalDatatypeServer {
                 pulled
             } else {
                 pulled.with_error(PushPullError::MissingSubscription(
-                    "retired subscription generation".into(),
+                    msg::RETIRED_SUBSCRIPTION.into(),
                 ))
             });
         }
@@ -424,7 +407,7 @@ impl LocalDatatypeServer {
                 pushed
                     .get_pulled_stub()
                     .with_error(PushPullError::MissingSubscription(
-                        "subscription generation mismatch".into(),
+                        msg::SUBSCRIPTION_GENERATION_MISMATCH.into(),
                     )),
             );
         }
@@ -614,14 +597,14 @@ impl LocalDatatypeServer {
     datatype_server_instrument! {
     fn process_deleting(&mut self) -> Result<(), PushPullError> {
         Err(PushPullError::ProtocolViolation(
-            ERR_DELETING_UNSUPPORTED.into(),
+            msg::DELETING_UNSUPPORTED.into(),
         ))
     }}
 
     datatype_server_instrument! {
     fn process_disabled(&mut self) -> Result<(), PushPullError> {
         Err(PushPullError::ProtocolViolation(
-            ERR_DISABLED_PUSH.into(),
+            msg::DISABLED_PUSH.into(),
         ))
     }}
 

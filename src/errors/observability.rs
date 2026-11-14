@@ -6,40 +6,57 @@
 
 use thiserror::Error;
 
+use crate::errors::messages::observability as msg;
+
 /// Why [`crate::init_observability`] or [`crate::shutdown_observability`] failed.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum ObservabilityError {
     /// `init_observability` was already called in this process.
-    #[error("observability is already initialized")]
+    #[error("[E{code}] {}", msg::ALREADY_INITIALIZED, code = self.code())]
     AlreadyInitialized,
 
     /// `init_observability` was called after `shutdown_observability`; the installed
     /// process-global subscriber or recorder cannot be removed and restored reliably.
-    #[error("observability was shut down and cannot be initialized again in this process")]
+    #[error("[E{code}] {}", msg::SHUT_DOWN, code = self.code())]
     ShutDown,
 
     /// A previous initialization installed an irreversible process-global component
     /// before a later component failed.
-    #[error(
-        "observability was only partially initialized and cannot be initialized again in this process"
-    )]
+    #[error("[E{code}] {}", msg::PARTIALLY_INITIALIZED, code = self.code())]
     PartiallyInitialized,
 
     /// The global `tracing` subscriber was already installed by someone else.
-    #[error("failed to install the tracing subscriber: {0}")]
+    #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = msg::SUBSCRIBER_PREFIX)]
     Subscriber(String),
 
     /// Building, flushing, or stopping a telemetry exporter failed.
-    #[error("telemetry exporter error: {0}")]
+    #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = msg::EXPORTER_PREFIX)]
     Exporter(String),
 
     /// The global `metrics` recorder was already installed by someone else.
-    #[error("failed to install the metrics recorder: {0}")]
+    #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = msg::RECORDER_PREFIX)]
     Recorder(String),
 
     /// The settings do not describe a valid configuration.
-    #[error("invalid configuration: {0}")]
+    #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = msg::INVALID_CONFIG_PREFIX)]
     InvalidConfig(String),
+}
+
+impl ObservabilityError {
+    /// Returns the stable numeric diagnostic code shared with language bindings.
+    ///
+    /// Use this value for programmatic decisions rather than parsing the message.
+    pub const fn code(&self) -> i32 {
+        match self {
+            Self::AlreadyInitialized => 900,
+            Self::ShutDown => 901,
+            Self::Subscriber(_) => 902,
+            Self::Exporter(_) => 903,
+            Self::Recorder(_) => 904,
+            Self::InvalidConfig(_) => 905,
+            Self::PartiallyInitialized => 906,
+        }
+    }
 }
 
 #[cfg(test)]

@@ -14,7 +14,7 @@ use crate::{
     DatatypeState,
     connectivity::{Connectivity, local_datatype_server::LocalDatatypeServer},
     datatypes::{event_loop::Event, wired::WiredDatatype},
-    errors::{connectivity::ConnectivityError, push_pull::PushPullError},
+    errors::{connectivity::ConnectivityError, messages::sync as msg, push_pull::PushPullError},
     types::{common::ResourceID, push_pull_pack::PushPullPack, uid::Cuid},
 };
 
@@ -204,7 +204,7 @@ impl Connectivity for LocalConnectivity {
             pulled.error = match (retired, pushed.state) {
                 (true, DatatypeState::Unsubscribing) => None,
                 (true, _) => Some(PushPullError::MissingSubscription(
-                    "retired subscription generation".into(),
+                    msg::RETIRED_SUBSCRIPTION.into(),
                 )),
                 (false, _) => Some(PushPullError::ResourceNotFound(resource_id.clone())),
             };

@@ -361,7 +361,9 @@ impl CreatingScenario {
                 pre_create: true,
                 modify_push: push_set_new_duid,
                 is_readonly: false,
-                error: Some(PushPullError::CreateFailed("already exist".to_string())),
+                error: Some(PushPullError::CreateFailed(
+                    "datatype already exists".to_string(),
+                )),
                 checkpoint: CheckPoint::new(0, 0),
                 is_created: true,
                 history_len: 10,

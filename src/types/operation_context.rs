@@ -1,6 +1,6 @@
 use crate::{
     DatatypeError,
-    errors::datatypes::InternalReason,
+    errors::{datatypes::InternalReason, messages::datatype as msg},
     operations::Operation,
     types::{timestamp::Timestamp, uid::Cuid},
 };
@@ -21,7 +21,7 @@ impl<'a> OperationContext<'a> {
     pub(crate) fn try_new(operation: &'a Operation, cuid: &Cuid) -> Result<Self, DatatypeError> {
         if operation.lamport == 0 {
             return Err(InternalReason::ExecuteOperation(
-                "modification operation must use a positive Lamport timestamp".to_owned(),
+                msg::POSITIVE_LAMPORT_REQUIRED.to_owned(),
             )
             .into_error());
         }

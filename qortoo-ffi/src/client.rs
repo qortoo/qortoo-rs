@@ -5,11 +5,9 @@ use std::{ffi::c_char, ptr};
 use qortoo::Client;
 
 use crate::{
-    error::{
-        QORTOO_ERR_INVALID_ARGUMENT, QortooError, clear_err, client_error_code,
-        datatype_error_code, set_err,
-    },
+    error::{QORTOO_ERR_INVALID_ARGUMENT, QortooError, clear_err, set_err},
     local_connectivity::QortooLocalConnectivity,
+    messages::ffi as msg,
     util::{cstr_arg, ffi_guard, to_owned_c_string},
 };
 
@@ -43,7 +41,7 @@ pub unsafe extern "C" fn qortoo_client_new(
             match builder.build() {
                 Ok(client) => Box::into_raw(Box::new(QortooClient { inner: client })),
                 Err(e) => {
-                    set_err(err_out, client_error_code(&e), &e.to_string());
+                    set_err(err_out, e.code(), &e.to_string());
                     ptr::null_mut()
                 }
             }
@@ -89,14 +87,14 @@ pub unsafe extern "C" fn qortoo_client_unsubscribe_datatype(
         clear_err(err_out);
         ffi_guard(err_out, (), || {
             let Some(client) = client.as_ref() else {
-                set_err(err_out, QORTOO_ERR_INVALID_ARGUMENT, "client is null");
+                set_err(err_out, QORTOO_ERR_INVALID_ARGUMENT, msg::NULL_CLIENT);
                 return;
             };
             let Some(key) = cstr_arg(key, "key", err_out) else {
                 return;
             };
             if let Err(e) = client.inner.unsubscribe_datatype(&key) {
-                set_err(err_out, datatype_error_code(&e), &e.to_string());
+                set_err(err_out, e.code(), &e.to_string());
             }
         })
     }

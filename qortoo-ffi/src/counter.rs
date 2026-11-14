@@ -12,7 +12,7 @@ use qortoo::{BoxedError, ClientError, Counter, DatatypeBuilder, DatatypeError, D
 use crate::{
     client::QortooClient,
     datatype::{self, BuildMode, DatatypeHandle, QortooDatatype, QortooDatatypeOptions},
-    error::{QortooError, clear_err, datatype_error_code, set_err},
+    error::{QortooError, clear_err, set_err},
     util::ffi_guard,
 };
 
@@ -141,7 +141,7 @@ pub unsafe extern "C" fn qortoo_counter_increase_by(
             match c.increase_by(delta) {
                 Ok(v) => v,
                 Err(e) => {
-                    set_err(err_out, datatype_error_code(&e), &e.to_string());
+                    set_err(err_out, e.code(), &e.to_string());
                     0
                 }
             }

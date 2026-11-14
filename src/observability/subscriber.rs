@@ -9,7 +9,7 @@ use tracing_subscriber::{EnvFilter, Registry, fmt, layer::SubscriberExt};
 
 use crate::{
     constants,
-    errors::observability::ObservabilityError,
+    errors::{messages::observability as msg, observability::ObservabilityError},
     observability::{
         log_layer::QortooLogLayer,
         settings::{LogFormat, ObservabilitySettings, TraceSettings},
@@ -32,10 +32,7 @@ pub fn build_tracer_provider(
         .with_endpoint(&trace.endpoint)
         .build()
         .map_err(|e| {
-            ObservabilityError::Exporter(format!(
-                "failed to build the OTLP exporter for '{}': {e}",
-                trace.endpoint
-            ))
+            ObservabilityError::Exporter(msg::otlp_exporter_failed(&trace.endpoint, &e))
         })?;
 
     Ok(SdkTracerProvider::builder()
@@ -70,10 +67,7 @@ pub fn install(
     provider: Option<&SdkTracerProvider>,
 ) -> Result<(), ObservabilityError> {
     let filter = EnvFilter::try_new(&settings.log_filter).map_err(|e| {
-        ObservabilityError::InvalidConfig(format!(
-            "invalid log filter '{}': {e}",
-            settings.log_filter
-        ))
+        ObservabilityError::InvalidConfig(msg::invalid_log_filter(&settings.log_filter, &e))
     })?;
 
     let json_layer =

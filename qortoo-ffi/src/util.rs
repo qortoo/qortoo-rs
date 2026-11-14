@@ -7,7 +7,10 @@ use std::{
     ptr,
 };
 
-use crate::error::{QORTOO_ERR_INTERNAL_FFI, QORTOO_ERR_INVALID_ARGUMENT, QortooError, set_err};
+use crate::{
+    error::{QORTOO_ERR_INTERNAL_FFI, QORTOO_ERR_INVALID_ARGUMENT, QortooError, set_err},
+    messages::ffi as msg,
+};
 
 /// Caller-owned byte buffer returned by this library (e.g. a JSON payload). Release it
 /// exactly once with `qortoo_owned_bytes_free`.
@@ -62,7 +65,7 @@ pub(crate) unsafe fn cstr_arg(
             set_err(
                 err_out,
                 QORTOO_ERR_INVALID_ARGUMENT,
-                &format!("{name} is null"),
+                &msg::null_argument(name),
             )
         };
         return None;
@@ -74,7 +77,7 @@ pub(crate) unsafe fn cstr_arg(
                 set_err(
                     err_out,
                     QORTOO_ERR_INVALID_ARGUMENT,
-                    &format!("{name} is not valid UTF-8"),
+                    &msg::invalid_utf8_argument(name),
                 )
             };
             None
@@ -97,13 +100,7 @@ pub(crate) unsafe fn ffi_guard<T, F: FnOnce() -> T>(
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(v) => v,
         Err(_) => {
-            unsafe {
-                set_err(
-                    err_out,
-                    QORTOO_ERR_INTERNAL_FFI,
-                    "panic across FFI boundary",
-                )
-            };
+            unsafe { set_err(err_out, QORTOO_ERR_INTERNAL_FFI, msg::PANIC) };
             default
         }
     }
@@ -143,6 +140,11 @@ mod tests_util {
         let got = unsafe { cstr_arg(ptr::null(), "arg", &mut err) };
         assert!(got.is_none());
         assert_eq!(err.code, QORTOO_ERR_INVALID_ARGUMENT);
+        assert_eq!(
+            unsafe { CStr::from_ptr(err.msg) }.to_str().unwrap(),
+            "[E998] arg is null"
+        );
+        unsafe { qortoo_string_free(err.msg) };
     }
 
     #[test]
@@ -153,6 +155,11 @@ mod tests_util {
         let got = unsafe { cstr_arg(bytes.as_ptr(), "arg", &mut err) };
         assert!(got.is_none());
         assert_eq!(err.code, QORTOO_ERR_INVALID_ARGUMENT);
+        assert_eq!(
+            unsafe { CStr::from_ptr(err.msg) }.to_str().unwrap(),
+            "[E998] arg is not valid UTF-8"
+        );
+        unsafe { qortoo_string_free(err.msg) };
     }
 
     #[test]
@@ -187,6 +194,10 @@ mod tests_util {
         assert!(
             !err.msg.is_null(),
             "the panic must be reported with an owned message"
+        );
+        assert_eq!(
+            unsafe { CStr::from_ptr(err.msg) }.to_str().unwrap(),
+            "[E999] Rust panic caught at the FFI boundary"
         );
         unsafe { qortoo_string_free(err.msg) };
     }

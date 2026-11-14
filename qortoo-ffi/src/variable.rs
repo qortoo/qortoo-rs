@@ -12,7 +12,8 @@ use qortoo::{BoxedError, ClientError, DatatypeBuilder, DatatypeError, DatatypeSe
 use crate::{
     client::QortooClient,
     datatype::{self, BuildMode, DatatypeHandle, QortooDatatype, QortooDatatypeOptions},
-    error::{QORTOO_ERR_INVALID_ARGUMENT, QortooError, clear_err, datatype_error_code, set_err},
+    error::{QORTOO_ERR_INVALID_ARGUMENT, QortooError, clear_err, set_err},
+    messages::ffi as msg,
     util::{QortooOwnedBytes, ffi_guard, into_owned_bytes},
 };
 
@@ -161,7 +162,7 @@ pub unsafe extern "C" fn qortoo_variable_set_raw(
             };
             match inner.set_raw(json) {
                 Ok(previous) => *previous_out = into_owned_bytes(previous),
-                Err(e) => set_err(err_out, datatype_error_code(&e), &e.to_string()),
+                Err(e) => set_err(err_out, e.code(), &e.to_string()),
             }
         })
     }
@@ -213,7 +214,7 @@ unsafe fn require_owned_out<'a>(
                 set_err(
                     err_out,
                     QORTOO_ERR_INVALID_ARGUMENT,
-                    &format!("{name} is null"),
+                    &msg::null_argument(name),
                 )
             };
             None
@@ -228,7 +229,7 @@ unsafe fn json_bytes_arg<'a>(
     err_out: *mut QortooError,
 ) -> Option<&'a [u8]> {
     if data.is_null() {
-        unsafe { set_err(err_out, QORTOO_ERR_INVALID_ARGUMENT, "data is null") };
+        unsafe { set_err(err_out, QORTOO_ERR_INVALID_ARGUMENT, msg::NULL_DATA) };
         return None;
     }
     Some(unsafe { std::slice::from_raw_parts(data, len) })

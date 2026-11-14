@@ -1,7 +1,10 @@
 use std::fmt::{Debug, Display, Formatter};
 
 use crate::{
-    errors::datatypes::{DatatypeError, deserialize_error},
+    errors::{
+        datatypes::{DatatypeError, deserialize_error},
+        messages::snapshot as msg,
+    },
     types::uid::{Cuid, UID_LEN},
 };
 
@@ -54,11 +57,8 @@ impl Timestamp {
     pub(crate) fn from_bytes(encoded: &[u8]) -> Result<Self, DatatypeError> {
         if encoded.len() != TIMESTAMP_ENCODED_LEN {
             return Err(deserialize_error(
-                "timestamp",
-                format_args!(
-                    "expected {TIMESTAMP_ENCODED_LEN} bytes, got {}",
-                    encoded.len()
-                ),
+                msg::TIMESTAMP_CONTEXT,
+                msg::length_mismatch(TIMESTAMP_ENCODED_LEN, encoded.len()),
             ));
         }
 

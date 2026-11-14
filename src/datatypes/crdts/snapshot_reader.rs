@@ -1,4 +1,7 @@
-use crate::{DatatypeError, errors::datatypes::deserialize_error};
+use crate::{
+    DatatypeError,
+    errors::{datatypes::deserialize_error, messages::snapshot as msg},
+};
 
 pub(crate) struct SnapshotReader<'a> {
     remaining: &'a [u8],
@@ -29,10 +32,7 @@ impl<'a> SnapshotReader<'a> {
         let Some((value, remaining)) = self.remaining.split_at_checked(length) else {
             return Err(deserialize_error(
                 self.context,
-                format_args!(
-                    "truncated {field}: expected {length} bytes, {} remain",
-                    self.remaining.len()
-                ),
+                msg::truncated_field(field, length, self.remaining.len()),
             ));
         };
         self.remaining = remaining;
@@ -45,7 +45,7 @@ impl<'a> SnapshotReader<'a> {
         }
         Err(deserialize_error(
             self.context,
-            format_args!("{} trailing bytes", self.remaining.len()),
+            msg::trailing_bytes(self.remaining.len()),
         ))
     }
 

@@ -7,8 +7,6 @@ use std::{
 
 use qortoo::DatatypeHandler;
 
-use crate::error::datatype_error_code;
-
 /// State-change notification: `(userdata, old_state, new_state)` with `DatatypeState`
 /// discriminants. Invoked on a Qortoo tokio worker thread.
 pub type QortooOnStateChangeCallback =
@@ -54,7 +52,7 @@ pub(crate) fn make_foreign_handler(ctx: ForeignHandlerCtx) -> DatatypeHandler {
         let ctx = ctx.clone();
         handler = handler.set_on_error(move |_ds, err| {
             if let Some(f) = ctx.on_error {
-                let code = datatype_error_code(&err);
+                let code = err.code();
                 let msg = CString::new(err.to_string()).unwrap_or_default();
                 f(ctx.userdata, code, msg.as_ptr());
             }

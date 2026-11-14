@@ -6,7 +6,7 @@ use crate::{
     DatatypeState,
     connectivity::Connectivity,
     datatypes::{event_loop::Event, wired::WiredDatatype},
-    errors::{connectivity::ConnectivityError, push_pull::PushPullError},
+    errors::{connectivity::ConnectivityError, messages::sync as msg, push_pull::PushPullError},
     types::{checkpoint::CheckPoint, push_pull_pack::PushPullPack},
 };
 
@@ -48,10 +48,7 @@ impl Connectivity for NullConnectivity {
             }
             DatatypeState::Subscribing => {
                 if !pushed.transactions.is_empty() {
-                    self.set_illegal_push_request(
-                        &mut pulled,
-                        "cannot subscribe with transactions",
-                    );
+                    self.set_illegal_push_request(&mut pulled, msg::SUBSCRIBE_WITH_TRANSACTIONS);
                     return Ok(pulled);
                 }
                 pulled.state = DatatypeState::Subscribed;

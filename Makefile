@@ -10,7 +10,7 @@ lint:
 
 .PHONY: tarpaulin
 tarpaulin:
-	cargo tarpaulin -o html -o xml -o Lcov --workspace --tests --all-features --engine Llvm --fail-under 90 --output-dir ./coverage
+	cargo +1.97.1 tarpaulin -o html -o xml -o Lcov --workspace --tests --all-features --engine Llvm --fail-under 90 --output-dir ./coverage
 	open coverage/tarpaulin-report.html
 
 # Local, informational only — not run in CI. Line coverage is a poor completeness
@@ -23,7 +23,7 @@ tarpaulin:
 # yourself if you want a rough sanity check after touching qortoo-ffi/src.
 .PHONY: ffi-coverage
 ffi-coverage:
-	cargo tarpaulin -p qortoo-ffi --tests --all-features --engine Llvm --include-files 'qortoo-ffi/src/*' --fail-under 85
+	cargo +1.97.1 tarpaulin -p qortoo-ffi --tests --all-features --engine Llvm --include-files 'qortoo-ffi/src/*' --fail-under 85
 
 .PHONY: doc
 doc:

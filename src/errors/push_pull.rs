@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::{DatatypeError, ServerRejectReason};
+use crate::{DatatypeError, ServerRejectReason, errors::messages::sync as msg};
 
 /// Wire-level error set by the responder in `PushPullPack.error`.
 ///
@@ -12,26 +12,40 @@ use crate::{DatatypeError, ServerRejectReason};
 #[repr(i32)]
 #[derive(Debug, Error, Eq, Clone)]
 pub enum PushPullError {
-    #[error("[PushPullError] protocol violation - {0}")]
+    #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = msg::PROTOCOL_VIOLATION_PREFIX)]
     ProtocolViolation(String) = 301,
-    #[error("[PushPullError] readonly client attempted write operation")]
+    #[error("[E{code}] {}", msg::READONLY_VIOLATION, code = self.code())]
     ReadonlyViolation = 302,
-    #[error("[PushPullError] fail to create - {0}")]
+    #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = msg::CREATE_FAILED_PREFIX)]
     CreateFailed(String) = 303,
     /// The requested resource does not exist or has an incompatible type.
-    #[error("[PushPullError] resource not found - {0}")]
+    #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = msg::RESOURCE_NOT_FOUND_PREFIX)]
     ResourceNotFound(String) = 304,
-    #[error("[PushPullError] client's datatype is not subscribed on this server - {0}")]
+    #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = msg::MISSING_SUBSCRIPTION_PREFIX)]
     MissingSubscription(String) = 305,
     /// The server encountered a temporary internal error and could not process the request.
     ///
     /// The client should retry with exponential backoff. This maps to
     /// [`DatatypeError::SyncFailed`] → `RecoveryAction::RetryWithBackOff`.
-    #[error("[PushPullError] server internal error - {0}")]
+    #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = msg::SERVER_INTERNAL_ERROR_PREFIX)]
     ServerInternalError(String) = 306,
 }
 
 impl PushPullError {
+    /// Returns the stable numeric diagnostic code shared with language bindings.
+    ///
+    /// Use this value for programmatic decisions rather than parsing the message.
+    pub const fn code(&self) -> i32 {
+        match self {
+            Self::ProtocolViolation(_) => 301,
+            Self::ReadonlyViolation => 302,
+            Self::CreateFailed(_) => 303,
+            Self::ResourceNotFound(_) => 304,
+            Self::MissingSubscription(_) => 305,
+            Self::ServerInternalError(_) => 306,
+        }
+    }
+
     pub fn to_datatype_error(&self) -> DatatypeError {
         match self {
             PushPullError::ProtocolViolation(msg) => {
