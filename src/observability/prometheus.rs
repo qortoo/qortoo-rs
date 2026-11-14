@@ -4,7 +4,7 @@ use metrics_exporter_prometheus::{Matcher, PrometheusBuilder};
 use tokio::runtime::Handle;
 
 use crate::{
-    errors::observability::ObservabilityError,
+    errors::{messages::observability as msg, observability::ObservabilityError},
     observability::{metrics::SYNC_DURATION_SECONDS, settings::MetricsSettings},
 };
 
@@ -22,9 +22,7 @@ fn prometheus_builder() -> Result<PrometheusBuilder, ObservabilityError> {
             SYNC_DURATION_BUCKETS_SECONDS,
         )
         .map_err(|e| {
-            ObservabilityError::Exporter(format!(
-                "failed to configure buckets for {SYNC_DURATION_SECONDS}: {e}"
-            ))
+            ObservabilityError::Exporter(msg::metrics_buckets_failed(SYNC_DURATION_SECONDS, &e))
         })
 }
 
@@ -41,10 +39,7 @@ pub(super) fn install(
         .with_http_listener(settings.listen_addr)
         .build()
         .map_err(|e| {
-            ObservabilityError::Exporter(format!(
-                "failed to build the Prometheus exporter on {}: {e}",
-                settings.listen_addr
-            ))
+            ObservabilityError::Exporter(msg::prometheus_exporter_failed(settings.listen_addr, &e))
         })?;
     runtime.spawn(exporter);
 

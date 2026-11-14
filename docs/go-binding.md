@@ -110,17 +110,27 @@ binding should carry the code and message through rather than re-deriving its ow
 enum from them, both because the taxonomy already has stable numbers and because a caller
 comparing codes should be comparing the same numbers on every binding.
 
+Error messages render the same code as `[E<number>]`, for example `[E100]`. `E` means
+error; `W` is reserved for warnings and currently has no assigned API or codes. This display
+format does not change the numeric contract. Treat message text as diagnostic information,
+and use `QortooError.code` for decisions.
+
+Product-authored message wording comes from `src/errors/messages.rs`, shared with the core
+through a private source inclusion in `qortoo-ffi/src/lib.rs`. Keep that relative path intact
+when moving either crate. The FFI build script also watches the shared file for changes.
+
 **ABI compatibility is a major/minor contract checked before any other call.** A binding
 compares the major version it was built against with what the linked library reports; a
 mismatch means struct layouts, symbol names, or calling conventions may disagree, and the
 binding must refuse to proceed rather than risk undefined behavior. The minor version only ever
 adds symbols; it never removes or changes one within the same major version.
 
-**Limits on the guarantees.** The mapping from a core error variant to its numeric code is a
-hand-maintained table with a catch-all arm, not something the compiler forces to stay
-exhaustive — a new caller-facing variant added to the core does not fail to compile here; it
-silently falls through to the generic internal-error code until this table is updated by hand.
-The distributed native SDK ships only a static library, so a binding gets no shared-library
+Core errors expose `code()`, which FFI uses directly for out-parameters and error callbacks.
+The core mapping is exhaustive: adding a variant requires assigning its code before the core
+can compile. Display identifiers use the same method. Tests pin stable numeric values and
+compare the exported observability constants with core codes.
+
+**Limits on the guarantees.** The distributed native SDK ships only a static library, so a binding gets no shared-library
 loading behavior to rely on. `qortoo-ffi`'s own coverage is not gated on a line-coverage
 percentage, because a boundary crate that is mostly thin forwarding makes that number a poor
 signal of what is actually tested; the null-pointer, invalid-UTF-8, ownership, and error-code
@@ -202,7 +212,8 @@ re-linking rather than swapping a shared object at deploy time.
 | The `DatatypeHandle` trait and the generic construction, release, projection, and transaction bodies | `qortoo-ffi/src/datatype.rs` |
 | Concrete handles and their kind-specific operations | `qortoo-ffi/src/client.rs`, `qortoo-ffi/src/counter.rs`, `qortoo-ffi/src/variable.rs`, `qortoo-ffi/src/local_connectivity.rs` |
 | The panic guard and owned-string/byte-buffer helpers | `qortoo-ffi/src/util.rs` |
-| Error codes and the core-error-to-code mapping | `qortoo-ffi/src/error.rs` |
+| Core diagnostic codes and message identifiers | `src/errors/{clients,datatypes,push_pull,observability}.rs` (`code()`) |
+| C error out-parameter and boundary-only constants | `qortoo-ffi/src/error.rs` |
 | Foreign handler and transaction callback bridging, and the userdata drop contract | `qortoo-ffi/src/handler.rs`, `qortoo-ffi/src/datatype.rs` |
 | The observability options bridge | `qortoo-ffi/src/observability/` |
 | ABI and SDK version constants and queries | `qortoo-ffi/src/version.rs` |

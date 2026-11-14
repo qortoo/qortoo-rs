@@ -52,6 +52,14 @@ When you change behavior described in one of these documents, update it in the s
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md#coding-style).
 
+## Error Messages
+
+When adding or changing a returned error, follow the
+[message catalog rules](docs/error-handling.md#message-catalog-rules). Keep product-authored
+wording in the appropriate inline module of `src/errors/messages.rs`, shared by core and
+FFI. Structural changes must preserve output; verify complete messages with independent
+expected strings. Error types, numeric codes, and recovery policy remain outside the catalog.
+
 ## Testing Guidelines
 - Name test functions `can_<behavior>` (e.g. `can_reject_a_null_collection`), describing the
   behavior being proven rather than the code path under test — consistent across unit and

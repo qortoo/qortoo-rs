@@ -14,7 +14,7 @@
 //!
 //! # Modules
 //!
-//! - `error` — `QortooError` out-parameter and error-code mapping
+//! - `error` — `QortooError` out-parameter and C boundary constants
 //! - `util` — boundary helpers (string arguments, panic guard, owned C strings)
 //! - `handler` — foreign handler callbacks bridged into `DatatypeHandler`
 //! - `local_connectivity` — in-memory `LocalConnectivity` backend handle
@@ -38,6 +38,10 @@ mod datatype;
 mod error;
 mod handler;
 mod local_connectivity;
+
+// Share wording without exposing a new Rust API or maintaining a second catalog.
+#[path = "../../src/errors/messages.rs"]
+mod messages;
 mod observability;
 mod util;
 mod variable;

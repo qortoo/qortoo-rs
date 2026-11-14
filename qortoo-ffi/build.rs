@@ -20,4 +20,5 @@ fn main() {
         .write_to_file(format!("{crate_dir}/include/qortoo.h"));
 
     println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=../src/errors/messages.rs");
 }

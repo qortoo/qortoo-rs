@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-use crate::DatatypeError;
+use crate::{DatatypeError, errors::messages::sync as msg};
 
 /// Errors related to connectivity operations.
 ///
@@ -13,7 +13,7 @@ pub enum ConnectivityError {
     /// The connectivity backend did not respond within the expected time.
     ///
     /// This is a transient error. The event loop will retry with exponential backoff.
-    #[error("[ConnectivityError] connection timed out: {_0}")]
+    #[error("{prefix}{_0}", prefix = msg::TIMED_OUT_PREFIX)]
     TimedOut(String),
 }
 

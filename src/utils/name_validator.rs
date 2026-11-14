@@ -6,7 +6,7 @@ static COLLECTION_NAME_PATTERN: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-zA-Z_][a-zA-Z0-9._~-]*$").unwrap());
 
 pub fn is_valid_collection_name(name: &str) -> bool {
-    // Check length: 1-47 characters
+    // Check length: 1-47 bytes
     if name.is_empty() || name.len() > 47 {
         return false;
     }

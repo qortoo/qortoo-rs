@@ -20,17 +20,12 @@ use crate::{
     },
     errors::{
         datatypes::{DatatypeError, RecoveryAction},
+        messages::datatype as msg,
         with_err_out,
     },
     observability::trace::add_span_event,
     operations::Operation,
 };
-
-const ERR_SYNC_DISABLED: &str = "sync is not allowed in Disabled state";
-const ERR_SYNC_ON_TRANSACTION_OWNER: &str =
-    "sync is not allowed on the thread that owns the active local transaction";
-const ERR_REENTRANT_TRANSACTION: &str = "cannot start another local transaction on the thread that owns the active transaction; use the callback handle for writes";
-const ERR_NESTED_TRANSACTION: &str = "nested transactions on the same datatype are not allowed";
 
 #[derive(Debug, Default)]
 pub struct TransactionContext {
@@ -164,7 +159,7 @@ impl Datatype for TransactionalDatatype {
 
     fn unsubscribe(&self) -> Result<(), DatatypeError> {
         let (result, mut effects) = self.core.prepare_state_effects(|mutable| {
-            self.check_subscribed_state(mutable.get_state(), "unsubscribe")?;
+            self.check_subscribed_state(mutable.get_state(), msg::UNSUBSCRIBE_OPERATION)?;
             mutable.set_state(DatatypeState::Unsubscribing);
             Ok::<(), DatatypeError>(())
         });
@@ -227,10 +222,9 @@ impl TransactionalDatatype {
 
         let state = self.get_state();
         if !state.is_read_writable() {
-            return Err(with_err_out!(DatatypeError::NotWritable(format!(
-                "Datatype '{}' cannot be modified for {:?} state",
-                self.core.attr.key, state
-            ))));
+            return Err(with_err_out!(DatatypeError::NotWritable(
+                msg::not_writable(&self.core.attr.key, state)
+            )));
         }
 
         if self.core.attr.is_readonly {
@@ -242,7 +236,7 @@ impl TransactionalDatatype {
 
     fn check_sync_allowed(&self) -> Result<(), DatatypeError> {
         if self.core.mutable.read().get_state() == DatatypeState::Disabled {
-            return Err(DatatypeError::NotWritable(ERR_SYNC_DISABLED.to_owned()));
+            return Err(DatatypeError::NotWritable(msg::SYNC_DISABLED.to_owned()));
         }
         // Response application uses the local transaction gate. Waiting for a
         // synchronous response from inside that transaction would form a cycle.
@@ -253,7 +247,7 @@ impl TransactionalDatatype {
             .is_some_and(|active| active.owner_thread == thread::current().id())
         {
             return Err(DatatypeError::Disallowed(
-                ERR_SYNC_ON_TRANSACTION_OWNER.to_owned(),
+                msg::SYNC_ON_TRANSACTION_OWNER.to_owned(),
             ));
         }
         Ok(())
@@ -261,10 +255,9 @@ impl TransactionalDatatype {
 
     fn check_subscribed_state(&self, state: DatatypeState, op: &str) -> Result<(), DatatypeError> {
         if state != DatatypeState::Subscribed {
-            return Err(with_err_out!(DatatypeError::NotWritable(format!(
-                "{} is only allowed in Subscribed state, current state is {:?}",
-                op, state
-            ))));
+            return Err(with_err_out!(DatatypeError::NotWritable(
+                msg::operation_requires_subscription(op, state)
+            )));
         }
         Ok(())
     }
@@ -337,7 +330,7 @@ impl TransactionalDatatype {
                 }
                 if active_context.owner_thread == thread::current().id() {
                     return Err(DatatypeError::Disallowed(
-                        ERR_REENTRANT_TRANSACTION.to_owned(),
+                        msg::REENTRANT_TRANSACTION.to_owned(),
                     ));
                 }
             }
@@ -384,7 +377,9 @@ impl TransactionalDatatype {
     {
         let admission = self.begin_transaction(tx_ctx)?;
         if matches!(admission, TransactionAdmission::JoinedExisting) {
-            return Err(DatatypeError::Disallowed(ERR_NESTED_TRANSACTION.to_owned()));
+            return Err(DatatypeError::Disallowed(
+                msg::NESTED_TRANSACTION.to_owned(),
+            ));
         }
         self.with_local_transaction(admission, || {
             let tx_func_span = info_span!("tx_func");

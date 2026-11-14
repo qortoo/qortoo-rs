@@ -1,11 +1,11 @@
-//! Error out-parameter type and Rust-error → FFI-code mapping.
+//! Error out-parameter and C boundary constants; core errors provide their own codes.
 
 use std::{
     ffi::{CString, c_char},
     ptr,
 };
 
-/// Error code used when a panic crosses the FFI boundary or an error variant is unknown.
+/// Error code used when a Rust panic is caught at the FFI boundary.
 pub const QORTOO_ERR_INTERNAL_FFI: i32 = 999;
 /// Error code used when an argument (null pointer, invalid UTF-8) is rejected at the boundary.
 pub const QORTOO_ERR_INVALID_ARGUMENT: i32 = 998;
@@ -36,44 +36,6 @@ pub struct QortooError {
     pub msg: *mut c_char,
 }
 
-pub(crate) fn datatype_error_code(e: &qortoo::DatatypeError) -> i32 {
-    use qortoo::DatatypeError as E;
-    match e {
-        E::TransactionFailed(_) => 201,
-        E::Internal(_) => 202,
-        E::Disallowed(_) => 205,
-        E::NotWritable(_) => 206,
-        E::ReadonlyViolation => 207,
-        E::SyncFailed(_) => 210,
-        E::PushBufferExceededMaxMemSize => 211,
-        E::ServerRejected(_) => 213,
-        E::ValueConversion(_) => 214,
-        _ => QORTOO_ERR_INTERNAL_FFI,
-    }
-}
-
-pub(crate) fn observability_error_code(e: &qortoo::ObservabilityError) -> i32 {
-    use qortoo::ObservabilityError as E;
-    match e {
-        E::AlreadyInitialized => QORTOO_ERR_OBSERVABILITY_ALREADY_INITIALIZED,
-        E::ShutDown => QORTOO_ERR_OBSERVABILITY_SHUT_DOWN,
-        E::PartiallyInitialized => QORTOO_ERR_OBSERVABILITY_PARTIALLY_INITIALIZED,
-        E::Subscriber(_) => QORTOO_ERR_OBSERVABILITY_SUBSCRIBER,
-        E::Exporter(_) => QORTOO_ERR_OBSERVABILITY_EXPORTER,
-        E::Recorder(_) => QORTOO_ERR_OBSERVABILITY_RECORDER,
-        E::InvalidConfig(_) => QORTOO_ERR_OBSERVABILITY_INVALID_CONFIG,
-    }
-}
-
-pub(crate) fn client_error_code(e: &qortoo::ClientError) -> i32 {
-    use qortoo::ClientError as E;
-    match e {
-        E::InvalidCollectionName(_) => 100,
-        E::FailedToSubscribeOrCreateDatatype(_) => 101,
-        _ => QORTOO_ERR_INTERNAL_FFI,
-    }
-}
-
 pub(crate) unsafe fn clear_err(err_out: *mut QortooError) {
     if !err_out.is_null() {
         unsafe {
@@ -96,82 +58,45 @@ pub(crate) unsafe fn set_err(err_out: *mut QortooError, code: i32, msg: &str) {
 
 #[cfg(test)]
 mod tests_error {
-    use qortoo::{ClientError, DatatypeError, ObservabilityError, ServerRejectReason};
+    use qortoo::ObservabilityError;
 
     use super::*;
 
     #[test]
-    fn can_map_every_observability_error_to_a_distinct_code() {
-        let codes = [
-            observability_error_code(&ObservabilityError::AlreadyInitialized),
-            observability_error_code(&ObservabilityError::ShutDown),
-            observability_error_code(&ObservabilityError::PartiallyInitialized),
-            observability_error_code(&ObservabilityError::Subscriber(String::new())),
-            observability_error_code(&ObservabilityError::Exporter(String::new())),
-            observability_error_code(&ObservabilityError::Recorder(String::new())),
-            observability_error_code(&ObservabilityError::InvalidConfig(String::new())),
+    fn can_preserve_observability_codes_in_the_c_header() {
+        let cases = [
+            (
+                ObservabilityError::AlreadyInitialized.code(),
+                QORTOO_ERR_OBSERVABILITY_ALREADY_INITIALIZED,
+            ),
+            (
+                ObservabilityError::ShutDown.code(),
+                QORTOO_ERR_OBSERVABILITY_SHUT_DOWN,
+            ),
+            (
+                ObservabilityError::Subscriber(String::new()).code(),
+                QORTOO_ERR_OBSERVABILITY_SUBSCRIBER,
+            ),
+            (
+                ObservabilityError::Exporter(String::new()).code(),
+                QORTOO_ERR_OBSERVABILITY_EXPORTER,
+            ),
+            (
+                ObservabilityError::Recorder(String::new()).code(),
+                QORTOO_ERR_OBSERVABILITY_RECORDER,
+            ),
+            (
+                ObservabilityError::InvalidConfig(String::new()).code(),
+                QORTOO_ERR_OBSERVABILITY_INVALID_CONFIG,
+            ),
+            (
+                ObservabilityError::PartiallyInitialized.code(),
+                QORTOO_ERR_OBSERVABILITY_PARTIALLY_INITIALIZED,
+            ),
         ];
-        let mut unique = codes.to_vec();
-        unique.sort_unstable();
-        unique.dedup();
-        assert_eq!(unique.len(), codes.len(), "error codes must not collide");
-        assert!(
-            codes.iter().all(|c| (900..=906).contains(c)),
-            "observability codes stay in the 900 block the bindings mirror"
-        );
-    }
-
-    #[test]
-    fn can_map_every_client_error_variant_to_its_exact_code() {
-        assert_eq!(
-            client_error_code(&ClientError::InvalidCollectionName(String::new())),
-            100
-        );
-        assert_eq!(
-            client_error_code(&ClientError::FailedToSubscribeOrCreateDatatype(
-                String::new()
-            )),
-            101
-        );
-    }
-
-    #[test]
-    fn can_map_every_datatype_error_variant_to_its_exact_code() {
-        assert_eq!(
-            datatype_error_code(&DatatypeError::TransactionFailed(String::new())),
-            201
-        );
-        assert_eq!(
-            datatype_error_code(&DatatypeError::Internal(String::new())),
-            202
-        );
-        assert_eq!(
-            datatype_error_code(&DatatypeError::Disallowed(String::new())),
-            205
-        );
-        assert_eq!(
-            datatype_error_code(&DatatypeError::NotWritable(String::new())),
-            206
-        );
-        assert_eq!(datatype_error_code(&DatatypeError::ReadonlyViolation), 207);
-        assert_eq!(
-            datatype_error_code(&DatatypeError::SyncFailed(String::new())),
-            210
-        );
-        assert_eq!(
-            datatype_error_code(&DatatypeError::PushBufferExceededMaxMemSize),
-            211
-        );
-        assert_eq!(
-            datatype_error_code(&DatatypeError::ServerRejected(
-                ServerRejectReason::CreateFailed(String::new())
-            )),
-            213
-        );
-        assert_eq!(
-            datatype_error_code(&DatatypeError::ValueConversion(String::new())),
-            214
-        );
+        for (core, boundary) in cases {
+            assert_eq!(core, boundary);
+        }
     }
 
     #[test]

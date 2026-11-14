@@ -20,7 +20,8 @@ use crate::observability::prometheus;
 #[cfg(feature = "observability-trace")]
 use crate::observability::subscriber;
 use crate::{
-    errors::observability::ObservabilityError, observability::settings::ObservabilitySettings,
+    errors::{messages::observability as msg, observability::ObservabilityError},
+    observability::settings::ObservabilitySettings,
 };
 
 /// Time budget for the rollback path, where nothing has been exported yet.
@@ -75,8 +76,8 @@ impl Installed {
         #[cfg(feature = "observability-trace")]
         if let Some(provider) = self.tracer_provider {
             if let Err(e) = provider.shutdown_with_timeout(timeout) {
-                result = Err(ObservabilityError::Exporter(format!(
-                    "tracer provider shutdown failed: {e}"
+                result = Err(ObservabilityError::Exporter(msg::tracer_shutdown_failed(
+                    &e,
                 )));
             }
         }
@@ -224,7 +225,7 @@ fn new_runtime() -> Result<Runtime, ObservabilityError> {
         .enable_all()
         .thread_name("qortoo-observability")
         .build()
-        .map_err(|e| ObservabilityError::Exporter(format!("failed to create the runtime: {e}")))
+        .map_err(|e| ObservabilityError::Exporter(msg::runtime_creation_failed(&e)))
 }
 
 /// Flushes pending telemetry and stops the exporters, waiting at most `timeout`.

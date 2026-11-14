@@ -14,6 +14,7 @@ use crate::{
     },
     errors::{
         datatypes::{DatatypeErrorWithAction, RecoveryAction},
+        messages::snapshot as msg,
         with_err_out,
     },
     operations::{Operation, body::OperationBody, transaction::Transaction},
@@ -21,8 +22,6 @@ use crate::{
         checkpoint::CheckPoint, operation_context::OperationContext, operation_id::OperationId,
     },
 };
-
-pub(crate) const DATATYPE_ERR_MSG_NO_SNAPSHOT: &str = "no snapshot operation";
 
 #[derive(Debug)]
 pub struct MutableDatatype {
@@ -87,7 +86,7 @@ impl MutableDatatype {
     ) -> Result<(), DatatypeError> {
         if tx.operations.is_empty() {
             return Err(DatatypeError::ServerRejected(
-                ServerRejectReason::ProtocolViolation(DATATYPE_ERR_MSG_NO_SNAPSHOT.to_owned()),
+                ServerRejectReason::ProtocolViolation(msg::NO_SNAPSHOT_OPERATION.to_owned()),
             ));
         }
         let snap_op = &tx.operations[0];
@@ -98,7 +97,7 @@ impl MutableDatatype {
             self.reset();
         } else {
             return Err(DatatypeError::ServerRejected(
-                ServerRejectReason::ProtocolViolation(DATATYPE_ERR_MSG_NO_SNAPSHOT.to_owned()),
+                ServerRejectReason::ProtocolViolation(msg::NO_SNAPSHOT_OPERATION.to_owned()),
             ));
         }
         Ok(())

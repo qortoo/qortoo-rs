@@ -16,7 +16,9 @@ See [Performance](docs/performance.md) for the central execution and result guid
   unverified. See the root [README](README.md#requirements).
 - Nightly Rust, for the pinned `rustfmt` `make lint` runs (`cargo +nightly-2026-08-02
   fmt`).
-- `cargo-tarpaulin`, installed by `make install`, for coverage.
+- `cargo-tarpaulin`, installed by `make install`, for coverage. The coverage targets
+  use Rust `1.97.1`, matching CI and the LLVM profile format supported by the pinned
+  Tarpaulin version. Install it with `rustup toolchain install 1.97.1` if needed.
 
 ## Build and Test
 
@@ -149,6 +151,9 @@ used to push workflow pin updates. Enable the updated receiver on `qortoo-go/mai
 before enabling this caller. PR workflows do not receive the dispatch credential.
 
 ## Coding Style
+
+For returned errors, follow the [message catalog rules](docs/error-handling.md#message-catalog-rules)
+for domain ownership, naming, and independent output assertions.
 
 - Standard Rust style: 4-space indentation, `snake_case` for functions and modules,
   `PascalCase` for types.

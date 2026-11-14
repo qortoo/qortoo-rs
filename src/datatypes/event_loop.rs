@@ -13,6 +13,7 @@ use crate::{
     defaults::DEFAULT_EVENT_LOOP_TIMEOUT_MS,
     errors::{
         datatypes::{InternalReason, RecoveryAction},
+        messages::sync as msg,
         with_err_out,
     },
     observability::{metrics, trace::add_span_event},
@@ -156,8 +157,10 @@ impl EventLoop {
                                     Self::process_blocking_resp(
                                         resp_tx,
                                         Some(
-                                            InternalReason::EventLoop("event loop stopped".into())
-                                                .into_error(),
+                                            InternalReason::EventLoop(
+                                                msg::EVENT_LOOP_STOPPED.into(),
+                                            )
+                                            .into_error(),
                                         ),
                                     );
                                     continue;
@@ -259,7 +262,7 @@ impl EventLoop {
         }
 
         let map_err = |e, ch: &str| {
-            let err_msg = format!("{ch} channel error {e:?}; stopping event loop");
+            let err_msg = msg::event_channel_stopped(ch, e);
             with_err_out!(InternalReason::EventLoop(err_msg).into_error())
         };
 
@@ -267,7 +270,7 @@ impl EventLoop {
             add_span_event!(format!("enter backOff during {duration:?}"));
             crossbeam_channel::select! {
                 // only unbounded_rx is allowed to receive events during backoff for STOP or explicit sync event
-                recv(unbounded_rx) -> event => event.map_err(|e| map_err(e, "unbounded")),
+                recv(unbounded_rx) -> event => event.map_err(|e| map_err(e, msg::UNBOUNDED_CHANNEL)),
                 default(duration) => {
                     *loop_mode = LoopMode::Normal;
                     Ok(Event::BackOff)
@@ -275,8 +278,8 @@ impl EventLoop {
             }
         } else {
             crossbeam_channel::select! {
-                recv(unbounded_rx) -> event => event.map_err(|e| map_err(e, "unbounded")),
-                recv(bounded_rx) -> event => event.map_err(|e| map_err(e, "bounded")),
+                recv(unbounded_rx) -> event => event.map_err(|e| map_err(e, msg::UNBOUNDED_CHANNEL)),
+                recv(bounded_rx) -> event => event.map_err(|e| map_err(e, msg::BOUNDED_CHANNEL)),
             }
         }
     }
@@ -328,10 +331,7 @@ impl EventLoop {
             match rx.await {
                 Ok(Some(err)) => Err(err),
                 Ok(None) => Ok(()),
-                Err(e) => Err(InternalReason::EventLoop(format!(
-                    "failed to receive response of sync(): {e}"
-                ))
-                .into_error()),
+                Err(e) => Err(InternalReason::EventLoop(msg::response_failed(&e)).into_error()),
             }
         })
     }

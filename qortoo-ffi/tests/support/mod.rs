@@ -63,13 +63,19 @@ pub fn assert_ok(err: &mut QortooError, what: &str) {
     assert_eq!(code, 0, "{what} unexpectedly failed with code {code}");
 }
 
-/// Asserts failure with the exact expected code and releases the message.
+/// Asserts the code and diagnostic identifier, then releases the message.
 pub fn assert_err(err: &mut QortooError, expected_code: i32, what: &str) {
-    let code = take_code(err);
+    let (code, message) = take_code_and_message(err);
     assert_eq!(
         code, expected_code,
         "{what}: expected code {expected_code}, got {code}"
     );
+    if let Some(message) = message {
+        assert!(
+            message.starts_with(&format!("[E{expected_code}] ")),
+            "{what}: diagnostic identifier disagrees with code: {message}"
+        );
+    }
 }
 
 /// Reads and frees a string returned by this library, or `None` for a null pointer.

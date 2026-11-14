@@ -99,7 +99,13 @@ reported by the server arrives as a routed error and disables the datatype.
 ### Server rejection reasons
 
 Carried inside a `ServerRejected` error. Lifecycle operations added later extend this set
-without changing the datatype error type.
+without changing the datatype error type. `ServerRejectReason::Display` renders a lowercase
+reason phrase and preserves its detail verbatim, using the shared `sync` catalog wording.
+`ServerRejected` includes that display text under `E213`, for example
+`[E213] server rejected: creation failed: datatype already exists`. Reasons do not introduce
+another code; `Debug` remains available for inspecting the Rust variant. New reasons must
+implement the exhaustive display match and update the complete-output and recovery assertions
+in `can_describe_server_rejection_reasons`.
 
 | Variant | Trigger |
 |---------|---------|
@@ -143,6 +149,101 @@ server rejection reasons where a counterpart exists.
 | `Disable` | disable the datatype | stopped; further sync requests are refused | `Internal`, other `ServerRejected` reasons, `ReadonlyViolation`, repeated missing subscription during immediate recovery |
 
 ## Rules and Guarantees
+
+**One source for message wording.** `src/errors/messages.rs` owns product-authored return-error
+text, including validation details, snapshot diagnostics, observability setup, and C ABI
+argument errors. Error types, numeric codes, and recovery actions stay in their existing
+modules. The C ABI includes the same source file through a private module; it does not expose
+the catalog as public Rust API. External causes, application-provided errors, logs, raw panic
+messages, and independent test expectations remain at their call sites. Add new return-error
+wording to the catalog as a constant or formatting function.
+
+### Message catalog rules
+
+Keep the catalog in one file, with these crate-private inline modules. Classify by the
+failure being described, even when another layer constructs or returns the error.
+
+| Module | Owns |
+|--------|------|
+| `client` | Collection/key validation and datatype registration conflicts |
+| `datatype` | Local write admission, lifecycle restrictions, transactions, and CRDT execution |
+| `sync` | Connectivity, event-loop channels, push/pull, checkpoints, subscriptions, and server rejection |
+| `snapshot` | Snapshot structure, versions, payload validation, and UID/timestamp decoding |
+| `value` | User-facing JSON value encoding, decoding, and conversion |
+| `observability` | Telemetry configuration, initialization, exporters, and shutdown |
+| `ffi` | C argument/handle validation, foreign callback failures, and boundary error translation |
+
+For example, a local state restriction on `sync()` belongs to `datatype`, while an invalid
+exchange checkpoint belongs to `sync`. Invalid JSON inside a snapshot belongs to `snapshot`;
+invalid JSON passed to the value API belongs to `value`. C-specific configuration encoding
+(such as an unknown integer log format) belongs to `ffi`; telemetry setup failures belong to
+`observability` regardless of whether Rust or C called the API.
+
+- Use `SCREAMING_SNAKE_CASE` constants for fixed text and `snake_case` functions for text
+  containing runtime values. Name the failure or diagnostic purpose, without `ERR_`, `MSG_`,
+  or a redundant module prefix.
+- Import the catalog domain with a short alias in each scope. When using one domain, use
+  `use crate::errors::messages::snapshot as msg;` and call
+  `msg::unsupported_version(version)`. When using multiple domains, use `<domain>_msg`
+  aliases, such as `datatype_msg` and `snapshot_msg`, to keep ownership visible. FFI callers
+  use the same aliases under `crate::messages`. Do not use glob imports.
+- Use `_PREFIX` for text that precedes an error payload, `_TEMPLATE` for an existing
+  runtime-format template, and `_CONTEXT` or `_FIELD` for diagnostic labels. Keep fixed text
+  before formatting functions within each module. Prefer a formatting function for new
+  messages with runtime values; do not add new runtime-format templates.
+- Keep authored diagnostic prose and punctuation in the catalog. Core error types render
+  their `[E<number>]` identifier from `code()`; C-only boundary labels stay in the catalog. Pass values and external
+  causes into formatters; do not assemble new error prose at call sites. Reuse a formatter
+  when the meaning and output are the same.
+- Keep error variants, numeric codes, and `RecoveryAction` decisions in their current
+  definition/translation modules. Catalog modules are editorial ownership, not new error
+  types or code ranges. Callers must not parse message text to decide behavior.
+- When adding an error, select its domain, reuse or add its text there, and verify the
+  complete output at the existing error/API test boundary. Expected strings must be
+  independent literals, not assembled from catalog constants. Keep C tests specific to
+  boundary behavior; core semantics belong in core tests.
+- Structural moves and renames must preserve emitted text, codes, public APIs, and recovery
+  behavior. Treat wording edits as deliberate behavior changes, review the final text, and
+  update the affected output assertions. New wording should state the failed operation or
+  restriction, the specific reason, and useful context such as a key or expected/actual value;
+  preserve an external cause when available. Do not infer retry advice from the wording.
+
+Use a lowercase diagnostic phrase after the diagnostic identifier, with `: ` separating a
+summary from its details. Preserve proper names and acronyms such as JSON, UTF-8, and UID.
+State the actual validation unit (`bytes` for collection names and datatype keys), and say
+`ASCII` when only ASCII letters or digits are accepted. Describe state restrictions as
+`cannot <operation> ... in <State> state`, and type conflicts with the requested and existing
+types. A caught Rust panic at the C boundary must be described as caught, rather than as a
+panic that crossed the boundary.
+
+### Diagnostic identifiers
+
+Format coded errors as `[E<number>] summary: detail`, for example
+`[E100] invalid collection name: ...`. `E` identifies an error; `W` is reserved for
+warnings. No warning API or warning codes are currently defined. Retryable errors still use
+`E`; retry policy and the severity of a log event are independent of this identifier.
+
+Use the existing numeric code without renumbering or filling gaps. `ClientError`,
+`DatatypeError`, `PushPullError`, and `ObservabilityError` expose `pub const fn code(&self) -> i32`.
+Their exhaustive matches own the Rust-to-binding mapping, and core message identifiers use
+that same method. FFI calls `code()` directly, including handler callbacks; it has no separate
+variant mapping or fallback for a newly added core error. Existing `repr(i32)` discriminants
+remain unchanged and must agree with `code()`.
+
+When adding a coded error, update its discriminant (where present), exhaustive `code()` match,
+catalog prose, and the independent cases in `can_preserve_unique_codes_and_matching_identifiers`
+and complete-output tests together. The code test pins each numeric value, checks matching
+identifiers, and rejects collisions across the listed variants. Existing CI runs these tests
+with all features. C observability constants are checked against their core counterparts.
+At the C boundary, verify that the message identifier agrees with `QortooError.code`.
+Bindings must use the numeric field, never parse the message.
+
+Internal causes retain their descriptive text under the final error identifier. For example,
+a connectivity timeout becomes `[E210] sync failed: connection timed out: ...`; it does not
+need a second identifier. Boundary-only invalid arguments use `E998`, contained panics use
+`E999`, and observability setup errors use their existing codes `900` through `906`.
+
+### Error routing rules
 
 **One destination per error.** Every error is either returned to its caller or routed, and the
 classification is a property of the variant, not of the situation. The translation boundary
@@ -265,6 +366,7 @@ stay stable for language bindings that transmit them.
 |---------|----------|
 | Datatype errors, rejection reasons, internal causes, recovery actions, and the translation boundary | `src/errors/datatypes.rs` |
 | Client errors | `src/errors/clients.rs` |
+| Shared Rust and C ABI return-error wording | `src/errors/messages.rs` |
 | Backend errors | `src/errors/connectivity.rs` |
 | Wire errors and their translation | `src/errors/push_pull.rs` |
 | The boxed error alias and the logging macro that captures a filtered stack trace | `src/errors/mod.rs` |
@@ -278,9 +380,10 @@ stay stable for language bindings that transmit them.
 | Verified by | Tests |
 |-------------|-------|
 | Errors compare by variant rather than by message | `can_compare_errors` in `src/errors/mod.rs` |
+| Complete error text retains its format and detail | `can_preserve_complete_error_messages` and `can_preserve_observability_error_messages` in `src/errors/mod.rs` |
 | The logging macro preserves the typed error | `can_use_err_macro` in `src/errors/mod.rs` |
 | An unavailable stack trace is omitted rather than fatal | `can_omit_an_unavailable_stack_trace` in `src/errors/mod.rs` |
-| Client error messages keep a stable format | `can_use_error_msg_format` in `src/errors/clients.rs` |
+| Invalid collection errors describe naming requirements | `can_describe_collection_name_requirements` in `src/errors/clients.rs` |
 | Every observability error variant is distinct | `can_describe_every_variant_distinctly` in `src/errors/observability.rs` |
 | An invalid collection name is refused at the caller | `can_reject_invalid_collection_names` in `src/clients/client.rs` |
 | A create failure disables the datatype and detaches it | `can_auto_detach_after_create_failure_disables_datatype` in `src/clients/client.rs` |

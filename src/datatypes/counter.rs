@@ -9,7 +9,7 @@ use crate::{
         datatype::DatatypeBlanket,
         transactional::{TransactionContext, TransactionalDatatype},
     },
-    errors::{BoxedError, datatypes::InternalReason},
+    errors::{BoxedError, datatypes::InternalReason, messages::datatype as msg},
     operations::Operation,
 };
 
@@ -82,7 +82,7 @@ impl Counter {
         trace!("increased by {delta} -> {ret:?}");
         match ret {
             ReturnType::Counter(cv) => Ok(cv),
-            _ => Err(InternalReason::ExecuteOperation("unexpected return type".into()).into_error())
+            _ => Err(InternalReason::ExecuteOperation(msg::UNEXPECTED_RETURN_TYPE.into()).into_error())
         }
     }}
 

@@ -7,7 +7,7 @@ use crate::{
     ClientError, DataType, DatatypeState,
     clients::common::ClientCommon,
     datatypes::{datatype_set::DatatypeSet, option::DatatypeOption},
-    errors::with_err_out,
+    errors::{messages::client as msg, with_err_out},
     types::common::ArcStr,
 };
 
@@ -57,8 +57,10 @@ impl DatatypeManager {
                 // detach after releasing mutable state; table operations remain independent
                 // of per-datatype mutable locks.
                 Err(with_err_out!(
-                    ClientError::FailedToSubscribeOrCreateDatatype(format!(
-                        "{type:?} '{key}' was demanded as {state:?}, but the client already manages '{key}' as {:?}",
+                    ClientError::FailedToSubscribeOrCreateDatatype(msg::datatype_already_managed(
+                        r#type,
+                        key,
+                        state,
                         existing.get_type()
                     ))
                 ))

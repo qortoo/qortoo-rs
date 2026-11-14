@@ -13,7 +13,10 @@ use crate::{
         common::ReturnType,
         crdts::{LocalOperationOutcome, RollbackAction},
     },
-    errors::datatypes::{InternalReason, deserialize_error},
+    errors::{
+        datatypes::{InternalReason, deserialize_error},
+        messages::{datatype as datatype_msg, snapshot as snapshot_msg},
+    },
     operations::body::OperationBody,
     types::{
         operation_context::OperationContext,
@@ -22,7 +25,6 @@ use crate::{
 };
 
 const SNAPSHOT_VERSION: u8 = 1;
-const SNAPSHOT_CONTEXT: &str = "variable crdt";
 const INITIAL_VALUE: &[u8] = b"null";
 
 #[derive(PartialEq, Eq)]
@@ -114,9 +116,9 @@ impl VariableCrdt {
             Ordering::Greater => Ok(self.replace(value, timestamp)),
             Ordering::Less => Ok(VariableSetOutcome::Unchanged),
             Ordering::Equal if value == self.winning.value() => Ok(VariableSetOutcome::Unchanged),
-            Ordering::Equal => Err(InternalReason::ExecuteOperation(format!(
-                "variable received different values for timestamp {timestamp}"
-            ))
+            Ordering::Equal => Err(InternalReason::ExecuteOperation(
+                datatype_msg::conflicting_variable_timestamp(timestamp),
+            )
             .into_error()),
         }
     }
@@ -127,7 +129,7 @@ impl VariableCrdt {
     ) -> Result<LocalOperationOutcome, DatatypeError> {
         let OperationBody::VariableSet(body) = &context.operation().body else {
             return Err(InternalReason::ExecuteOperation(
-                "variable cannot execute this local operation".to_owned(),
+                datatype_msg::VARIABLE_LOCAL_OPERATION.to_owned(),
             )
             .into_error());
         };
@@ -136,7 +138,7 @@ impl VariableCrdt {
             self.apply_set(&body.value, context.timestamp())?
         else {
             return Err(InternalReason::ExecuteOperation(
-                "local variable set did not advance the winning timestamp".to_owned(),
+                datatype_msg::VARIABLE_TIMESTAMP_NOT_ADVANCED.to_owned(),
             )
             .into_error());
         };
@@ -154,7 +156,7 @@ impl VariableCrdt {
     ) -> Result<(), DatatypeError> {
         let OperationBody::VariableSet(body) = &context.operation().body else {
             return Err(InternalReason::ExecuteOperation(
-                "variable cannot execute this remote operation".to_owned(),
+                datatype_msg::VARIABLE_REMOTE_OPERATION.to_owned(),
             )
             .into_error());
         };
@@ -194,22 +196,25 @@ impl SnapshotCodec for VariableCrdt {
     }
 
     fn decode_snapshot(snapshot: &[u8]) -> Result<Self, DatatypeError> {
-        let mut reader = SnapshotReader::new(snapshot, SNAPSHOT_CONTEXT);
-        let version = reader.read_u8("version")?;
+        let mut reader = SnapshotReader::new(snapshot, snapshot_msg::VARIABLE_CONTEXT);
+        let version = reader.read_u8(snapshot_msg::VERSION_FIELD)?;
         if version != SNAPSHOT_VERSION {
             return Err(deserialize_error(
-                SNAPSHOT_CONTEXT,
-                format_args!("unsupported version {version}"),
+                snapshot_msg::VARIABLE_CONTEXT,
+                snapshot_msg::unsupported_version(version),
             ));
         }
 
-        let timestamp = reader.read_bytes("winning timestamp", TIMESTAMP_ENCODED_LEN)?;
+        let timestamp = reader.read_bytes(snapshot_msg::TIMESTAMP_FIELD, TIMESTAMP_ENCODED_LEN)?;
         let timestamp = Timestamp::from_bytes(timestamp)?;
-        let value_length = reader.read_u64_le("JSON length")?;
+        let value_length = reader.read_u64_le(snapshot_msg::JSON_LENGTH_FIELD)?;
         let value_length = usize::try_from(value_length).map_err(|_| {
-            deserialize_error(SNAPSHOT_CONTEXT, "JSON length does not fit this platform")
+            deserialize_error(
+                snapshot_msg::VARIABLE_CONTEXT,
+                snapshot_msg::JSON_LENGTH_OVERFLOW,
+            )
         })?;
-        let value = reader.read_bytes("JSON payload", value_length)?;
+        let value = reader.read_bytes(snapshot_msg::JSON_PAYLOAD_FIELD, value_length)?;
         validate_snapshot_json(value)?;
         validate_snapshot_state(value, &timestamp)?;
         let winning = VariableState::new(value, &timestamp);
@@ -223,14 +228,14 @@ fn validate_snapshot_json(value: &[u8]) -> Result<(), DatatypeError> {
     let mut deserializer = serde_json::Deserializer::from_slice(value);
     serde::de::IgnoredAny::deserialize(&mut deserializer).map_err(|error| {
         deserialize_error(
-            SNAPSHOT_CONTEXT,
-            format_args!("invalid JSON payload: {error}"),
+            snapshot_msg::VARIABLE_CONTEXT,
+            snapshot_msg::invalid_json_payload(error),
         )
     })?;
     deserializer.end().map_err(|error| {
         deserialize_error(
-            SNAPSHOT_CONTEXT,
-            format_args!("invalid JSON payload: {error}"),
+            snapshot_msg::VARIABLE_CONTEXT,
+            snapshot_msg::invalid_json_payload(error),
         )
     })
 }
@@ -243,8 +248,8 @@ fn validate_snapshot_state(value: &[u8], timestamp: &Timestamp) -> Result<(), Da
         return Ok(());
     }
     Err(deserialize_error(
-        SNAPSHOT_CONTEXT,
-        "Lamport zero is reserved for the initial null state",
+        snapshot_msg::VARIABLE_CONTEXT,
+        snapshot_msg::INVALID_INITIAL_VARIABLE,
     ))
 }
 

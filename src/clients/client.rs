@@ -8,7 +8,7 @@ use crate::{
     clients::{common::ClientCommon, datatype_manager::DatatypeManager},
     connectivity::{Connectivity, null_connectivity::NullConnectivity},
     datatypes::{datatype_set::DatatypeSet, option::DatatypeOption},
-    errors::clients::{CLIENT_ERROR_MSG_COLLECTION_NAME, ClientError},
+    errors::{clients::ClientError, messages::client as msg},
     utils::name_validator::is_valid_collection_name,
 };
 
@@ -40,7 +40,7 @@ impl ClientBuilder {
     pub fn build(self) -> Result<Client, ClientError> {
         if !is_valid_collection_name(&self.collection) {
             return Err(ClientError::InvalidCollectionName(
-                CLIENT_ERROR_MSG_COLLECTION_NAME.format(&[self.collection]),
+                msg::INVALID_COLLECTION_NAME_TEMPLATE.format(&[self.collection]),
             ));
         }
 
@@ -149,9 +149,9 @@ impl Client {
     /// - with manual connectivity, call `sync()` on the returned handle,
     /// - with realtime connectivity, the event loop handles it automatically.
     pub fn unsubscribe_datatype(&self, key: &str) -> Result<DatatypeSet, DatatypeError> {
-        let datatype = self.get_datatype(key).ok_or_else(|| {
-            DatatypeError::Disallowed(format!("Datatype '{key}' is not managed by this client"))
-        })?;
+        let datatype = self
+            .get_datatype(key)
+            .ok_or_else(|| DatatypeError::Disallowed(msg::datatype_not_managed(key)))?;
 
         datatype.unsubscribe()?;
         Ok(datatype)

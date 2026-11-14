@@ -7,12 +7,14 @@ use crate::{
         common::ReturnType,
         crdts::{LocalOperationOutcome, RollbackAction},
     },
-    errors::datatypes::{InternalReason, deserialize_error},
+    errors::{
+        datatypes::{InternalReason, deserialize_error},
+        messages::{datatype as datatype_msg, snapshot as snapshot_msg},
+    },
     operations::body::OperationBody,
     types::operation_context::OperationContext,
 };
 
-const SNAPSHOT_CONTEXT: &str = "counter crdt";
 const SNAPSHOT_LEN: usize = size_of::<i64>();
 
 #[derive(Debug, PartialEq, Eq)]
@@ -57,7 +59,7 @@ impl CounterCrdt {
             }
             #[allow(unreachable_patterns)]
             _ => Err(InternalReason::ExecuteOperation(
-                "counter cannot execute this local operation".to_owned(),
+                datatype_msg::COUNTER_LOCAL_OPERATION.to_owned(),
             )
             .into_error()),
         }
@@ -74,7 +76,7 @@ impl CounterCrdt {
             }
             #[allow(unreachable_patterns)]
             _ => Err(InternalReason::ExecuteOperation(
-                "counter cannot execute this remote operation".to_owned(),
+                datatype_msg::COUNTER_REMOTE_OPERATION.to_owned(),
             )
             .into_error()),
         }
@@ -101,8 +103,8 @@ impl SnapshotCodec for CounterCrdt {
     fn decode_snapshot(snapshot: &[u8]) -> Result<Self, DatatypeError> {
         let bytes: [u8; SNAPSHOT_LEN] = snapshot.try_into().map_err(|_| {
             deserialize_error(
-                SNAPSHOT_CONTEXT,
-                format_args!("expected {SNAPSHOT_LEN} bytes, got {}", snapshot.len()),
+                snapshot_msg::COUNTER_CONTEXT,
+                snapshot_msg::length_mismatch(SNAPSHOT_LEN, snapshot.len()),
             )
         })?;
         Ok(Self {

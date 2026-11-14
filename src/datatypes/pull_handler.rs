@@ -3,7 +3,10 @@ use tracing::{debug, instrument, warn};
 use crate::{
     DatatypeError, DatatypeState, ServerRejectReason,
     datatypes::{mutable::MutableDatatype, push_buffer::PushBuffer},
-    errors::datatypes::{DatatypeErrorWithAction, RecoveryAction},
+    errors::{
+        datatypes::{DatatypeErrorWithAction, RecoveryAction},
+        messages::sync as msg,
+    },
     observability::trace::add_span_event,
     types::{checkpoint::CheckPoint, push_pull_pack::PushPullPack},
 };
@@ -89,10 +92,9 @@ impl<'a> PullHandler<'a> {
             || new.sseq - old.sseq < new.cseq - old.cseq
         {
             return Err(
-                DatatypeError::ServerRejected(ServerRejectReason::ProtocolViolation(format!(
-                    "invalid response checkpoint {new}; previous {old}, sent cseq {}",
-                    self.sent_cseq
-                )))
+                DatatypeError::ServerRejected(ServerRejectReason::ProtocolViolation(
+                    msg::invalid_response_checkpoint(new, old, self.sent_cseq),
+                ))
                 .mapping(),
             );
         }
@@ -105,9 +107,9 @@ impl<'a> PullHandler<'a> {
         new: DatatypeState,
     ) -> Result<(), DatatypeErrorWithAction> {
         Err(
-            DatatypeError::ServerRejected(ServerRejectReason::ProtocolViolation(format!(
-                "illegal state from push-pull: received {new} for {old}"
-            )))
+            DatatypeError::ServerRejected(ServerRejectReason::ProtocolViolation(
+                msg::illegal_response_state(new, old),
+            ))
             .mapping(),
         )
     }
@@ -188,7 +190,7 @@ impl<'a> PullHandler<'a> {
         if self.mutable.needs_snapshot && self.pulled_ppp.snapshot_transaction.is_none() {
             return Err(
                 DatatypeError::ServerRejected(ServerRejectReason::ProtocolViolation(
-                    "resubscription requires a snapshot".into(),
+                    msg::RESUBSCRIBE_REQUIRES_SNAPSHOT.into(),
                 ))
                 .mapping(),
             );

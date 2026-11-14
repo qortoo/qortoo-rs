@@ -5,7 +5,7 @@ use dyn_fmt::AsStrFormatExt;
 use crate::{
     Client, ClientError, Counter, DataType, DatatypeHandler, DatatypeState, Variable,
     datatypes::option::DatatypeOption,
-    errors::{clients::CLIENT_ERROR_MSG_DATATYPE_KEY, with_err_out},
+    errors::{messages::client as msg, with_err_out},
     utils::name_validator::is_valid_datatype_key,
 };
 
@@ -88,7 +88,7 @@ impl<'c> DatatypeBuilder<'c> {
         if !is_valid_datatype_key(&self.key) {
             return Err(with_err_out!(
                 ClientError::FailedToSubscribeOrCreateDatatype(
-                    CLIENT_ERROR_MSG_DATATYPE_KEY.format(&[self.key])
+                    msg::INVALID_DATATYPE_KEY_TEMPLATE.format(&[self.key])
                 )
             ));
         }
@@ -127,7 +127,7 @@ impl<'c> DatatypeBuilder<'c> {
         if !is_valid_datatype_key(&self.key) {
             return Err(with_err_out!(
                 ClientError::FailedToSubscribeOrCreateDatatype(
-                    CLIENT_ERROR_MSG_DATATYPE_KEY.format(&[self.key])
+                    msg::INVALID_DATATYPE_KEY_TEMPLATE.format(&[self.key])
                 )
             ));
         }
@@ -320,9 +320,16 @@ mod tests_datatype_builder {
         let ret = client.create_datatype(key).build_counter();
         assert_eq!(ret.is_ok(), success_expected);
         if !success_expected {
+            let error = ret.err().unwrap();
             assert_eq!(
-                ret.err().unwrap(),
+                error,
                 ClientError::FailedToSubscribeOrCreateDatatype("".to_string())
+            );
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "[E101] cannot subscribe or create datatype: invalid datatype key '{key}': must be 1-255 bytes, must not contain null characters (\\0), and must not start with '$'"
+                )
             );
         }
     }

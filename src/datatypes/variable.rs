@@ -11,7 +11,7 @@ use crate::{
         transactional::{TransactionContext, TransactionalDatatype},
         value::{decode_json_value, encode_json_value, validate_json_value},
     },
-    errors::{BoxedError, datatypes::InternalReason},
+    errors::{BoxedError, datatypes::InternalReason, messages::datatype as msg},
     operations::Operation,
 };
 
@@ -112,9 +112,9 @@ impl Variable {
         trace!("set -> {ret:?}");
         match ret {
             ReturnType::Variable(previous) => Ok(previous),
-            _ => {
-                Err(InternalReason::ExecuteOperation("unexpected return type".into()).into_error())
-            }
+            _ => Err(
+                InternalReason::ExecuteOperation(msg::UNEXPECTED_RETURN_TYPE.into()).into_error(),
+            ),
         }
     }
 
