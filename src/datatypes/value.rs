@@ -34,7 +34,7 @@ pub(crate) fn encode_json_value<T: Serialize + ?Sized>(
 /// reserialized, so property order, number formatting, and string escapes are
 /// preserved exactly. Used when the caller already holds JSON, such as a language
 /// binding forwarding `encoding/json` or `serde_json` output.
-pub(crate) fn validate_json_value(bytes: &[u8]) -> Result<Box<[u8]>, DatatypeError> {
+pub(crate) fn validate_json_value(bytes: &[u8]) -> Result<&[u8], DatatypeError> {
     // `serde_json` skips UTF-8 validation of string contents when the value is ignored,
     // so the whole input is checked here first; `from_str` then rejects anything that
     // is not exactly one value, trailing content included.
@@ -42,7 +42,7 @@ pub(crate) fn validate_json_value(bytes: &[u8]) -> Result<Box<[u8]>, DatatypeErr
         std::str::from_utf8(bytes).map_err(|error| value_conversion_error(msg::DECODE, error))?;
     serde_json::from_str::<IgnoredAny>(json)
         .map_err(|error| value_conversion_error(msg::DECODE, error))?;
-    Ok(Box::from(bytes))
+    Ok(bytes)
 }
 
 /// Decodes stored JSON bytes into the caller's requested type.
@@ -141,6 +141,7 @@ mod tests {
             b"1 2".as_slice(),
             b"null null".as_slice(),
             b"\xff".as_slice(),
+            b"\"\xff\"".as_slice(),
         ] {
             let error = decode_json_value::<Value>(bytes).unwrap_err();
             assert_eq!(error, DatatypeError::ValueConversion(String::new()));
@@ -153,7 +154,7 @@ mod tests {
     #[test]
     fn can_return_valid_json_bytes_unchanged() {
         let input = br#"{ "b": 2, "a": 1 }"#;
-        assert_eq!(&*validate_json_value(input).unwrap(), input);
+        assert!(std::ptr::eq(validate_json_value(input).unwrap(), input));
     }
 
     #[test]

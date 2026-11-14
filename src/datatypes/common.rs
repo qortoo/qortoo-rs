@@ -166,6 +166,7 @@ pub enum ReturnType {
     None,
     Counter(i64),
     Variable(Arc<[u8]>),
+    Map(Option<Arc<[u8]>>),
 }
 
 impl Debug for ReturnType {
@@ -173,6 +174,10 @@ impl Debug for ReturnType {
         match self {
             ReturnType::None => f.write_str("None"),
             ReturnType::Counter(value) => f.debug_tuple("Counter").field(value).finish(),
+            ReturnType::Map(value) => f
+                .debug_struct("Map")
+                .field("value_size", &value.as_ref().map(|value| value.len()))
+                .finish(),
             ReturnType::Variable(value) => f
                 .debug_struct("Variable")
                 .field("value_size", &value.len())
@@ -233,5 +238,13 @@ mod tests_attribute {
         let debug = format!("{:?}", super::ReturnType::Variable(value));
         assert_eq!(debug, "Variable { value_size: 10 }");
         assert!(!debug.contains("do-not-log"));
+        let map_value: Arc<[u8]> = Arc::from(b"do-not-log".as_slice());
+        let debug_map = format!("{:?}", super::ReturnType::Map(Some(map_value)));
+        assert_eq!(debug_map, "Map { value_size: Some(10) }");
+        assert!(!debug_map.contains("do-not-log"));
+        assert_eq!(
+            format!("{:?}", super::ReturnType::Map(None)),
+            "Map { value_size: None }"
+        );
     }
 }

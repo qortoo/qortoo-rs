@@ -35,7 +35,15 @@ pub(crate) mod client {
 }
 
 pub(crate) mod datatype {
+
+    pub(crate) const LOCAL_TIMESTAMP_NOT_ADVANCED: &str =
+        "local operation did not advance the winning timestamp";
+
     use std::fmt::{Debug, Display};
+
+    pub(crate) const INVALID_ARGUMENT_PREFIX: &str = "invalid argument: ";
+
+    pub(crate) const UNSUPPORTED_OPERATION: &str = "operation is not supported by this datatype";
 
     pub(crate) const EXECUTE_OPERATION_PREFIX: &str = "execute operation: ";
 
@@ -61,22 +69,8 @@ pub(crate) mod datatype {
     pub(crate) const NESTED_TRANSACTION: &str =
         "nested transactions on the same datatype are not allowed";
 
-    pub(crate) const COUNTER_LOCAL_OPERATION: &str = "counter cannot execute this local operation";
-
-    pub(crate) const COUNTER_REMOTE_OPERATION: &str =
-        "counter cannot execute this remote operation";
-
     pub(crate) const ROLLBACK_ACTION_MISMATCH: &str =
         "rollback action does not match the CRDT type";
-
-    pub(crate) const VARIABLE_LOCAL_OPERATION: &str =
-        "variable cannot execute this local operation";
-
-    pub(crate) const VARIABLE_REMOTE_OPERATION: &str =
-        "variable cannot execute this remote operation";
-
-    pub(crate) const VARIABLE_TIMESTAMP_NOT_ADVANCED: &str =
-        "local variable set did not advance the winning timestamp";
 
     pub(crate) const POSITIVE_LAMPORT_REQUIRED: &str =
         "modification operation must use a positive Lamport timestamp";
@@ -96,8 +90,8 @@ pub(crate) mod datatype {
         format!("{operation} is only allowed in Subscribed state, current state is {state:?}")
     }
 
-    pub(crate) fn conflicting_variable_timestamp(timestamp: impl Display) -> String {
-        format!("variable received different values for timestamp {timestamp}")
+    pub(crate) fn conflicting_timestamp(timestamp: impl Display) -> String {
+        format!("received different values for timestamp {timestamp}")
     }
 }
 
@@ -210,6 +204,20 @@ pub(crate) mod sync {
 }
 
 pub(crate) mod snapshot {
+    pub(crate) const MAP_CONTEXT: &str = "map crdt";
+
+    pub(crate) const MAP_INVALID_KEY_UTF8: &str = "key is not UTF-8";
+
+    pub(crate) const MAP_INVALID_KEY_ORDER: &str = "keys must be strictly ordered";
+
+    pub(crate) const MAP_POSITIVE_TIMESTAMP_REQUIRED: &str = "entry timestamp must be positive";
+
+    pub(crate) const INVALID_JSON: &str = "invalid JSON payload";
+
+    pub(crate) const MAP_INVALID_STATE_TAG: &str = "invalid state tag";
+
+    pub(crate) const LENGTH_OVERFLOW: &str = "length does not fit this platform";
+
     use std::fmt::Display;
 
     pub(crate) const DESERIALIZE_PREFIX: &str = "deserialize: ";
@@ -217,8 +225,6 @@ pub(crate) mod snapshot {
     pub(crate) const COUNTER_CONTEXT: &str = "counter crdt";
 
     pub(crate) const VARIABLE_CONTEXT: &str = "variable crdt";
-
-    pub(crate) const JSON_LENGTH_OVERFLOW: &str = "JSON length does not fit this platform";
 
     pub(crate) const INVALID_INITIAL_VARIABLE: &str =
         "Lamport zero is reserved for the initial null state";
@@ -237,8 +243,6 @@ pub(crate) mod snapshot {
     pub(crate) const VERSION_FIELD: &str = "version";
 
     pub(crate) const TIMESTAMP_FIELD: &str = "winning timestamp";
-
-    pub(crate) const JSON_LENGTH_FIELD: &str = "JSON length";
 
     pub(crate) const JSON_PAYLOAD_FIELD: &str = "JSON payload";
 
@@ -266,10 +270,6 @@ pub(crate) mod snapshot {
 
     pub(crate) fn unsupported_version(version: impl Display) -> String {
         format!("unsupported version {version}")
-    }
-
-    pub(crate) fn invalid_json_payload(error: impl Display) -> String {
-        format!("invalid JSON payload: {error}")
     }
 }
 

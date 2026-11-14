@@ -25,6 +25,9 @@ clone and every clone refers to the same replicated value. Nothing is replicated
 datatypes of the same client — a datatype converges only with the same key in the same
 collection on other clients.
 
+The internal [Map core](map.md) also implements CRDT dispatch and snapshots; its public handle
+and builder are pending.
+
 Each datatype is composed from five layers:
 
 | Layer | Responsibility |

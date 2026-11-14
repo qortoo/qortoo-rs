@@ -154,6 +154,11 @@ mod tests_datatype_errors {
                 check(error.code(), 214, error.to_string())
             },
             {
+                let error = DatatypeError::InvalidArgument("detail".into());
+                assert_eq!(error.to_string(), "[E215] invalid argument: detail");
+                check(error.code(), 215, error.to_string())
+            },
+            {
                 let error = super::push_pull::PushPullError::ProtocolViolation(String::new());
                 check(error.code(), 301, error.to_string())
             },

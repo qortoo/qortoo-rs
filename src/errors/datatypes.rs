@@ -165,6 +165,9 @@ pub enum DatatypeError {
     /// unchanged, and this error is never routed through the event loop.
     #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = value_msg::CONVERSION_PREFIX)]
     ValueConversion(String) = 214,
+    /// A datatype operation received an invalid caller argument. Never routed to the event loop.
+    #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = datatype_msg::INVALID_ARGUMENT_PREFIX)]
+    InvalidArgument(String) = 215,
 }
 
 impl DatatypeError {
@@ -182,6 +185,7 @@ impl DatatypeError {
             Self::PushBufferExceededMaxMemSize => 211,
             Self::ServerRejected(_) => 213,
             Self::ValueConversion(_) => 214,
+            Self::InvalidArgument(_) => 215,
         }
     }
 
@@ -219,7 +223,8 @@ impl DatatypeError {
             DatatypeError::TransactionFailed(_)
             | DatatypeError::Disallowed(_)
             | DatatypeError::NotWritable(_)
-            | DatatypeError::ValueConversion(_) => {
+            | DatatypeError::ValueConversion(_)
+            | DatatypeError::InvalidArgument(_) => {
                 unreachable!(
                     "variant {:?} must not be routed through DatatypeError::mapping()",
                     self

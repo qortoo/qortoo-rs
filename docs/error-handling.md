@@ -78,6 +78,7 @@ call; routed variants are paired with an action.
 | `Disallowed` | 205 | Access denied for a reason other than state or readonly configuration, such as a key this client does not manage |
 | `NotWritable` | 206 | The datatype's lifecycle state does not permit writes |
 | `ValueConversion` | 214 | A value could not be converted to or from the datatype's representation; nothing was applied |
+| `InvalidArgument` | 215 | A datatype argument is invalid; shared with the C ABI |
 
 **Routed.**
 
@@ -198,6 +199,9 @@ invalid JSON passed to the value API belongs to `value`. C-specific configuratio
 - Keep error variants, numeric codes, and `RecoveryAction` decisions in their current
   definition/translation modules. Catalog modules are editorial ownership, not new error
   types or code ranges. Callers must not parse message text to decide behavior.
+- Unsupported operations use one shared diagnostic across datatypes and local/remote execution.
+- Local operations that fail to advance the winning timestamp use one shared diagnostic across datatypes.
+- Conflicting values for the same timestamp use one shared diagnostic across datatypes.
 - When adding an error, select its domain, reuse or add its text there, and verify the
   complete output at the existing error/API test boundary. Expected strings must be
   independent literals, not assembled from catalog constants. Keep C tests specific to

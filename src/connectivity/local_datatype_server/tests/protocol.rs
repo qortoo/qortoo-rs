@@ -131,6 +131,7 @@ fn can_reject_nonsequential_new_transactions_without_publishing_batch(#[case] se
 #[rstest]
 #[case(DataType::Counter)]
 #[case(DataType::Variable)]
+#[case(DataType::Map)]
 fn can_reject_a_late_batch_failure_without_advancing_backend_state(#[case] data_type: DataType) {
     let attr = new_attribute!(data_type);
     let mut server = LocalDatatypeServer::new(&attr, Default::default());
@@ -139,7 +140,11 @@ fn can_reject_a_late_batch_failure_without_advancing_backend_state(#[case] data_
         DataType::Variable => {
             Operation::new_variable_set(value.to_string().into_bytes().into_boxed_slice())
         }
-        _ => unreachable!(),
+        DataType::Map if value == 10 => Operation::new_map_remove("key".into()),
+        DataType::Map => Operation::new_map_put(
+            "key".into(),
+            value.to_string().into_bytes().into_boxed_slice(),
+        ),
     };
     let mut pushed = PushPullPack::new(&attr, DatatypeState::Creating);
     pushed.transactions = vec![transaction(&pushed.cuid, 1, operation(7))];

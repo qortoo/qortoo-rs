@@ -98,7 +98,7 @@ impl Variable {
     /// cannot be applied locally. On error, the variable is unchanged.
     /// For writes inside a transaction, see [`transaction`](Self::transaction).
     pub fn set_raw(&self, json: &[u8]) -> Result<Box<[u8]>, DatatypeError> {
-        let previous = self.set_encoded(validate_json_value(json)?)?;
+        let previous = self.set_encoded(validate_json_value(json)?.into())?;
         Ok(Box::from(&*previous))
     }}
 

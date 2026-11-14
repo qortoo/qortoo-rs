@@ -94,7 +94,10 @@ cannot hold what is stored — most commonly, a non-nullable type asked to hold 
 current value and stamping it with catch-up metadata would let an old write that arrives after
 the snapshot incorrectly win, because the snapshot's own timestamp would look newest. Carrying
 the real winning timestamp keeps a late-arriving stale write correctly recognized as stale. A
-snapshot that fails to decode leaves the existing state untouched.
+snapshot that fails to decode leaves the existing state untouched. Variable and Map share
+snapshot readers for versions, timestamps, length-prefixed bytes, and JSON validation.
+JSON validation checks UTF-8 even inside strings and preserves the original bytes without
+converting numbers or nested values into a Rust JSON value.
 
 ## Behavior
 
@@ -177,25 +180,25 @@ both would erase that distinction rather than provide it.
 | The LWW state machine, timestamp comparison, and rollback | `src/datatypes/crdts/variable_crdt.rs` |
 | The wire operation body | `src/operations/body/variable.rs` |
 | Timestamp construction and total order | `src/types/timestamp.rs` |
-| Snapshot encoding and decoding | `src/datatypes/crdts/variable_crdt.rs` (`SnapshotCodec` impl) |
+| Snapshot encoding and decoding | `src/datatypes/crdts/snapshot/variable.rs` |
 
 | Verified by | Tests |
 |-------------|-------|
 | Typed round trip, including a value that changes shape between sets | `can_round_trip_typed_values`, `can_return_the_previous_value_across_json_types` in `src/datatypes/variable.rs` |
-| Initial and explicit null are indistinguishable when read | `can_read_initial_and_explicit_null_into_nullable_destinations` in `src/datatypes/variable.rs`, `can_apply_an_explicit_null_over_the_initial_null_value`, `can_preserve_the_real_timestamp_of_an_explicit_null_set` in `src/datatypes/crdts/variable_crdt.rs` |
+| Initial and explicit null are indistinguishable when read | `can_read_initial_and_explicit_null_into_nullable_destinations` in `src/datatypes/variable.rs`, `can_apply_an_explicit_null_over_the_initial_null_value`, `can_preserve_the_real_timestamp_of_an_explicit_null_set` in `src/datatypes/crdts/tests/variable_crdt.rs` |
 | A non-nullable destination rejects null | `can_reject_null_for_a_non_nullable_destination` in `src/datatypes/variable.rs`, `can_reject_null_for_non_nullable_destination` in `src/datatypes/value.rs` |
 | A failed encode leaves the variable untouched | `can_keep_the_variable_unchanged_when_encoding_fails` in `src/datatypes/variable.rs` |
 | A composite map key fails to encode; a primitive-keyed map does not | `can_reject_value_that_fails_to_encode` in `src/datatypes/value.rs` |
 | Raw bytes round-trip without reformatting, and invalid raw input is rejected before write access is even checked | `can_round_trip_raw_json_bytes_without_reformatting`, `can_reject_raw_json_that_is_not_exactly_one_value`, `can_validate_raw_json_before_consulting_write_access` in `src/datatypes/variable.rs` |
 | Reading creates no operation and is allowed in every state | `can_read_without_changing_state_version_or_push_buffer` in `src/datatypes/variable.rs` |
-| The four outcomes of applying a set | `can_apply_a_newer_variable_set_and_return_the_previous_state`, `can_ignore_a_stale_variable_set`, `can_ignore_a_duplicate_variable_set`, `can_reject_different_values_for_the_same_variable_timestamp` in `src/datatypes/crdts/variable_crdt.rs` |
-| A local set must strictly advance the timestamp | `can_reject_a_local_variable_set_without_a_newer_timestamp` in `src/datatypes/crdts/variable_crdt.rs` |
-| Ties are broken by client identity | `can_break_variable_set_ties_by_cuid` in `src/datatypes/crdts/variable_crdt.rs`, `can_converge_via_cuid_tie_break_regardless_of_sync_order` in `src/datatypes/variable.rs` |
-| Rollback restores value and timestamp, including back to the initial state | `can_execute_and_rollback_local_variable_sets_in_reverse_order` in `src/datatypes/crdts/variable_crdt.rs` |
+| The four outcomes of applying a set | `can_apply_a_newer_variable_set_and_return_the_previous_state`, `can_ignore_a_stale_variable_set`, `can_ignore_a_duplicate_variable_set`, `can_reject_different_values_for_the_same_variable_timestamp` in `src/datatypes/crdts/tests/variable_crdt.rs` |
+| A local set must strictly advance the timestamp | `can_reject_a_local_variable_set_without_a_newer_timestamp` in `src/datatypes/crdts/tests/variable_crdt.rs` |
+| Ties are broken by client identity | `can_break_variable_set_ties_by_cuid` in `src/datatypes/crdts/tests/variable_crdt.rs`, `can_converge_via_cuid_tie_break_regardless_of_sync_order` in `src/datatypes/variable.rs` |
+| Rollback restores value and timestamp, including back to the initial state | `can_execute_and_rollback_local_variable_sets_in_reverse_order` in `src/datatypes/crdts/tests/variable_crdt.rs` |
 | A transaction of several sets commits or undoes as a unit | `can_use_transaction` in `src/datatypes/variable.rs` |
 | A stale write arriving late is still ignored | `can_ignore_a_stale_transaction_that_arrives_after_a_newer_value` in `src/datatypes/variable.rs` |
-| A late subscriber catches up via snapshot | `can_catch_up_a_late_subscriber_to_the_current_value_and_timestamp` in `src/datatypes/variable.rs`, `can_round_trip_a_variable_snapshot_with_its_winning_timestamp` in `src/datatypes/crdts/variable_crdt.rs` |
-| A malformed snapshot is rejected without disturbing existing state | `can_reject_malformed_variable_snapshots` in `src/datatypes/crdts/variable_crdt.rs` |
+| A late subscriber catches up via snapshot | `can_catch_up_a_late_subscriber_to_the_current_value_and_timestamp` in `src/datatypes/variable.rs`, `can_round_trip_a_variable_snapshot_with_its_winning_timestamp` in `src/datatypes/crdts/tests/variable_crdt.rs` |
+| A malformed snapshot is rejected without disturbing existing state | `can_reject_malformed_variable_snapshots` in `src/datatypes/crdts/tests/variable_crdt.rs` |
 | Two clients converge over a real exchange | `can_propagate_a_sequential_set_between_two_clients` in `src/datatypes/variable.rs` |
 
 ## Related Concepts

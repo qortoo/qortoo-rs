@@ -16,6 +16,7 @@ use crate::{
         core::DatatypeCore,
         datatype::Datatype,
         event_loop::EventLoop,
+        mutable::MutableDatatype,
         wired::WiredDatatype,
     },
     errors::{
@@ -267,10 +268,18 @@ impl TransactionalDatatype {
         tx_ctx: Arc<TransactionContext>,
         op: Operation,
     ) -> Result<ReturnType, DatatypeError> {
+        self.with_local_operation_as_tx(tx_ctx, |mutable| mutable.execute_local_operation(op))
+    }
+
+    pub(crate) fn with_local_operation_as_tx<R>(
+        &self,
+        tx_ctx: Arc<TransactionContext>,
+        action: impl FnOnce(&mut MutableDatatype) -> Result<R, DatatypeError>,
+    ) -> Result<R, DatatypeError> {
         self.check_writable()?;
         self.with_local_transaction(self.begin_transaction(tx_ctx)?, || {
             // Release the mutable write lock before the transaction guard performs cleanup.
-            self.core.mutable.write().execute_local_operation(op)
+            action(&mut self.core.mutable.write())
         })
     }
 
@@ -442,6 +451,230 @@ mod tests_transactional {
             Default::default(),
             false,
         ))
+    }
+
+    fn manual_map_attribute() -> Arc<Attribute> {
+        let counter = manual_counter_attribute();
+        Arc::new(Attribute::new(
+            counter.key.clone(),
+            DataType::Map,
+            counter.client_common.clone(),
+            Default::default(),
+            false,
+        ))
+    }
+
+    fn typed_map_write(
+        datatype: &TransactionalDatatype,
+        context: Arc<TransactionContext>,
+        key: &str,
+        value: Option<&[u8]>,
+    ) -> Result<Option<serde_json::Value>, DatatypeError> {
+        datatype.with_local_operation_as_tx(context, |mutable| {
+            let previous = mutable
+                .crdt
+                .as_map()
+                .unwrap()
+                .shared_value(key)
+                .map(|bytes| crate::datatypes::value::decode_json_value(&bytes))
+                .transpose()?;
+            let op = match value {
+                Some(value) => Operation::new_map_put(key.into(), Box::from(value)),
+                None => Operation::new_map_remove(key.into()),
+            };
+            mutable.execute_local_operation(op)?;
+            Ok(previous)
+        })
+    }
+
+    #[rstest]
+    #[case(true, false)]
+    #[case(false, false)]
+    #[case(true, true)]
+    #[case(false, true)]
+    fn can_fail_typed_map_conversion_before_mutation(
+        #[case] propagate: bool,
+        #[case] remove: bool,
+    ) {
+        for raw in [
+            b"1e400".to_vec(),
+            format!("{}0{}", "[".repeat(130), "]".repeat(130)).into_bytes(),
+        ] {
+            let datatype = TransactionalDatatype::new_arc(
+                manual_map_attribute(),
+                DatatypeState::Subscribed,
+                Default::default(),
+            );
+            datatype
+                .execute_local_operation_as_tx(
+                    Default::default(),
+                    Operation::new_map_put("raw".into(), raw.clone().into_boxed_slice()),
+                )
+                .unwrap();
+            let context = Arc::new(TransactionContext::new("conversion"));
+            let result = datatype.do_transaction(context.clone(), || {
+                datatype.execute_local_operation_as_tx(
+                    context.clone(),
+                    Operation::new_map_put("earlier".into(), Box::from(b"true".as_slice())),
+                )?;
+                let (id, snapshot) = {
+                    let mutable = datatype.core.mutable.read();
+                    (mutable.op_id.clone(), mutable.crdt.serialize())
+                };
+                let result = typed_map_write(
+                    &datatype,
+                    context.clone(),
+                    "raw",
+                    if remove { None } else { Some(b"null") },
+                );
+                assert!(matches!(result, Err(DatatypeError::ValueConversion(_))));
+                {
+                    let mutable = datatype.core.mutable.read();
+                    assert_eq!(mutable.op_id, id);
+                    assert_eq!(mutable.crdt.serialize(), snapshot);
+                }
+                if propagate {
+                    result.map(|_| ())
+                } else {
+                    Ok(())
+                }
+            });
+            assert_eq!(result.is_err(), propagate);
+            let mutable = datatype.core.mutable.read();
+            assert_eq!(
+                mutable
+                    .crdt
+                    .as_map()
+                    .unwrap()
+                    .shared_value("raw")
+                    .unwrap()
+                    .as_ref(),
+                raw
+            );
+            assert_eq!(
+                mutable
+                    .crdt
+                    .as_map()
+                    .unwrap()
+                    .shared_value("earlier")
+                    .is_none(),
+                propagate
+            );
+            assert_eq!(mutable.op_id.cseq, if propagate { 1 } else { 2 });
+            drop(mutable);
+            let ReturnType::Map(Some(previous)) = datatype
+                .execute_local_operation_as_tx(
+                    Default::default(),
+                    Operation::new_map_remove("raw".into()),
+                )
+                .unwrap()
+            else {
+                panic!("expected raw previous value")
+            };
+            assert_eq!(previous.as_ref(), raw);
+        }
+    }
+
+    #[test]
+    fn can_rollback_map_mutations_when_commit_is_rejected() {
+        let datatype = TransactionalDatatype::new_arc(
+            manual_map_attribute(),
+            DatatypeState::Subscribed,
+            Default::default(),
+        );
+        datatype
+            .execute_local_operation_as_tx(
+                Default::default(),
+                Operation::new_map_put("key".into(), Box::from(b"null".as_slice())),
+            )
+            .unwrap();
+        let (snapshot, id, buffer_size, option) = {
+            let mut mutable = datatype.core.mutable.write();
+            let baseline = (
+                mutable.crdt.serialize(),
+                mutable.op_id.clone(),
+                mutable.push_buffer.mem_size,
+                mutable.push_buffer.option.clone(),
+            );
+            mutable.push_buffer.option = Arc::new(DatatypeOption {
+                max_mem_size_of_push_buffer: mutable.push_buffer.mem_size,
+            });
+            baseline
+        };
+        let context = Arc::new(TransactionContext::new("map rejected"));
+        let result = datatype.do_transaction(context.clone(), || {
+            datatype.execute_local_operation_as_tx(
+                context.clone(),
+                Operation::new_map_remove("key".into()),
+            )?;
+            datatype.execute_local_operation_as_tx(
+                context.clone(),
+                Operation::new_map_put("new".into(), Box::from(b"1".as_slice())),
+            )?;
+            datatype.execute_local_operation_as_tx(
+                context.clone(),
+                Operation::new_map_remove("new".into()),
+            )?;
+            Ok(())
+        });
+        assert_eq!(result, Err(DatatypeError::PushBufferExceededMaxMemSize));
+        {
+            let mut mutable = datatype.core.mutable.write();
+            assert_eq!(mutable.crdt.serialize(), snapshot);
+            assert_eq!(mutable.op_id, id);
+            assert!(mutable.is_transaction_record_empty());
+            assert_eq!(mutable.push_buffer.mem_size, buffer_size);
+            assert_eq!(mutable.crdt.as_map().unwrap().len(), 1);
+            mutable.push_buffer.option = option;
+        }
+        assert_eq!(
+            typed_map_write(&datatype, Default::default(), "key", Some(b"false")).unwrap(),
+            Some(serde_json::Value::Null)
+        );
+    }
+
+    #[test]
+    fn can_serialize_map_previous_values_with_their_writes() {
+        let datatype = TransactionalDatatype::new_arc(
+            manual_map_attribute(),
+            DatatypeState::Subscribed,
+            Default::default(),
+        );
+        let barrier = Arc::new(Barrier::new(8));
+        let workers: Vec<_> = (0..8)
+            .map(|value| {
+                let datatype = datatype.clone();
+                let barrier = barrier.clone();
+                thread::spawn(move || {
+                    barrier.wait();
+                    typed_map_write(
+                        &datatype,
+                        Default::default(),
+                        "key",
+                        Some(value.to_string().as_bytes()),
+                    )
+                    .unwrap()
+                })
+            })
+            .collect();
+        let mut observed: Vec<_> = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap().map(|value| value.as_u64().unwrap()))
+            .collect();
+        let mutable = datatype.core.mutable.read();
+        let current: serde_json::Value = crate::datatypes::value::decode_json_value(
+            &mutable.crdt.as_map().unwrap().shared_value("key").unwrap(),
+        )
+        .unwrap();
+        observed.push(Some(current.as_u64().unwrap()));
+        observed.sort();
+        assert_eq!(
+            observed,
+            std::iter::once(None)
+                .chain((0..8).map(Some))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(mutable.op_id.cseq, 8);
     }
 
     const WAIT_TIMEOUT: Duration = Duration::from_secs(5);

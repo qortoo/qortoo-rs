@@ -1,4 +1,19 @@
+mod counter;
+mod map;
+mod reader;
+mod variable;
+
+use reader::SnapshotReader;
+
 use crate::DatatypeError;
+
+pub(super) const SNAPSHOT_VERSION: u8 = 1;
+
+fn write_sized(bytes: &mut Vec<u8>, value: &[u8]) {
+    let length = u64::try_from(value.len()).expect("snapshot field length exceeds u64");
+    bytes.extend_from_slice(&length.to_le_bytes());
+    bytes.extend_from_slice(value);
+}
 
 /// Converts a concrete CRDT state to and from its snapshot representation.
 ///
