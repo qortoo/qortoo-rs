@@ -25,6 +25,9 @@ clone and every clone refers to the same replicated value. Nothing is replicated
 datatypes of the same client — a datatype converges only with the same key in the same
 collection on other clients.
 
+The internal [Map core](map.md) also implements CRDT dispatch and snapshots; its public handle
+and builder are pending.
+
 Each datatype is composed from five layers:
 
 | Layer | Responsibility |
@@ -309,3 +312,13 @@ in return.
 - [`docs/observability.md`](observability.md) — tracing, metrics, and profiling
 - [`docs/performance.md`](performance.md) — central benchmark ownership and measurement contracts
 - [`docs/go-binding.md`](go-binding.md) — the C ABI and native SDK layered on this core
+
+## Snapshot Codec Boundary
+
+Snapshot capture returns a result, and decode builds a validated candidate before replacing
+current CRDT state. All datatypes share the revision-one envelope and bounded decompression
+path. Writer policy belongs to the backend; receiver limits belong to the client. Cargo
+features select codec capabilities; default writing uses bitcode and Zstd level 1. See
+[Snapshot Format](snapshot-format.md) for the binary layout,
+[Connectivity](connectivity.md) for delivery and failure semantics, and
+[Client and Datatype Builder](client-and-datatype-builder.md#snapshot-receiver-policy) for limits.

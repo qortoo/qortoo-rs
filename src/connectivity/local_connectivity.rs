@@ -11,7 +11,7 @@ use crossbeam_channel::Sender;
 use parking_lot::RwLock;
 
 use crate::{
-    DatatypeState,
+    DatatypeState, SnapshotWriteOptions,
     connectivity::{Connectivity, local_datatype_server::LocalDatatypeServer},
     datatypes::{event_loop::Event, wired::WiredDatatype},
     errors::{connectivity::ConnectivityError, messages::sync as msg, push_pull::PushPullError},
@@ -47,6 +47,8 @@ struct LocalDatatypeServers {
 /// # Examples
 ///
 /// ```
+/// # #[cfg(all(feature = "snapshot-bitcode", feature = "snapshot-zstd"))]
+/// # {
 /// use std::sync::Arc;
 /// use qortoo::{Client, Datatype, DatatypeState, LocalConnectivity};
 ///
@@ -76,11 +78,13 @@ struct LocalDatatypeServers {
 ///
 /// // Both clients see the same value
 /// assert_eq!(counter2.get_value(), 1);
+/// # }
 /// ```
 #[allow(dead_code)]
 pub struct LocalConnectivity {
     datatype_servers: RwLock<LocalDatatypeServers>,
     is_realtime: AtomicBool,
+    snapshot_write_options: SnapshotWriteOptions,
 }
 
 impl LocalConnectivity {
@@ -92,14 +96,25 @@ impl LocalConnectivity {
     /// # Examples
     ///
     /// ```
+    /// # #[cfg(all(feature = "snapshot-bitcode", feature = "snapshot-zstd"))]
+    /// # {
     /// use qortoo::LocalConnectivity;
     ///
     /// let connectivity = LocalConnectivity::new_arc();
+    /// # }
     /// ```
+    #[cfg(all(feature = "snapshot-bitcode", feature = "snapshot-zstd"))]
     pub fn new_arc() -> Arc<Self> {
+        Self::new_arc_with_snapshot_options(Default::default())
+    }
+
+    /// Creates a backend with an explicit immutable snapshot writer policy.
+    /// Only capabilities enabled by Cargo features can be selected.
+    pub fn new_arc_with_snapshot_options(options: SnapshotWriteOptions) -> Arc<Self> {
         Arc::new(Self {
             datatype_servers: RwLock::default(),
             is_realtime: AtomicBool::new(true),
+            snapshot_write_options: options,
         })
     }
 
@@ -126,10 +141,13 @@ impl LocalConnectivity {
     /// # Examples
     ///
     /// ```
+    /// # #[cfg(all(feature = "snapshot-bitcode", feature = "snapshot-zstd"))]
+    /// # {
     /// use qortoo::LocalConnectivity;
     ///
     /// let connectivity = LocalConnectivity::new_arc();
     /// connectivity.set_realtime(false); // Switch to manual sync mode
+    /// # }
     /// ```
     pub fn set_realtime(&self, tf: bool) {
         self.is_realtime.store(tf, Ordering::Relaxed);
@@ -178,7 +196,11 @@ impl Connectivity for LocalConnectivity {
         } = &mut *datatypes;
         let server = active.entry(resource_id.clone()).or_insert_with(|| {
             let max_sub_gens = retired_sub_gens.remove(&resource_id).unwrap_or_default();
-            Arc::new(RwLock::new(LocalDatatypeServer::new(&attr, max_sub_gens)))
+            Arc::new(RwLock::new(LocalDatatypeServer::new(
+                &attr,
+                max_sub_gens,
+                self.snapshot_write_options,
+            )))
         });
         server.write().insert_client_item(wired, sender);
     }

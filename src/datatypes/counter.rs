@@ -223,7 +223,7 @@ mod tests_counter {
     use crate::{
         Client, DataType, DatatypeError, DatatypeHandler, DatatypeState,
         datatypes::{counter::Counter, datatype::Datatype, option::DatatypeOption},
-        utils::test_utils::{get_test_collection_name, get_test_func_name},
+        utils::test_utils::{get_test_collection_name, get_test_func_name, local_connectivity},
     };
 
     #[rstest::rstest]
@@ -290,7 +290,7 @@ mod tests_counter {
 
     #[test]
     fn can_continue_writing_after_sync_reclaims_a_small_buffer() {
-        let connectivity = crate::LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)

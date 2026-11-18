@@ -12,3 +12,5 @@ pub mod operation_id;
 pub mod push_pull_pack;
 pub mod timestamp;
 pub mod uid;
+
+pub mod snapshot;

@@ -9,10 +9,10 @@ use crate::{
         common::{ReturnType, datatype_instrument},
         datatype::DatatypeBlanket,
         transactional::{TransactionContext, TransactionalDatatype},
-        value::{decode_json_value, encode_json_value, validate_json_value},
     },
     errors::{BoxedError, datatypes::InternalReason, messages::datatype as msg},
     operations::Operation,
+    utils::json::{decode_json_value, encode_json_value, validate_json_str},
 };
 
 /// A variable is a conflict-free datatype that stores a single JSON value with
@@ -98,7 +98,7 @@ impl Variable {
     /// cannot be applied locally. On error, the variable is unchanged.
     /// For writes inside a transaction, see [`transaction`](Self::transaction).
     pub fn set_raw(&self, json: &[u8]) -> Result<Box<[u8]>, DatatypeError> {
-        let previous = self.set_encoded(validate_json_value(json)?)?;
+        let previous = self.set_encoded(validate_json_str(json)?.as_bytes().into())?;
         Ok(Box::from(&*previous))
     }}
 
@@ -215,9 +215,11 @@ mod tests_variable {
     use tracing::instrument;
 
     use crate::{
-        Client, DataType, DatatypeError, DatatypeState, LocalConnectivity,
+        Client, DataType, DatatypeError, DatatypeState,
         datatypes::{datatype::Datatype, variable::Variable},
-        utils::test_utils::{get_test_collection_name, get_test_func_name, get_test_ids},
+        utils::test_utils::{
+            get_test_collection_name, get_test_func_name, get_test_ids, local_connectivity,
+        },
     };
 
     #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -323,7 +325,7 @@ mod tests_variable {
     #[test]
     #[instrument]
     fn can_read_without_changing_state_version_or_push_buffer() {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let (collection, key, _) = get_test_ids!();
         let client = Client::builder(collection, "read-invariants")
@@ -430,7 +432,7 @@ mod tests_variable {
     /// Builds two `Client`s sharing one non-realtime `LocalConnectivity`, so writes only
     /// propagate on an explicit `sync()`.
     fn two_clients_sharing() -> (Client, Client) {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let (collection, _, _) = get_test_ids!();
         let client_a = Client::builder(collection.clone(), "client-a")

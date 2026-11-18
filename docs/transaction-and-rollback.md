@@ -490,10 +490,16 @@ because a remote transaction is never rolled back locally.
 | Another thread reads tentative state and joins writes with the callback context before rollback | `can_read_uncommitted_values_and_join_callback_writes_from_another_thread` in `src/datatypes/transactional.rs` |
 | Sync on the owner thread is rejected through both callback and original handles | `can_reject_sync_on_the_local_transaction_owner_thread`, `can_reject_sync_from_both_handles_inside_a_transaction_callback` in `src/datatypes/transactional.rs` |
 | Sync from another thread exchanges during the callback and completes after rollback | `can_complete_sync_from_another_thread_after_local_rollback` in `src/datatypes/transactional.rs` |
-| Counter undo, including the self-inverse extreme | `can_return_and_apply_a_counter_rollback_action` in `src/datatypes/crdts/counter_crdt.rs` |
-| Restore-shaped undo is routed to the right CRDT | `can_dispatch_local_variable_execution_and_rollback` in `src/datatypes/crdts/crdt.rs` |
+| Counter undo, including the self-inverse extreme | `can_return_and_apply_a_counter_rollback_action` in `src/datatypes/crdts/tests/counter_crdt.rs` |
+| Restore-shaped undo is routed to the right CRDT | `can_dispatch_local_variable_execution_and_rollback` in `src/datatypes/crdts/tests/crdt.rs` |
 | Restoring the save point returns the counters exactly | `can_next_rollback_compare_operation_ids` in `src/types/operation_id.rs` |
 | Buffered transactions survive an unsubscribe | `can_unsubscribe_with_pending_transactions` in `src/datatypes/datatype.rs` |
+
+Local execution distinguishes applied operations from no-ops. A no-op returns its result
+without recording an operation or rollback action or advancing the operation ID. A transaction
+containing only no-ops adds no push batch or push event. Map uses this for missing-key Removes;
+see [Map Core](map.md). The shared `with_local_operation_as_tx` boundary also permits validation
+and previous-value conversion under the same mutable write lock as execution.
 
 ## Related Concepts
 

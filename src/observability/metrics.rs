@@ -86,9 +86,10 @@ mod tests_metrics {
     };
     use crate::{
         Client, DatatypeError,
-        connectivity::local_connectivity::LocalConnectivity,
         datatypes::datatype::Datatype,
-        utils::test_utils::{get_test_collection_name, get_test_func_name, get_test_ids},
+        utils::test_utils::{
+            get_test_collection_name, get_test_func_name, get_test_ids, local_connectivity,
+        },
     };
 
     static SNAPSHOTTER: OnceLock<Snapshotter> = OnceLock::new();
@@ -212,7 +213,7 @@ mod tests_metrics {
 
         let collection = get_test_collection_name!();
         let key = get_test_func_name!();
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let client1 = Client::builder(collection.clone(), "client1")
             .with_connectivity(connectivity.clone())
@@ -276,7 +277,7 @@ mod tests_metrics {
         let (collection, key, resource_id) = get_test_ids!();
         drain!(s);
 
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let client = Client::builder(collection, "client")
             .with_connectivity(connectivity.clone())

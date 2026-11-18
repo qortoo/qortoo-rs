@@ -78,6 +78,7 @@ call; routed variants are paired with an action.
 | `Disallowed` | 205 | Access denied for a reason other than state or readonly configuration, such as a key this client does not manage |
 | `NotWritable` | 206 | The datatype's lifecycle state does not permit writes |
 | `ValueConversion` | 214 | A value could not be converted to or from the datatype's representation; nothing was applied |
+| `InvalidArgument` | 215 | A datatype argument is invalid; shared with the C ABI |
 
 **Routed.**
 
@@ -88,6 +89,8 @@ call; routed variants are paired with an action.
 | `SyncFailed` | 210 | A transient exchange failure, such as a timeout or a server-side internal error | `RetryWithBackOff` |
 | `PushBufferExceededMaxMemSize` | 211 | The committed transaction does not fit in the push buffer | `RollbackTransaction` |
 | `ServerRejected` | 213 | The server refused the operation; the reason is carried inside | `Resubscribe` for `MissingSubscription`; otherwise `Disable` |
+| `SnapshotEncode` | 216 | CRDT state could not be encoded; carries a `SnapshotErrorReason` | `Disable` |
+| `SnapshotDecode` | 217 | Snapshot could not be decoded into valid CRDT state; carries a `SnapshotErrorReason` | `Disable` |
 
 \* except the non-sequential-sequence reason, which chooses `RollbackTransaction` at its
 creation site — see **Creation-site routing** below.
@@ -95,6 +98,27 @@ creation site — see **Creation-site routing** below.
 `ReadonlyViolation` reaches both destinations depending on who detects it. A local write by a
 readonly client is refused as `NotWritable` before anything is applied; the same violation
 reported by the server arrives as a routed error and disables the datatype.
+
+Snapshot errors identify the operation in `DatatypeError` and preserve the cause in
+`SnapshotErrorReason`. Internal codecs return the reason; `Crdt::serialize` and
+`Crdt::deserialize` attach encoding or decoding context. Decoding validates a complete
+candidate before replacing the current state.
+
+| Reason | Meaning |
+|--------|---------|
+| `Invalid` | Source state, snapshot data, or codec input is invalid |
+| `Unsupported` | Revision, format, dictionary, or required build capability is unsupported |
+| `LimitExceeded` | Input bytes, raw bytes, Map entries, or Zstd window exceed policy |
+| `ResourceExhausted` | A fallible buffer reservation or native allocation failed |
+
+Diagnostics use fixed catalog messages rather than payload contents or native error text,
+for example `[E217] snapshot decoding failed: memory allocation failed`. The C ABI exposes
+the operation code and formatted message; it does not expose a separate reason code.
+`DatatypeError` equality compares the outer variant only; inspect the reason with pattern
+matching when the cause matters. Resource errors cover allocations that report failure;
+they do not guarantee recovery from process-level allocation failure in codecs or CRDT
+construction. Server-side encoding failures become `SnapshotUnavailable` in the exchange
+and `ServerRejected(SnapshotUnavailable)` on the client, preserving the diagnostic as text.
 
 ### Server rejection reasons
 
@@ -113,6 +137,7 @@ in `can_describe_server_rejection_reasons`.
 | `ResourceNotFound` | The requested resource does not exist or has an incompatible type |
 | `MissingSubscription` | The server has no subscription entry, for example after losing state |
 | `ProtocolViolation` | The push violated the wire protocol, such as an unexpected state transition or a type mismatch |
+| `SnapshotUnavailable` | The server cannot generate a snapshot with its configured writer |
 
 ### Backend errors
 
@@ -136,6 +161,7 @@ server rejection reasons where a counterpart exists.
 | `ResourceNotFound` | 304 | `ServerRejected(ResourceNotFound)` |
 | `MissingSubscription` | 305 | `ServerRejected(MissingSubscription)` |
 | `ServerInternalError` | 306 | `SyncFailed`, treated as transient |
+| `SnapshotUnavailable` | 307 | `ServerRejected(SnapshotUnavailable)`, treated as permanent |
 
 ### Recovery actions
 
@@ -184,7 +210,7 @@ invalid JSON passed to the value API belongs to `value`. C-specific configuratio
   or a redundant module prefix.
 - Import the catalog domain with a short alias in each scope. When using one domain, use
   `use crate::errors::messages::snapshot as msg;` and call
-  `msg::unsupported_version(version)`. When using multiple domains, use `<domain>_msg`
+  `msg::length_mismatch(expected, actual)`. When using multiple domains, use `<domain>_msg`
   aliases, such as `datatype_msg` and `snapshot_msg`, to keep ownership visible. FFI callers
   use the same aliases under `crate::messages`. Do not use glob imports.
 - Use `_PREFIX` for text that precedes an error payload, `_TEMPLATE` for an existing
@@ -198,6 +224,9 @@ invalid JSON passed to the value API belongs to `value`. C-specific configuratio
 - Keep error variants, numeric codes, and `RecoveryAction` decisions in their current
   definition/translation modules. Catalog modules are editorial ownership, not new error
   types or code ranges. Callers must not parse message text to decide behavior.
+- Unsupported operations use one shared diagnostic across datatypes and local/remote execution.
+- Local operations that fail to advance the winning timestamp use one shared diagnostic across datatypes.
+- Conflicting values for the same timestamp use one shared diagnostic across datatypes.
 - When adding an error, select its domain, reuse or add its text there, and verify the
   complete output at the existing error/API test boundary. Expected strings must be
   independent literals, not assembled from catalog constants. Keep C tests specific to

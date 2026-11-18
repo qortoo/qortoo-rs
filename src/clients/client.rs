@@ -5,6 +5,7 @@ use parking_lot::RwLock;
 
 use crate::{
     DataType, DatatypeBuilder, DatatypeError, DatatypeHandler, DatatypeState, IntoString,
+    SnapshotDecodeLimits,
     clients::{common::ClientCommon, datatype_manager::DatatypeManager},
     connectivity::{Connectivity, null_connectivity::NullConnectivity},
     datatypes::{datatype_set::DatatypeSet, option::DatatypeOption},
@@ -28,6 +29,7 @@ pub struct ClientBuilder {
     collection: String,
     alias: String,
     connectivity: Arc<dyn Connectivity>,
+    snapshot_decode_limits: SnapshotDecodeLimits,
 }
 
 impl ClientBuilder {
@@ -44,14 +46,25 @@ impl ClientBuilder {
             ));
         }
 
-        let common =
-            ClientCommon::new_arc(self.collection.into(), self.alias.into(), self.connectivity);
+        let common = ClientCommon::new_arc(
+            self.collection.into(),
+            self.alias.into(),
+            self.connectivity,
+            self.snapshot_decode_limits,
+        );
         let datatype_manager = Arc::new(RwLock::new(DatatypeManager::new(common.clone())));
         common.set_datatype_manager(Arc::downgrade(&datatype_manager));
         Ok(Client {
             datatype_manager,
             common,
         })
+    }
+
+    /// Sets inclusive snapshot input, raw payload, and Map entry limits for this client.
+    /// Limits do not bound peak heap usage; zero rejects positive sizes in that dimension.
+    pub fn with_snapshot_decode_limits(mut self, limits: SnapshotDecodeLimits) -> Self {
+        self.snapshot_decode_limits = limits;
+        self
     }
 
     /// Sets a custom connectivity backend for synchronization.
@@ -67,6 +80,8 @@ impl ClientBuilder {
     /// # Examples
     ///
     /// ```
+    /// # #[cfg(all(feature = "snapshot-bitcode", feature = "snapshot-zstd"))]
+    /// # {
     /// use qortoo::{Client, LocalConnectivity};
     ///
     /// let connectivity = LocalConnectivity::new_arc();
@@ -74,6 +89,7 @@ impl ClientBuilder {
     ///     .with_connectivity(connectivity)
     ///     .build()
     ///     .unwrap();
+    /// # }
     /// ```
     pub fn with_connectivity(mut self, connectivity: Arc<dyn Connectivity>) -> Self {
         self.connectivity = connectivity;
@@ -109,6 +125,7 @@ impl Client {
             collection: collection.into(),
             alias: alias.into(),
             connectivity: Arc::new(NullConnectivity::new()),
+            snapshot_decode_limits: Default::default(),
         }
     }
 
@@ -204,10 +221,10 @@ mod tests_client {
     use tracing::instrument;
 
     use crate::{
-        Datatype, DatatypeState, LocalConnectivity,
+        Datatype, DatatypeState,
         clients::client::Client,
         datatypes::datatype::DatatypeBlanket,
-        utils::test_utils::{get_test_collection_name, get_test_func_name},
+        utils::test_utils::{get_test_collection_name, get_test_func_name, local_connectivity},
     };
 
     #[test]
@@ -227,7 +244,7 @@ mod tests_client {
     #[test]
     fn can_release_mutable_state_before_waiting_for_registry_detach() {
         const TIMEOUT: Duration = Duration::from_secs(5);
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
@@ -278,7 +295,7 @@ mod tests_client {
 
     #[test]
     fn can_reject_a_duplicate_build_without_reading_mutable_state() {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
@@ -314,7 +331,7 @@ mod tests_client {
     #[test]
     #[instrument]
     fn can_use_counter_from_client() {
-        let lc = LocalConnectivity::new_arc();
+        let lc = local_connectivity();
         lc.set_realtime(false);
         let client1 = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(lc)
@@ -373,7 +390,7 @@ mod tests_client {
     #[test]
     #[instrument]
     fn can_auto_detach_after_create_failure_disables_datatype() {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let collection = get_test_collection_name!();
         let key = get_test_func_name!();
@@ -410,7 +427,7 @@ mod tests_client {
     #[test]
     #[instrument]
     fn can_auto_detach_after_subscribe_failure_disables_datatype() {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
@@ -435,7 +452,7 @@ mod tests_client {
     #[test]
     #[instrument]
     fn can_unsubscribe_datatype_from_client() {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
@@ -469,7 +486,7 @@ mod tests_client {
     #[test]
     #[instrument]
     fn can_auto_detach_after_datatype_unsubscribe_sync() {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
@@ -498,7 +515,7 @@ mod tests_client {
     #[test]
     #[instrument]
     fn can_auto_detach_after_datatype_unsubscribe_in_realtime() {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
             .build()
@@ -526,7 +543,7 @@ mod tests_client {
     #[test]
     #[instrument]
     fn can_unsubscribe_datatype_from_client_in_realtime() {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
             .build()

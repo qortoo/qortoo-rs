@@ -64,6 +64,8 @@ pub trait Datatype {
     /// # Examples
     ///
     /// ```
+    /// # #[cfg(all(feature = "snapshot-bitcode", feature = "snapshot-zstd"))]
+    /// # {
     /// use qortoo::{Client, Datatype, DatatypeState, LocalConnectivity};
     ///
     /// let connectivity = LocalConnectivity::new_arc();
@@ -76,6 +78,7 @@ pub trait Datatype {
     /// counter.increase().unwrap();
     /// counter.sync().unwrap();
     /// assert_eq!(counter.get_state(), DatatypeState::Subscribed);
+    /// # }
     /// ```
     fn sync(&self) -> Result<(), DatatypeError>;
 
@@ -162,11 +165,12 @@ mod tests_datatype_trait {
 
     use crate::{
         Client, DataType, DatatypeError, DatatypeState,
-        connectivity::local_connectivity::LocalConnectivity,
         datatypes::{
             common::new_attribute, datatype::Datatype, transactional::TransactionalDatatype,
         },
-        utils::test_utils::{get_test_collection_name, get_test_func_name, get_test_ids},
+        utils::test_utils::{
+            get_test_collection_name, get_test_func_name, get_test_ids, local_connectivity,
+        },
     };
 
     #[test]
@@ -190,7 +194,7 @@ mod tests_datatype_trait {
     #[test]
     #[instrument]
     fn can_use_sync_method() {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let (collection, key, resource_id) = get_test_ids!();
 
@@ -223,7 +227,7 @@ mod tests_datatype_trait {
     #[test]
     #[instrument]
     fn can_reject_unsubscribe_before_subscribed() {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
@@ -244,7 +248,7 @@ mod tests_datatype_trait {
     #[test]
     #[instrument]
     fn can_mark_unsubscribing() {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
@@ -265,7 +269,7 @@ mod tests_datatype_trait {
     #[test]
     #[instrument]
     fn can_reject_write_and_repeated_unsubscribe_while_unsubscribing() {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
@@ -293,7 +297,7 @@ mod tests_datatype_trait {
     #[test]
     #[instrument]
     fn can_sync_unsubscribe_to_disabled() {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let (collection, key, resource_id) = get_test_ids!();
         let client = Client::builder(collection, get_test_func_name!())
@@ -318,7 +322,7 @@ mod tests_datatype_trait {
     #[test]
     #[instrument]
     fn can_disable_unsubscribing_on_protocol_violation() {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let (collection, key, resource_id) = get_test_ids!();
         let client = Client::builder(collection, get_test_func_name!())
@@ -348,7 +352,7 @@ mod tests_datatype_trait {
     #[test]
     #[instrument]
     fn can_unsubscribe_with_pending_transactions() {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let (collection, key, _) = get_test_ids!();
         let client1 = Client::builder(collection.clone(), "client1")
@@ -382,7 +386,7 @@ mod tests_datatype_trait {
     #[test]
     #[instrument]
     fn can_auto_sync_unsubscribe_in_realtime() {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
             .build()

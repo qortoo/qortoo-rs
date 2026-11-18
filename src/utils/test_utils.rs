@@ -1,4 +1,22 @@
-pub fn split_module_path(mod_path: &str) -> std::collections::VecDeque<String> {
+use std::{collections::VecDeque, sync::Arc};
+
+use crate::{LocalConnectivity, SnapshotCodecKind, SnapshotCompression, SnapshotWriteOptions};
+
+pub(crate) fn snapshot_write_options() -> SnapshotWriteOptions {
+    SnapshotWriteOptions {
+        codec: [1, 2]
+            .into_iter()
+            .find_map(SnapshotCodecKind::from_id)
+            .unwrap(),
+        compression: SnapshotCompression::from_id(1).unwrap_or(SnapshotCompression::None),
+    }
+}
+
+pub(crate) fn local_connectivity() -> Arc<LocalConnectivity> {
+    LocalConnectivity::new_arc_with_snapshot_options(snapshot_write_options())
+}
+
+pub fn split_module_path(mod_path: &str) -> VecDeque<String> {
     mod_path.split("::").map(|s| s.to_string()).collect()
 }
 

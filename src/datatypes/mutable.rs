@@ -6,7 +6,7 @@ use crate::{
     DatatypeError, DatatypeHandler, DatatypeState, ServerRejectReason,
     datatypes::{
         common::{Attribute, ReturnType},
-        crdts::Crdt,
+        crdts::{Crdt, LocalOperationOutcome},
         effects::{DatatypeEffect, DatatypeEffectBatch},
         handler::HandlersManager,
         push_buffer::{MemoryPushBuffer, PushBuffer},
@@ -91,7 +91,8 @@ impl MutableDatatype {
         }
         let snap_op = &tx.operations[0];
         if let OperationBody::Snapshot(body) = &snap_op.body {
-            self.crdt.deserialize(&body.data)?;
+            self.crdt
+                .deserialize(&body.data, self.attr.client_common.snapshot_decode_limits)?;
             self.op_id.cseq = 0;
             self.op_id.lamport = snap_op.lamport;
             self.reset();
@@ -121,7 +122,7 @@ impl MutableDatatype {
     /// Ends the in-progress transaction.
     ///
     /// Returns `Ok(true)` when a committed transaction was enqueued into the push buffer,
-    /// `Ok(false)` when the transaction was rolled back (`committed == false`).
+    /// `Ok(false)` when rolled back or when no operation was recorded.
     /// On an enqueue failure, `pending` is restored so that the routed
     /// `RecoveryAction::RollbackTransaction` can undo the transaction, and the error is returned.
     pub fn end_transaction(
@@ -147,8 +148,9 @@ impl MutableDatatype {
                 }
             }
             self.tx_record.discard_rollback_actions();
+            return Ok(true);
         }
-        Ok(true)
+        Ok(false)
     }
 
     /// Applies the datatype-lifecycle side effect of a routed error.
@@ -178,8 +180,8 @@ impl MutableDatatype {
     ) -> Result<(), DatatypeError> {
         for op in tx.iter() {
             let context = OperationContext::try_new(op, &tx.cuid)?;
-            self.op_id.lamport = self.op_id.lamport.max(op.lamport);
             self.crdt.execute_remote_operation(&context)?;
+            self.op_id.lamport = self.op_id.lamport.max(op.lamport);
         }
         Ok(())
     }
@@ -194,7 +196,13 @@ impl MutableDatatype {
             let context = OperationContext::try_new(&op, &self.op_id.cuid)?;
             self.crdt.execute_local_operation(&context)?
         };
-        let (return_value, rollback_action) = outcome.into_parts();
+        let (return_value, rollback_action) = match outcome {
+            LocalOperationOutcome::Applied {
+                return_value,
+                rollback_action,
+            } => (return_value, rollback_action),
+            LocalOperationOutcome::NoOp { return_value } => return Ok(return_value),
+        };
         let is_new_tx =
             self.tx_record
                 .record_operation(&self.op_id, self.state, op, rollback_action);
@@ -251,14 +259,144 @@ impl MutableDatatype {
 
 #[cfg(test)]
 mod tests_mutable_datatype {
+    use std::sync::Arc;
+
     use tracing::instrument;
 
+    use super::MutableDatatype;
     use crate::{
-        DataType,
+        DataType, DatatypeError, DatatypeState, SnapshotErrorReason,
         datatypes::{common::new_attribute, transactional::TransactionalDatatype},
         operations::{Operation, transaction::Transaction},
         types::uid::Cuid,
+        utils::test_utils::snapshot_write_options,
     };
+
+    #[test]
+    fn can_leave_no_trace_for_missing_map_removes() {
+        let mut mutable = MutableDatatype::new(
+            new_attribute!(DataType::Map),
+            Default::default(),
+            Default::default(),
+        );
+        let initial_id = mutable.op_id.clone();
+        mutable
+            .execute_local_operation(Operation::new_map_remove("missing".into()))
+            .unwrap();
+        assert_eq!(mutable.op_id, initial_id);
+        assert!(mutable.tx_record.pending.is_none());
+        assert_eq!(mutable.tx_record.rollback_action_count(), 0);
+        assert!(!mutable.end_transaction(None, true).unwrap());
+        assert_eq!(mutable.push_buffer.iter().count(), 0);
+
+        mutable
+            .execute_local_operation(Operation::new_map_put(
+                "key".into(),
+                Box::from(b"null".as_slice()),
+            ))
+            .unwrap();
+        let pending = mutable.tx_record.pending.clone();
+        let id = mutable.op_id.clone();
+        mutable
+            .execute_local_operation(Operation::new_map_remove("missing".into()))
+            .unwrap();
+        assert_eq!(mutable.op_id, id);
+        assert_eq!(mutable.tx_record.pending, pending);
+        assert_eq!(mutable.tx_record.rollback_action_count(), 1);
+        assert!(mutable.end_transaction(None, true).unwrap());
+        assert_eq!(mutable.push_buffer.iter().count(), 1);
+
+        mutable
+            .execute_local_operation(Operation::new_map_remove("key".into()))
+            .unwrap();
+        mutable.end_transaction(None, true).unwrap();
+        let tombstone = mutable.crdt.serialize(snapshot_write_options()).unwrap();
+        let id = mutable.op_id.clone();
+        mutable
+            .execute_local_operation(Operation::new_map_remove("key".into()))
+            .unwrap();
+        assert_eq!(mutable.op_id, id);
+        assert_eq!(
+            mutable.crdt.serialize(snapshot_write_options()).unwrap(),
+            tombstone
+        );
+        assert!(!mutable.end_transaction(None, true).unwrap());
+    }
+
+    #[test]
+    fn can_preserve_pending_map_work_when_an_operation_is_unsupported() {
+        let mut mutable = MutableDatatype::new(
+            new_attribute!(DataType::Map),
+            Default::default(),
+            Default::default(),
+        );
+        mutable
+            .execute_local_operation(Operation::new_map_put(
+                "key".into(),
+                Box::from(b"1".as_slice()),
+            ))
+            .unwrap();
+        let snapshot = mutable.crdt.serialize(snapshot_write_options()).unwrap();
+        let pending = mutable.tx_record.pending.clone();
+        let id = mutable.op_id.clone();
+        assert!(
+            mutable
+                .execute_local_operation(Operation::new_counter_increase(1))
+                .is_err()
+        );
+        assert_eq!(
+            mutable.crdt.serialize(snapshot_write_options()).unwrap(),
+            snapshot
+        );
+        assert_eq!(mutable.op_id, id);
+        assert_eq!(mutable.tx_record.pending, pending);
+        assert_eq!(mutable.tx_record.rollback_action_count(), 1);
+        assert!(mutable.end_transaction(None, true).unwrap());
+        assert_eq!(
+            mutable.push_buffer.iter().next().unwrap().operations.len(),
+            1
+        );
+    }
+
+    #[test]
+    fn can_observe_map_timestamps_only_after_successful_execution() {
+        let mut mutable = MutableDatatype::new(
+            new_attribute!(DataType::Map),
+            Default::default(),
+            Default::default(),
+        );
+        let cuid = Cuid::new();
+        for (lamport, mut op, valid) in [
+            (
+                10,
+                Operation::new_map_put("key".into(), Box::from(b"1".as_slice())),
+                true,
+            ),
+            (
+                5,
+                Operation::new_map_put("key".into(), Box::from(b"2".as_slice())),
+                true,
+            ),
+            (20, Operation::new_counter_increase(1), false),
+        ] {
+            op.set_lamport(lamport);
+            let mut tx = Transaction::new(&cuid, 1);
+            tx.push_operation(op);
+            let result = mutable.execute_remote_transaction(std::sync::Arc::new(tx));
+            assert_eq!(result.is_ok(), valid);
+            assert_eq!(mutable.op_id.lamport, 10);
+            assert_eq!(
+                mutable
+                    .crdt
+                    .as_map()
+                    .unwrap()
+                    .shared_value("key")
+                    .unwrap()
+                    .as_ref(),
+                b"1"
+            );
+        }
+    }
 
     #[test]
     fn can_share_generations_across_datatypes_and_recovery() {
@@ -275,17 +413,15 @@ mod tests_mutable_datatype {
             false,
         ));
         let mut first =
-            super::MutableDatatype::new(first_attr.clone(), Default::default(), Default::default());
+            MutableDatatype::new(first_attr.clone(), Default::default(), Default::default());
         let first_generation = first.sub_gen;
-        let second =
-            super::MutableDatatype::new(second_attr, Default::default(), Default::default());
+        let second = MutableDatatype::new(second_attr, Default::default(), Default::default());
         assert!(first_generation < second.sub_gen);
         first.apply_action(RecoveryAction::RetryWithBackOff);
         assert_eq!(first.sub_gen, first_generation);
         first.apply_action(RecoveryAction::Resubscribe);
         assert!(second.sub_gen < first.sub_gen);
-        let replacement =
-            super::MutableDatatype::new(first_attr, Default::default(), Default::default());
+        let replacement = MutableDatatype::new(first_attr, Default::default(), Default::default());
         assert!(first.sub_gen < replacement.sub_gen);
     }
 
@@ -335,7 +471,7 @@ mod tests_mutable_datatype {
     #[instrument]
     fn can_manage_rollback_action_lifetimes() {
         let attr = new_attribute!(DataType::Counter);
-        let mut mutable = super::MutableDatatype::new(attr, Default::default(), Default::default());
+        let mut mutable = MutableDatatype::new(attr, Default::default(), Default::default());
 
         mutable
             .execute_local_operation(Operation::new_counter_increase(3))
@@ -366,7 +502,7 @@ mod tests_mutable_datatype {
     #[instrument]
     fn can_reject_a_remote_counter_operation_with_zero_lamport() {
         let attr = new_attribute!(DataType::Counter);
-        let mut mutable = super::MutableDatatype::new(attr, Default::default(), Default::default());
+        let mut mutable = MutableDatatype::new(attr, Default::default(), Default::default());
         let cuid = Cuid::try_from("0000000000000001").unwrap();
         let mut transaction = Transaction::new(&cuid, 1);
         transaction.push_operation(Operation::new_counter_increase(1));
@@ -383,5 +519,45 @@ mod tests_mutable_datatype {
         let counter = mutable.crdt.as_counter().expect("expected a counter crdt");
         assert_eq!(counter.value(), 0);
         assert_eq!(mutable.op_id.lamport, 0);
+    }
+    #[test]
+    fn can_preserve_pending_work_until_failed_snapshot_recovery_disables_it() {
+        let mut mutable = MutableDatatype::new(
+            new_attribute!(DataType::Counter),
+            Default::default(),
+            Default::default(),
+        );
+        mutable
+            .execute_local_operation(Operation::new_counter_increase(3))
+            .unwrap();
+        mutable.end_transaction(None, true).unwrap();
+        mutable
+            .execute_local_operation(Operation::new_counter_increase(2))
+            .unwrap();
+        let previous_id = mutable.op_id.clone();
+        let previous_checkpoint = mutable.checkpoint;
+        let mut snapshot = Transaction::new(&Cuid::new_nil(), 0);
+        let mut operation = Operation::new_snapshot(Box::from(b"invalid".as_slice()));
+        operation.set_lamport(99);
+        snapshot.push_operation(operation);
+        let error = mutable
+            .apply_snapshot_transaction(Arc::new(snapshot))
+            .unwrap_err();
+        assert!(matches!(
+            &error,
+            DatatypeError::SnapshotDecode(SnapshotErrorReason::Invalid)
+        ));
+        assert_eq!(mutable.crdt.as_counter().unwrap().value(), 5);
+        assert_eq!(mutable.op_id, previous_id);
+        assert_eq!(mutable.checkpoint, previous_checkpoint);
+        assert!(mutable.tx_record.pending.is_some());
+        assert_eq!(mutable.tx_record.rollback_action_count(), 1);
+        assert!(mutable.push_buffer.iter().next().is_some());
+        mutable.apply_action(error.mapping().recovery);
+        assert_eq!(mutable.get_state(), DatatypeState::Disabled);
+        assert!(mutable.is_transaction_record_empty());
+        assert!(mutable.push_buffer.iter().next().is_none());
+        assert_eq!(mutable.crdt.as_counter().unwrap().value(), 5);
+        assert_eq!(mutable.op_id, previous_id);
     }
 }

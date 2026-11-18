@@ -5,10 +5,12 @@ use derive_more::Display;
 use super::memory::MemoryMeasurable;
 
 mod counter;
+mod map;
 mod snapshot;
 mod variable;
 
 pub use counter::CounterIncreaseBody;
+pub use map::{MapPutBody, MapRemoveBody};
 pub use snapshot::SnapshotBody;
 pub use variable::VariableSetBody;
 
@@ -18,6 +20,10 @@ pub enum OperationBody {
     CounterIncrease(CounterIncreaseBody),
     #[display("VariableSet{_0}")]
     VariableSet(VariableSetBody),
+    #[display("MapPut{_0}")]
+    MapPut(MapPutBody),
+    #[display("MapRemove{_0}")]
+    MapRemove(MapRemoveBody),
     #[display("Snapshot{_0}")]
     Snapshot(SnapshotBody),
 }
@@ -34,6 +40,8 @@ impl MemoryMeasurable for OperationBody {
             OperationBody::CounterIncrease(body) => body.size(),
             OperationBody::VariableSet(body) => body.size(),
             OperationBody::Snapshot(body) => body.size(),
+            OperationBody::MapPut(body) => body.size(),
+            OperationBody::MapRemove(body) => body.size(),
         }
     }
 }

@@ -29,6 +29,9 @@ pub enum PushPullError {
     /// [`DatatypeError::SyncFailed`] → `RecoveryAction::RetryWithBackOff`.
     #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = msg::SERVER_INTERNAL_ERROR_PREFIX)]
     ServerInternalError(String) = 306,
+    /// The server permanently failed to generate a snapshot; retrying is not automatic.
+    #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = msg::SNAPSHOT_UNAVAILABLE_PREFIX)]
+    SnapshotUnavailable(String) = 307,
 }
 
 impl PushPullError {
@@ -43,6 +46,7 @@ impl PushPullError {
             Self::ResourceNotFound(_) => 304,
             Self::MissingSubscription(_) => 305,
             Self::ServerInternalError(_) => 306,
+            Self::SnapshotUnavailable(_) => 307,
         }
     }
 
@@ -62,6 +66,9 @@ impl PushPullError {
                 ServerRejectReason::MissingSubscription(msg.to_owned()),
             ),
             PushPullError::ServerInternalError(msg) => DatatypeError::SyncFailed(msg.to_owned()),
+            PushPullError::SnapshotUnavailable(msg) => DatatypeError::ServerRejected(
+                ServerRejectReason::SnapshotUnavailable(msg.to_owned()),
+            ),
         }
     }
 }

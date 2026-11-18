@@ -65,6 +65,9 @@
 //! exposes `init_observability`/`shutdown_observability`. Building a [`Client`] never
 //! installs a subscriber, recorder, or exporter.
 
+#[cfg(not(any(feature = "snapshot-bitcode", feature = "snapshot-postcard")))]
+compile_error!("Enable at least one snapshot codec: snapshot-bitcode or snapshot-postcard.");
+
 #[cfg(feature = "observability-log")]
 pub use crate::observability::log_layer::QortooLogLayer;
 #[cfg(feature = "observability-trace")]
@@ -86,11 +89,14 @@ pub use crate::{
     errors::{
         BoxedError,
         clients::ClientError,
-        datatypes::{DatatypeError, ServerRejectReason},
+        datatypes::{DatatypeError, ServerRejectReason, SnapshotErrorReason},
     },
     types::{
         common::IntoString,
         datatype::{DataType, DatatypeState},
+        snapshot::{
+            SnapshotCodecKind, SnapshotCompression, SnapshotDecodeLimits, SnapshotWriteOptions,
+        },
     },
 };
 #[cfg(any(feature = "observability-trace", feature = "observability-metrics"))]

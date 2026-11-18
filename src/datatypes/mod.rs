@@ -16,7 +16,6 @@ pub mod push_buffer;
 mod target;
 mod transactional;
 mod tx_record;
-mod value;
 pub mod variable;
 pub mod wired;
 #[cfg(test)]

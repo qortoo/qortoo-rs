@@ -25,8 +25,24 @@ use crate::{
 /// The builder preserves the intended lifecycle state based on how it was
 /// obtained from [`Client`]. For example:
 /// ```
-/// use qortoo::{Client, DatatypeState, Datatype};
-/// let client = Client::builder("docs-example", "DatatypeBuilder-test").build().unwrap();
+/// use qortoo::{
+///     Client, DatatypeState, Datatype, LocalConnectivity,
+///     SnapshotCodecKind, SnapshotCompression, SnapshotWriteOptions,
+/// };
+/// # #[cfg(feature = "snapshot-bitcode")]
+/// let codec = SnapshotCodecKind::Bitcode;
+/// # #[cfg(not(feature = "snapshot-bitcode"))]
+/// # let codec = SnapshotCodecKind::Postcard;
+/// // Pause automatic synchronization to inspect the initial builder states.
+/// let connectivity = LocalConnectivity::new_arc_with_snapshot_options(SnapshotWriteOptions {
+///     codec,
+///     compression: SnapshotCompression::None,
+/// });
+/// connectivity.set_realtime(false);
+/// let client = Client::builder("docs-example", "DatatypeBuilder-test")
+///     .with_connectivity(connectivity)
+///     .build()
+///     .unwrap();
 /// assert_eq!(
 ///     client.subscribe_datatype("k1").build_counter().unwrap().get_state(),
 ///     DatatypeState::Subscribing
@@ -225,7 +241,7 @@ mod tests_datatype_builder {
 
     use crate::{
         Client, ClientError, Datatype, DatatypeError, DatatypeState,
-        utils::test_utils::{get_test_collection_name, get_test_func_name},
+        utils::test_utils::{get_test_collection_name, get_test_func_name, local_connectivity},
     };
 
     #[test]
@@ -279,7 +295,7 @@ mod tests_datatype_builder {
     #[instrument]
     fn can_check_read_only_state() {
         // Inspect builder states before synchronization can advance them.
-        let connectivity = crate::LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)

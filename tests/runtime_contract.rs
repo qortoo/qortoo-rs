@@ -1,14 +1,16 @@
 //! Public callback progress and lifetime contracts, independent of OS resource budgets.
+mod common;
+
 use std::time::Duration;
 
 use crossbeam_channel::{Sender, bounded};
-use qortoo::{Client, Datatype, DatatypeHandler, DatatypeSet, DatatypeState, LocalConnectivity};
+use qortoo::{Client, Datatype, DatatypeHandler, DatatypeSet, DatatypeState};
 
 const DEADLINE: Duration = Duration::from_secs(5);
 
 #[test]
 fn can_read_write_transact_sync_and_unsubscribe_from_a_handler() {
-    let connectivity = LocalConnectivity::new_arc();
+    let connectivity = common::local_connectivity();
     connectivity.set_realtime(false);
     let client = Client::builder("runtime-contract", "reentrant-handler")
         .with_connectivity(connectivity)
@@ -57,7 +59,7 @@ impl Drop for DropSignal {
 
 #[test]
 fn can_keep_a_blocked_callback_alive_after_external_handles_are_dropped() {
-    let connectivity = LocalConnectivity::new_arc();
+    let connectivity = common::local_connectivity();
     connectivity.set_realtime(false);
     let client = Client::builder("runtime-contract", "blocked-handler")
         .with_connectivity(connectivity)

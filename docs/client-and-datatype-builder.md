@@ -33,6 +33,21 @@ flowchart TD
     CB --> WC --> B --> INTENT --> OPT --> TERM --> DT
 ```
 
+## Snapshot Receiver Policy
+
+`ClientBuilder::with_snapshot_decode_limits(SnapshotDecodeLimits { ... })` sets the
+immutable receiver policy shared by all datatypes belonging to the client. Defaults allow
+129 MiB of complete input (including the header), 128 MiB of decompressed payload, and
+1,000,000 Map entries, including tombstones. Each limit is independent and inclusive.
+Zero rejects positive sizes in that dimension. These caps are not a peak heap budget:
+decoding, JSON validation, and CRDT construction can require additional memory.
+
+The reader accepts any snapshot codec and compression enabled by Cargo features, independently
+of the backend's writer policy. The common Zstd reference-window cap is 8 MiB. A snapshot
+failure leaves the previous CRDT and clock intact before error recovery. Permanent snapshot
+errors disable the datatype and clear pending buffers and transaction records through the
+existing recovery policy; they are not retried automatically.
+
 ## Naming Rules
 
 Collection names and datatype keys are different identifiers with different rules. Both

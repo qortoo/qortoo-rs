@@ -35,7 +35,15 @@ pub(crate) mod client {
 }
 
 pub(crate) mod datatype {
+
+    pub(crate) const LOCAL_TIMESTAMP_NOT_ADVANCED: &str =
+        "local operation did not advance the winning timestamp";
+
     use std::fmt::{Debug, Display};
+
+    pub(crate) const INVALID_ARGUMENT_PREFIX: &str = "invalid argument: ";
+
+    pub(crate) const UNSUPPORTED_OPERATION: &str = "operation is not supported by this datatype";
 
     pub(crate) const EXECUTE_OPERATION_PREFIX: &str = "execute operation: ";
 
@@ -61,22 +69,8 @@ pub(crate) mod datatype {
     pub(crate) const NESTED_TRANSACTION: &str =
         "nested transactions on the same datatype are not allowed";
 
-    pub(crate) const COUNTER_LOCAL_OPERATION: &str = "counter cannot execute this local operation";
-
-    pub(crate) const COUNTER_REMOTE_OPERATION: &str =
-        "counter cannot execute this remote operation";
-
     pub(crate) const ROLLBACK_ACTION_MISMATCH: &str =
         "rollback action does not match the CRDT type";
-
-    pub(crate) const VARIABLE_LOCAL_OPERATION: &str =
-        "variable cannot execute this local operation";
-
-    pub(crate) const VARIABLE_REMOTE_OPERATION: &str =
-        "variable cannot execute this remote operation";
-
-    pub(crate) const VARIABLE_TIMESTAMP_NOT_ADVANCED: &str =
-        "local variable set did not advance the winning timestamp";
 
     pub(crate) const POSITIVE_LAMPORT_REQUIRED: &str =
         "modification operation must use a positive Lamport timestamp";
@@ -96,13 +90,15 @@ pub(crate) mod datatype {
         format!("{operation} is only allowed in Subscribed state, current state is {state:?}")
     }
 
-    pub(crate) fn conflicting_variable_timestamp(timestamp: impl Display) -> String {
-        format!("variable received different values for timestamp {timestamp}")
+    pub(crate) fn conflicting_timestamp(timestamp: impl Display) -> String {
+        format!("received different values for timestamp {timestamp}")
     }
 }
 
 pub(crate) mod sync {
     use std::fmt::{Debug, Display};
+
+    pub(crate) const SNAPSHOT_UNAVAILABLE_PREFIX: &str = "snapshot unavailable: ";
 
     pub(crate) const EVENT_LOOP_PREFIX: &str = "event loop: ";
 
@@ -212,20 +208,17 @@ pub(crate) mod sync {
 pub(crate) mod snapshot {
     use std::fmt::Display;
 
+    pub(crate) const ENCODE_PREFIX: &str = "snapshot encoding failed: ";
+    pub(crate) const DECODE_PREFIX: &str = "snapshot decoding failed: ";
+    pub(crate) const CAPABILITY: &str = "format or capability is unavailable";
+    pub(crate) const INVALID_DATA: &str = "invalid state or snapshot data";
+    pub(crate) const POLICY_LIMIT: &str =
+        "input, payload, entry count, or Zstd window exceeds policy";
+    pub(crate) const ALLOCATION_FAILED: &str = "memory allocation failed";
+
     pub(crate) const DESERIALIZE_PREFIX: &str = "deserialize: ";
 
-    pub(crate) const COUNTER_CONTEXT: &str = "counter crdt";
-
-    pub(crate) const VARIABLE_CONTEXT: &str = "variable crdt";
-
-    pub(crate) const JSON_LENGTH_OVERFLOW: &str = "JSON length does not fit this platform";
-
-    pub(crate) const INVALID_INITIAL_VARIABLE: &str =
-        "Lamport zero is reserved for the initial null state";
-
     pub(crate) const UID_CONTEXT: &str = "uid";
-
-    pub(crate) const TIMESTAMP_CONTEXT: &str = "timestamp";
 
     pub(crate) const INVALID_UTF8: &str = "not valid UTF-8";
 
@@ -233,14 +226,6 @@ pub(crate) mod snapshot {
 
     pub(crate) const INVALID_UID_FORMAT: &str =
         "invalid UID format: expected 16 ASCII letters, digits, '-' or '_'";
-
-    pub(crate) const VERSION_FIELD: &str = "version";
-
-    pub(crate) const TIMESTAMP_FIELD: &str = "winning timestamp";
-
-    pub(crate) const JSON_LENGTH_FIELD: &str = "JSON length";
-
-    pub(crate) const JSON_PAYLOAD_FIELD: &str = "JSON payload";
 
     pub(crate) const NO_SNAPSHOT_OPERATION: &str = "no snapshot operation";
 
@@ -250,26 +235,6 @@ pub(crate) mod snapshot {
 
     pub(crate) fn length_mismatch(expected: impl Display, actual: impl Display) -> String {
         format!("expected {expected} bytes, got {actual}")
-    }
-
-    pub(crate) fn truncated_field(
-        field: impl Display,
-        length: impl Display,
-        remaining: impl Display,
-    ) -> String {
-        format!("truncated {field}: expected {length} bytes, {remaining} remain")
-    }
-
-    pub(crate) fn trailing_bytes(remaining: impl Display) -> String {
-        format!("{remaining} trailing bytes")
-    }
-
-    pub(crate) fn unsupported_version(version: impl Display) -> String {
-        format!("unsupported version {version}")
-    }
-
-    pub(crate) fn invalid_json_payload(error: impl Display) -> String {
-        format!("invalid JSON payload: {error}")
     }
 }
 

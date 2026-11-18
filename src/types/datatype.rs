@@ -23,7 +23,7 @@ pub enum DataType {
     /// CRDT variable storing a single JSON value with last-writer-wins semantics
     #[display("Variable")]
     Variable = 1,
-    /// CRDT map (planned)
+    /// Per-key LWW map core (public handle and builder are not yet available)
     #[display("Map")]
     Map = 2,
 }

@@ -244,6 +244,27 @@ transactions even if their originating client lost its response. It excludes edi
 not been sent. The snapshot transaction's envelope CUID is nil; originating CUIDs inside CRDT
 conflict metadata are preserved, and the subscriber retains its own local identity.
 
+`LocalConnectivity::new_arc()` uses `SnapshotWriteOptions::default()`: native bitcode
+and Zstd level 1. Both APIs require `snapshot-bitcode` and `snapshot-zstd`.
+`new_arc_with_snapshot_options(options)` accepts an explicit writer policy and returns the
+backend directly. Writer enum variants exist only for enabled Cargo features, so unavailable
+choices cannot be constructed. The policy stays fixed for that backend; there is no fallback.
+
+All datatypes use the revision-one `QTSN` envelope: a 24-byte header carries the revision,
+datatype kind, codec, compression, stored length, and raw length. Payloads use bitcode or
+Postcard, followed by optional whole-payload Zstd compression. Map metadata uses a snapshot-local
+CUID table and fixed 32-row blocks; JSON bytes and live-null/tombstone distinctions are
+preserved. The reader requires complete input consumption. Zstd permits one ordinary frame,
+no dictionary, and at most an 8 MiB reference window. There is no legacy-format fallback.
+See [Snapshot Format](snapshot-format.md) for header offsets and each datatype's payload schema.
+
+Capture is fallible. A failure returns `SnapshotUnavailable` without publishing a snapshot,
+advancing subscription progress or generation, or pruning history. Existing subscription
+checkpoints are restored when a new-generation subscription fails. Other already accepted
+pushes remain accepted. On the client, limits and candidate validation run before replacing
+the CRDT or clock. Snapshot failures disable the datatype and clear its push buffer and
+transaction record through the existing recovery policy, without automatic retry.
+
 Snapshot generation never acquires a client's transaction gate, invokes client callbacks, or
 looks for a live provider. Registrations hold weak wired references, so dropping client
 handles preserves backend state and history without retaining client runtime ownership.

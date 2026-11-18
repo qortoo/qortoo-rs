@@ -5,7 +5,9 @@
 //! not to change the test.
 
 mod tests_getting_started {
-    use qortoo::{Client, Datatype, LocalConnectivity};
+    use qortoo::Client;
+    #[cfg(all(feature = "snapshot-bitcode", feature = "snapshot-zstd"))]
+    use qortoo::{Datatype, LocalConnectivity};
     use serde_json::Value;
     use tracing::instrument;
 
@@ -42,6 +44,7 @@ mod tests_getting_started {
 
     #[test]
     #[instrument]
+    #[cfg(all(feature = "snapshot-bitcode", feature = "snapshot-zstd"))]
     fn can_run_the_getting_started_two_client_sync_walkthrough() {
         let connectivity = LocalConnectivity::new_arc();
         connectivity.set_realtime(false); // require explicit sync() calls

@@ -351,10 +351,11 @@ mod tests_event_loop {
 
     use crate::{
         Client, DatatypeError, DatatypeState, ServerRejectReason,
-        connectivity::local_connectivity::LocalConnectivity,
         datatypes::datatype::Datatype,
         errors::datatypes::DatatypeErrorWithAction,
-        utils::test_utils::{get_test_collection_name, get_test_func_name, get_test_ids},
+        utils::test_utils::{
+            get_test_collection_name, get_test_func_name, get_test_ids, local_connectivity,
+        },
     };
 
     fn make_backoff_error() -> DatatypeErrorWithAction {
@@ -374,7 +375,7 @@ mod tests_event_loop {
     #[test]
     #[instrument]
     fn can_manually_retry_after_backoff_error() {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let (collection, key, resource_id) = get_test_ids!();
         let client = Client::builder(collection, "client")
@@ -407,7 +408,7 @@ mod tests_event_loop {
     #[test]
     #[instrument]
     fn can_auto_retry_after_backoff_timeout() {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let (collection, key, resource_id) = get_test_ids!();
 
@@ -450,7 +451,7 @@ mod tests_event_loop {
     #[test]
     #[instrument]
     fn can_block_extra_retry_after_successful_manual_retry() {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let (collection, key, resource_id) = get_test_ids!();
 
@@ -497,7 +498,7 @@ mod tests_event_loop {
     #[test]
     #[instrument]
     fn can_handle_pause_sync_error_without_auto_retry_loop() {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         let (collection, key, resource_id) = get_test_ids!();
 
         let client = Client::builder(collection, "client")

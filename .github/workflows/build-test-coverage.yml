@@ -50,6 +50,41 @@ permissions:
   pull-requests: write
 
 jobs:
+  snapshot-features:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        features:
+          - "snapshot-bitcode"
+          - "snapshot-postcard"
+          - "snapshot-bitcode,snapshot-postcard"
+          - "snapshot-bitcode,snapshot-zstd"
+          - "snapshot-postcard,snapshot-zstd"
+          - "snapshot-bitcode,snapshot-postcard,snapshot-zstd"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.97.1
+      - name: Check snapshot capabilities without workspace feature unification
+        env:
+          SNAPSHOT_FEATURES: ${{ matrix.features }}
+        run: |
+          cargo test -p qortoo --doc --no-default-features --features "$SNAPSHOT_FEATURES"
+          cargo test -p qortoo --lib --no-default-features --features "$SNAPSHOT_FEATURES" crdts::snapshot::
+          cargo test -p qortoo --lib --no-default-features --features "$SNAPSHOT_FEATURES" snapshot_policy
+          cargo test -p qortoo --lib --no-default-features --features "$SNAPSHOT_FEATURES" errors::tests_datatype_errors
+
+      - name: Reject builds without a snapshot codec
+        if: matrix.features == 'snapshot-bitcode'
+        run: |
+          for features in "" "snapshot-zstd"; do
+            if cargo check -p qortoo --lib --no-default-features --features "$features" > snapshot-feature-error.log 2>&1; then
+              echo "Expected a build failure without a snapshot codec"
+              exit 1
+            fi
+            cat snapshot-feature-error.log
+            grep -Fq "Enable at least one snapshot codec: snapshot-bitcode or snapshot-postcard." snapshot-feature-error.log
+          done
+
   build:
 
     runs-on: ubuntu-latest
@@ -97,13 +132,13 @@ jobs:
 
       - name: Check observability feature boundaries
         run: |
-          cargo check --no-default-features
-          cargo check --no-default-features --features observability-log
-          cargo check --no-default-features --features observability-trace
-          cargo check --no-default-features --features observability-metrics
-          cargo check --no-default-features --features observability
-          cargo test --no-default-features --no-run
-          cargo test --no-default-features --features observability-trace --no-run
+          cargo check --no-default-features --features snapshot-bitcode
+          cargo check --no-default-features --features snapshot-bitcode,observability-log
+          cargo check --no-default-features --features snapshot-bitcode,observability-trace
+          cargo check --no-default-features --features snapshot-bitcode,observability-metrics
+          cargo check --no-default-features --features snapshot-bitcode,observability
+          cargo test --no-default-features --features snapshot-bitcode --no-run
+          cargo test --no-default-features --features snapshot-bitcode,observability-trace --no-run
 
       - name: Run tests with coverage
         run: |

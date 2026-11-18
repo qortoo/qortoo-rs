@@ -78,6 +78,9 @@ sharing memory directly — see the two-client walkthrough in
 [`docs/getting-started.md`](getting-started.md#syncing-two-clients), which uses a counter for
 exactly this.
 
+The [Counter snapshot payload](snapshot-format.md#counter-payload) encodes the current `i64`
+value inside the common QTSN envelope, without timestamps or per-client contributions.
+
 ## Rationale
 
 **Why an operation-based delta instead of a stored value with a merge function.** Two replicas
@@ -102,14 +105,14 @@ own, non-arithmetic value.
 | Public API: `increase`, `increase_by`, `get_value`, `transaction` | `src/datatypes/counter.rs` |
 | The CRDT state, wrapping arithmetic, and its inverse | `src/datatypes/crdts/counter_crdt.rs` |
 | The wire operation body | `src/operations/body/counter.rs` |
-| Snapshot encoding and decoding | `src/datatypes/crdts/counter_crdt.rs` (`SnapshotCodec` impl) |
+| Snapshot encoding and decoding | `src/datatypes/crdts/snapshot/counter.rs` |
 
 | Verified by | Tests |
 |-------------|-------|
-| Cumulative increments, including a negative delta | `can_new_and_increase_counter` in `src/datatypes/crdts/counter_crdt.rs` |
-| Wrapping at the `i64` boundary in both directions | `can_wrap_counter_arithmetic_at_i64_boundaries` in `src/datatypes/crdts/counter_crdt.rs` |
-| Rollback is exact, including the `i64::MIN` self-inverse extreme | `can_return_and_apply_a_counter_rollback_action` in `src/datatypes/crdts/counter_crdt.rs` |
-| Snapshot round-trips and rejects a malformed length | `can_serialize_and_deserialize_counter_crdt`, `can_reject_an_invalid_counter_snapshot_length` in `src/datatypes/crdts/counter_crdt.rs` |
+| Cumulative increments, including a negative delta | `can_new_and_increase_counter` in `src/datatypes/crdts/tests/counter_crdt.rs` |
+| Wrapping at the `i64` boundary in both directions | `can_wrap_counter_arithmetic_at_i64_boundaries` in `src/datatypes/crdts/tests/counter_crdt.rs` |
+| Rollback is exact, including the `i64::MIN` self-inverse extreme | `can_return_and_apply_a_counter_rollback_action` in `src/datatypes/crdts/tests/counter_crdt.rs` |
+| Snapshot round-trips and rejects a malformed length | `can_serialize_and_deserialize_counter_crdt`, `can_reject_an_invalid_counter_snapshot_length` in `src/datatypes/crdts/tests/counter_crdt.rs` |
 | A transaction of several increments commits or undoes as a unit through the public API | `can_use_transaction` in `src/datatypes/counter.rs` |
 | Two clients converge over a real exchange | `LocalConnectivity` doctest in `src/connectivity/local_connectivity.rs` |
 

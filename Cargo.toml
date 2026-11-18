@@ -11,7 +11,10 @@ edition = "2024"
 rust-version = "1.87.0"
 
 [features]
-default = []
+default = ["snapshot-bitcode", "snapshot-zstd"]
+snapshot-bitcode = ["dep:bitcode"]
+snapshot-postcard = ["dep:postcard", "serde/derive"]
+snapshot-zstd = ["dep:zstd"]
 observability-log = [
     "dep:tracing-subscriber",
     "tracing-subscriber/registry",
@@ -38,6 +41,9 @@ observability-metrics = [
 ]
 
 [dependencies]
+zstd = { version = "^0.14.4", default-features = false, optional = true }
+bitcode = { version = "^0.6.9", optional = true }
+postcard = { version = "^1.1.3", default-features = false, features = ["alloc"], optional = true }
 # `observability-log` only needs registry support. Managed tracing adds filtering and
 # JSON/fmt support when it installs a complete subscriber.
 tracing-subscriber = { version = "^0.3.23", default-features = false, optional = true }
@@ -77,13 +83,20 @@ strum_macros = "^0.28.0"
 regex = "^1.13.1"
 serde = "^1.0.229"
 serde_json = "^1.0.154"
+rpds = "^1.2.1"
 dyn-fmt = "^0.4.3"
 backon = { version = "^1.6.0", default-features = false, features = ["tokio-sleep"] }
 metrics = "^0.24.6"
 
 [[example]]
+name = "resource_probe"
+path = "examples/resource_probe.rs"
+required-features = ["snapshot-bitcode", "snapshot-zstd"]
+
+[[example]]
 name = "log"
 path = "examples/observability/log.rs"
+required-features = ["snapshot-bitcode", "snapshot-zstd"]
 
 # Each managed-exporter example names the narrow feature it needs. The `observability`
 # umbrella remains valid because it enables both.
@@ -95,11 +108,12 @@ required-features = ["observability-metrics"]
 [[example]]
 name = "profile"
 path = "examples/observability/profile.rs"
+required-features = ["snapshot-bitcode", "snapshot-zstd"]
 
 [[example]]
 name = "trace"
 path = "examples/observability/trace.rs"
-required-features = ["observability-trace"]
+required-features = ["observability-trace", "snapshot-bitcode", "snapshot-zstd"]
 
 [dev-dependencies]
 rstest = "^0.27.0"
