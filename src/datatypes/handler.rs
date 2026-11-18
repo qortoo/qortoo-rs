@@ -195,14 +195,13 @@ mod tests_handers_manager {
 
     use crate::{
         Client, Datatype, DatatypeError, DatatypeHandler, DatatypeSet, DatatypeState,
-        LocalConnectivity,
-        utils::test_utils::{get_test_collection_name, get_test_func_name},
+        utils::test_utils::{get_test_collection_name, get_test_func_name, local_connectivity},
     };
 
     #[test]
     #[instrument]
     fn can_notify_state_change() {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
@@ -248,7 +247,7 @@ mod tests_handers_manager {
         // `dispatch` hands every notification its own `Arc` clone of the handler, so a
         // handler unset while one is still running is not solely owned by the manager.
         // Removal must be reported on the map entry, not on sole ownership.
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
@@ -292,7 +291,7 @@ mod tests_handers_manager {
     #[test]
     #[instrument]
     fn can_pass_a_variable_datatype_set_to_the_handler() {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
@@ -322,7 +321,7 @@ mod tests_handers_manager {
     #[test]
     #[instrument]
     fn can_notify_error() {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)

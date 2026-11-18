@@ -11,17 +11,35 @@ use crate::{
     },
     errors::{datatypes::InternalReason, messages::datatype as datatype_msg},
     types::{operation_context::OperationContext, timestamp::Timestamp},
+    utils::json::validate_json_str,
 };
 
 pub(super) const INITIAL_VALUE: &[u8] = b"null";
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum VariableSetOutcome {
+    Applied { previous: VariableCrdt },
+    Unchanged,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum VariableRollbackAction {
+    Restore { previous: VariableCrdt },
+}
+
 #[derive(PartialEq, Eq)]
-pub(crate) struct VariableState {
+pub struct VariableCrdt {
     value: Arc<[u8]>,
     timestamp: Timestamp,
 }
 
-impl VariableState {
+impl Default for VariableCrdt {
+    fn default() -> Self {
+        Self::new(INITIAL_VALUE, &Timestamp::initial())
+    }
+}
+
+impl VariableCrdt {
     pub(super) fn new(value: &[u8], timestamp: &Timestamp) -> Self {
         Self {
             value: value.into(),
@@ -29,70 +47,35 @@ impl VariableState {
         }
     }
 
-    pub(crate) fn value(&self) -> &[u8] {
-        &self.value
-    }
-
-    pub(crate) fn timestamp(&self) -> &Timestamp {
-        &self.timestamp
-    }
-}
-
-impl Debug for VariableState {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VariableState")
-            .field("value_size", &self.value.len())
-            .field("timestamp", &self.timestamp)
-            .finish()
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum VariableSetOutcome {
-    Applied { previous: VariableState },
-    Unchanged,
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum VariableRollbackAction {
-    Restore { previous: VariableState },
-}
-
-#[derive(PartialEq, Eq)]
-pub struct VariableCrdt {
-    pub(super) winning: VariableState,
-}
-
-impl Default for VariableCrdt {
-    fn default() -> Self {
-        Self {
-            winning: VariableState::new(INITIAL_VALUE, &Timestamp::initial()),
+    pub(super) fn validate_state(&self) -> Option<&str> {
+        let value = validate_json_str(self.value()).ok()?;
+        if self.timestamp.lamport() > 0
+            || (self.timestamp.is_initial() && self.value() == INITIAL_VALUE)
+        {
+            return Some(value);
         }
+        None
     }
-}
 
-impl VariableCrdt {
     pub(crate) fn fork_for_batch(&self) -> Self {
         Self {
-            winning: VariableState {
-                value: Arc::clone(&self.winning.value),
-                timestamp: self.winning.timestamp.clone(),
-            },
+            value: Arc::clone(&self.value),
+            timestamp: self.timestamp.clone(),
         }
     }
 
     pub(crate) fn value(&self) -> &[u8] {
-        self.winning.value()
+        &self.value
     }
 
     /// Returns the winning JSON payload as a shared handle, so a reader can drop the
     /// datatype lock before decoding without copying the payload bytes.
     pub(crate) fn shared_value(&self) -> Arc<[u8]> {
-        Arc::clone(&self.winning.value)
+        Arc::clone(&self.value)
     }
 
     pub(crate) fn timestamp(&self) -> &Timestamp {
-        self.winning.timestamp()
+        &self.timestamp
     }
 
     pub(super) fn apply_set(
@@ -100,11 +83,7 @@ impl VariableCrdt {
         value: &[u8],
         context: &OperationContext<'_>,
     ) -> Result<VariableSetOutcome, DatatypeError> {
-        if context.should_apply_lww(
-            self.winning.timestamp(),
-            Some(self.winning.value()),
-            Some(value),
-        )? {
+        if context.should_apply_lww(self.timestamp(), Some(self.value()), Some(value))? {
             Ok(self.replace(value, context.timestamp()))
         } else {
             Ok(VariableSetOutcome::Unchanged)
@@ -147,14 +126,14 @@ impl VariableCrdt {
     ) -> Result<(), DatatypeError> {
         match action {
             VariableRollbackAction::Restore { previous } => {
-                self.winning = previous;
+                *self = previous;
                 Ok(())
             }
         }
     }
 
     fn replace(&mut self, value: &[u8], timestamp: &Timestamp) -> VariableSetOutcome {
-        let previous = std::mem::replace(&mut self.winning, VariableState::new(value, timestamp));
+        let previous = std::mem::replace(self, Self::new(value, timestamp));
         VariableSetOutcome::Applied { previous }
     }
 }
@@ -162,7 +141,8 @@ impl VariableCrdt {
 impl Debug for VariableCrdt {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VariableCrdt")
-            .field("winning", &self.winning)
+            .field("value_size", &self.value.len())
+            .field("timestamp", &self.timestamp)
             .finish()
     }
 }

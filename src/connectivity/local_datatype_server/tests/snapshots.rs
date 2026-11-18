@@ -1,4 +1,9 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use super::*;
+use crate::{
+    SnapshotDecodeLimits, SnapshotErrorReason, datatypes::Crdt, operations::body::OperationBody,
+};
 
 #[test]
 fn can_discard_transactions_committed_while_a_subscription_snapshot_is_in_flight() {
@@ -143,7 +148,7 @@ fn can_keep_a_failed_snapshot_application_unacknowledged() {
 #[test]
 fn can_serve_an_empty_backend_snapshot_before_any_writes() {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr, Default::default());
+    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
     let create = PushPullPack::new(&attr, DatatypeState::Creating);
     assert!(server.process(&create, false).unwrap().error.is_none());
     let subscribe = PushPullPack::with_sub_gen(&attr, DatatypeState::Subscribing, create.sub_gen);
@@ -151,7 +156,7 @@ fn can_serve_an_empty_backend_snapshot_before_any_writes() {
     let snapshot = pulled.snapshot_transaction.unwrap();
     assert_eq!(snapshot.sseq, 0);
     assert_eq!(snapshot.operations[0].lamport, 0);
-    assert_eq!(snapshot.cuid, crate::types::uid::Cuid::new_nil());
+    assert_eq!(snapshot.cuid, Cuid::new_nil());
     assert!(pulled.transactions.is_empty());
 }
 
@@ -166,7 +171,7 @@ fn can_serve_a_snapshot_without_accessing_client_state(#[case] keep_busy_handle:
         DatatypeState::Subscribed,
         WiredInterceptor::new_arc(),
     );
-    let mut server = LocalDatatypeServer::new(&attr, Default::default());
+    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
     let (sender, _) = crossbeam_channel::unbounded();
     server.insert_client_item(wired.clone(), sender);
     let mut create = PushPullPack::new(&attr, DatatypeState::Creating);
@@ -189,7 +194,7 @@ fn can_serve_a_snapshot_without_accessing_client_state(#[case] keep_busy_handle:
     }
     let gate = handle.as_ref().map(|wired| wired.core.tx_mutex.lock());
     let mut subscribe = PushPullPack::new(&attr, DatatypeState::Subscribing);
-    subscribe.cuid = crate::types::uid::Cuid::new();
+    subscribe.cuid = Cuid::new();
     let (done_tx, done_rx) = mpsc::channel();
     let worker = thread::spawn(move || {
         done_tx
@@ -203,12 +208,13 @@ fn can_serve_a_snapshot_without_accessing_client_state(#[case] keep_busy_handle:
     let snapshot = pulled.snapshot_transaction.unwrap();
     assert_eq!(snapshot.sseq, 1);
     assert_eq!(snapshot.operations[0].lamport, 1);
-    let crate::operations::body::OperationBody::Snapshot(body) = &snapshot.operations[0].body
-    else {
+    let OperationBody::Snapshot(body) = &snapshot.operations[0].body else {
         panic!("expected snapshot");
     };
-    let mut restored = crate::datatypes::Crdt::new(DataType::Counter);
-    restored.deserialize(&body.data).unwrap();
+    let mut restored = Crdt::new(DataType::Counter);
+    restored
+        .deserialize(&body.data, Default::default())
+        .unwrap();
     assert_eq!(restored.as_counter().unwrap().value(), 7);
     assert!(pulled.transactions.is_empty());
 }
@@ -239,4 +245,200 @@ fn can_subscribe_from_backend_state_after_clients_are_removed() {
     counter3.sync().unwrap();
     assert_eq!(counter3.get_state(), DatatypeState::Subscribed);
     assert_eq!(counter3.get_value(), 7);
+}
+
+#[test]
+fn can_apply_snapshot_policy_for_each_available_writer_and_datatype() {
+    use crate::{
+        SnapshotCodecKind as Codec, SnapshotCompression as Compression, SnapshotWriteOptions,
+    };
+    for codec in [1, 2].into_iter().filter_map(Codec::from_id) {
+        for compression in [0, 1].into_iter().filter_map(Compression::from_id) {
+            let options = SnapshotWriteOptions { codec, compression };
+            for kind in [DataType::Counter, DataType::Variable, DataType::Map] {
+                let attr = new_attribute!(kind);
+                let mut server = LocalDatatypeServer::new(&attr, Default::default(), options);
+                let mut create = PushPullPack::new(&attr, DatatypeState::Creating);
+                let operation = match kind {
+                    DataType::Counter => Operation::new_counter_increase(7),
+                    DataType::Variable => Operation::new_variable_set(Box::from(b"[7]".as_slice())),
+                    DataType::Map => {
+                        Operation::new_map_put("key".into(), Box::from(b"null".as_slice()))
+                    }
+                };
+                create.transactions = vec![transaction(&create.cuid, 1, operation)];
+                assert!(server.process(&create, false).unwrap().error.is_none());
+                let subscribe =
+                    PushPullPack::with_sub_gen(&attr, DatatypeState::Subscribing, create.sub_gen);
+                let pulled = server.process(&subscribe, false).unwrap();
+                assert!(pulled.error.is_none());
+                let snapshot = pulled.snapshot_transaction.unwrap();
+                let OperationBody::Snapshot(body) = &snapshot.operations[0].body else {
+                    panic!("expected snapshot")
+                };
+                assert_eq!(&body.data[..4], b"QTSN");
+                assert_eq!(body.data[6], codec.id());
+                assert_eq!(body.data[7], compression.id());
+                let mut restored = Crdt::new(kind);
+                restored
+                    .deserialize(&body.data, Default::default())
+                    .unwrap();
+                match kind {
+                    DataType::Counter => assert_eq!(restored.as_counter().unwrap().value(), 7),
+                    DataType::Variable => {
+                        assert_eq!(restored.as_variable().unwrap().value(), b"[7]")
+                    }
+                    DataType::Map => assert_eq!(
+                        restored.as_map().unwrap().shared_value("key").as_deref(),
+                        Some(b"null".as_slice())
+                    ),
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn can_keep_subscription_progress_when_snapshot_capture_fails() {
+    use crate::types::operation_context::OperationContext;
+    let attr = new_attribute!(DataType::Variable);
+    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
+    let mut create = PushPullPack::new(&attr, DatatypeState::Creating);
+    create.transactions = vec![transaction(
+        &create.cuid,
+        1,
+        Operation::new_variable_set(Box::from(b"null".as_slice())),
+    )];
+    assert!(server.process(&create, false).unwrap().error.is_none());
+    let previous = server.synced.checkpoints[&create.cuid].clone();
+    let history_len = server.synced.history.len();
+    let pruned = server.synced.sseq_history_pruned;
+    let gc_safe = server.synced.sseq_gc_safe;
+    let mut invalid = Crdt::new(DataType::Variable);
+    let mut operation = Operation::new_variable_set(Box::from(b"not-json".as_slice()));
+    operation.set_lamport(1);
+    invalid
+        .execute_remote_operation(&OperationContext::try_new(&operation, &create.cuid).unwrap())
+        .unwrap();
+    let valid = std::mem::replace(&mut server.synced.crdt, invalid);
+    let subscribe =
+        PushPullPack::with_sub_gen(&attr, DatatypeState::Subscribing, create.sub_gen + 1);
+    let pulled = server.process(&subscribe, false).unwrap();
+    assert!(matches!(
+        pulled.error,
+        Some(PushPullError::SnapshotUnavailable(_))
+    ));
+    assert!(pulled.snapshot_transaction.is_none());
+    assert_eq!(server.synced.checkpoints[&create.cuid], previous);
+    assert_eq!(server.max_sub_gens[&create.cuid], create.sub_gen);
+    assert_eq!(server.synced.history.len(), history_len);
+    assert_eq!(server.synced.sseq_history_pruned, pruned);
+    assert_eq!(server.synced.sseq_gc_safe, gc_safe);
+    server.synced.crdt = valid;
+    let pulled = server.process(&subscribe, false).unwrap();
+    assert!(pulled.error.is_none());
+    assert!(pulled.snapshot_transaction.is_some());
+    assert_eq!(server.max_sub_gens[&create.cuid], subscribe.sub_gen);
+}
+
+#[rstest]
+#[case::input(SnapshotDecodeLimits { max_input_bytes: 0, ..Default::default() })]
+#[case::raw(SnapshotDecodeLimits { max_raw_bytes: 0, ..Default::default() })]
+fn can_disable_after_a_snapshot_limit_failure_without_installing_state(
+    #[case] limits: SnapshotDecodeLimits,
+) {
+    let f = TestFixture::new(get_test_ids!());
+    let creator = f.client("creator");
+    let source = f.create_counter(&creator);
+    source.increase_by(7).unwrap();
+    source.sync().unwrap();
+    let reader = Client::builder(f.collection.clone(), "reader")
+        .with_connectivity(f.connectivity.clone())
+        .with_snapshot_decode_limits(limits)
+        .build()
+        .unwrap();
+    let replica = reader
+        .subscribe_or_create_datatype(f.key.clone())
+        .build_counter()
+        .unwrap();
+    let wired = f
+        .server()
+        .read()
+        .get_wired_datatype(&reader.get_cuid())
+        .unwrap();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let counted = attempts.clone();
+    let writer = replica.clone();
+    let previous_id = Arc::new(parking_lot::Mutex::new(None));
+    let captured_id = previous_id.clone();
+    let captured_wired = Arc::downgrade(&wired);
+    f.interceptor(&reader).set_after_pull(move |_| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        writer.increase_by(3).unwrap();
+        *captured_id.lock() = Some(
+            captured_wired
+                .upgrade()
+                .unwrap()
+                .core
+                .mutable
+                .read()
+                .op_id
+                .clone(),
+        );
+        Ok(())
+    });
+    let previous_checkpoint = wired.core.mutable.read().checkpoint;
+    let result = replica.sync();
+    assert!(
+        matches!(
+            result,
+            Err(DatatypeError::SnapshotDecode(
+                SnapshotErrorReason::LimitExceeded
+            ))
+        ),
+        "{result:?}"
+    );
+    assert_eq!(replica.get_state(), DatatypeState::Disabled);
+    assert_eq!(replica.get_value(), 3);
+    let mutable = wired.core.mutable.read();
+    assert_eq!(&mutable.op_id, previous_id.lock().as_ref().unwrap());
+    assert_eq!(mutable.checkpoint, previous_checkpoint);
+    assert!(mutable.push_buffer.iter().next().is_none());
+    drop(mutable);
+    thread::sleep(Duration::from_millis(800));
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn can_propagate_snapshot_policy_from_local_connectivity() {
+    use crate::{
+        SnapshotCodecKind as Codec, SnapshotCompression as Compression, SnapshotWriteOptions,
+    };
+    for codec in [1, 2].into_iter().filter_map(Codec::from_id) {
+        let options = SnapshotWriteOptions {
+            codec,
+            compression: Compression::None,
+        };
+        let connectivity = LocalConnectivity::new_arc_with_snapshot_options(options);
+        connectivity.set_realtime(false);
+        let mut f = TestFixture::new(get_test_ids!());
+        f.connectivity = connectivity;
+        let creator = f.client("creator");
+        let source = f.create_counter(&creator);
+        source.increase_by(7).unwrap();
+        source.sync().unwrap();
+        let reader = f.client("reader");
+        let replica = f.subscribe_counter(&reader);
+        f.interceptor(&reader).set_after_pull(move |pull| {
+            let snapshot = pull.snapshot_transaction.as_ref().unwrap();
+            let OperationBody::Snapshot(body) = &snapshot.operations[0].body else {
+                panic!("expected snapshot")
+            };
+            assert_eq!(body.data[6], codec.id());
+            assert_eq!(body.data[7], 0);
+            Ok(())
+        });
+        replica.sync().unwrap();
+        assert_eq!(replica.get_value(), 7);
+    }
 }

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    DatatypeError,
+    DatatypeError, SnapshotErrorReason,
     datatypes::{
         common::ReturnType,
         crdts::{
@@ -11,7 +11,8 @@ use crate::{
         },
     },
     operations::Operation,
-    types::{operation_context::OperationContext, timestamp::Timestamp, uid::Cuid},
+    types::{operation_context::OperationContext, uid::Cuid},
+    utils::test_utils::snapshot_write_options,
 };
 
 fn operation(key: &str, value: Option<&[u8]>, lamport: u64) -> Operation {
@@ -113,7 +114,11 @@ fn can_put_remove_and_snapshot_an_empty_key_locally_and_remotely() {
         assert_eq!(local_map, remote_map);
         assert_eq!(local_map.shared_value("").as_deref(), value);
         assert_eq!(
-            MapCrdt::decode_snapshot(&local_map.encode_snapshot()).unwrap(),
+            MapCrdt::decode_snapshot(
+                &local_map.encode_snapshot(snapshot_write_options()).unwrap(),
+                Default::default()
+            )
+            .unwrap(),
             local_map
         );
         if value.is_none() {
@@ -194,7 +199,10 @@ fn can_converge_under_every_delivery_order_and_duplicate_replay() {
             remote(&mut map, op, writer).unwrap();
         }
         assert_eq!(map, expected, "{order:?}");
-        assert_eq!(map.encode_snapshot(), expected.encode_snapshot());
+        assert_eq!(
+            map.encode_snapshot(snapshot_write_options()).unwrap(),
+            expected.encode_snapshot(snapshot_write_options()).unwrap()
+        );
         count += 1;
     });
     assert_eq!(count, 120);
@@ -339,7 +347,11 @@ fn can_fork_shared_roots_and_isolate_payloads_metadata_and_rollback() {
 fn can_round_trip_deterministic_snapshots_without_serializing_approvals() {
     let empty = MapCrdt::default();
     assert_eq!(
-        MapCrdt::decode_snapshot(&empty.encode_snapshot()).unwrap(),
+        MapCrdt::decode_snapshot(
+            &empty.encode_snapshot(snapshot_write_options()).unwrap(),
+            Default::default()
+        )
+        .unwrap(),
         empty
     );
     let mut map = MapCrdt::default();
@@ -348,10 +360,13 @@ fn can_round_trip_deterministic_snapshots_without_serializing_approvals() {
     local(&mut map, "한 글/키\0", Some(b"9007199254740993"), 3);
     local(&mut map, "", Some(b"false"), 4);
     remote(&mut map, &operation("gone", None, 4), "0000000000000000").unwrap();
-    let bytes = map.encode_snapshot();
+    let bytes = map.encode_snapshot(snapshot_write_options()).unwrap();
     map.entries.get_mut("gone").unwrap().approved_sseq_upper = Some(99);
-    assert_eq!(map.encode_snapshot(), bytes);
-    let decoded = MapCrdt::decode_snapshot(&bytes).unwrap();
+    assert_eq!(
+        map.encode_snapshot(snapshot_write_options()).unwrap(),
+        bytes
+    );
+    let decoded = MapCrdt::decode_snapshot(&bytes, Default::default()).unwrap();
     assert_eq!(
         decoded.entries.get("gone").unwrap().approved_sseq_upper,
         None
@@ -364,7 +379,10 @@ fn can_round_trip_deterministic_snapshots_without_serializing_approvals() {
         ),
         (4, 1, 46)
     );
-    assert_eq!(decoded.encode_snapshot(), bytes);
+    assert_eq!(
+        decoded.encode_snapshot(snapshot_write_options()).unwrap(),
+        bytes
+    );
     assert_eq!(decoded.shared_value("z"), map.shared_value("z"));
     let mut restored = decoded;
     remote(
@@ -383,71 +401,33 @@ fn can_round_trip_deterministic_snapshots_without_serializing_approvals() {
     assert!(restored.shared_value("gone").is_some());
 }
 
-fn snapshot_entry(key: &[u8], lamport: u64, tag: u8, value: &[u8]) -> Vec<u8> {
-    let mut bytes = (key.len() as u64).to_le_bytes().to_vec();
-    bytes.extend_from_slice(key);
-    bytes.extend_from_slice(&Timestamp::new(lamport, &Cuid::new_nil()).to_bytes());
-    bytes.push(tag);
-    if tag == 1 {
-        bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
-        bytes.extend_from_slice(value);
-    }
-    bytes
-}
-
-fn snapshot(entries: &[Vec<u8>]) -> Vec<u8> {
-    let mut bytes = vec![1];
-    bytes.extend_from_slice(&(entries.len() as u64).to_le_bytes());
-    for entry in entries {
-        bytes.extend_from_slice(entry);
-    }
-    bytes
-}
-
 #[test]
 fn can_reject_malformed_snapshots_without_replacing_the_crdt() {
     let mut crdt = Crdt::new(crate::DataType::Map);
     let op = operation("kept", Some(b"true"), 1);
     crdt.execute_local_operation(&OperationContext::try_new(&op, &Cuid::new_nil()).unwrap())
         .unwrap();
-    let before = crdt.serialize();
-    let valid = snapshot(&[snapshot_entry(b"a", 1, 1, b"null")]);
+    let before = crdt.serialize(snapshot_write_options()).unwrap();
+    let mut source = MapCrdt::default();
+    local(&mut source, "a", Some(b"null"), 1);
+    let valid = source.encode_snapshot(snapshot_write_options()).unwrap();
     let mut cases = (0..valid.len())
         .map(|end| valid[..end].to_vec())
         .collect::<Vec<_>>();
-    let mut trailing = valid.clone();
+    let mut trailing = valid.to_vec();
     trailing.push(0);
-    let mut oversized = vec![1];
-    oversized.extend_from_slice(&u64::MAX.to_le_bytes());
-    let mut invalid_cuid = snapshot_entry(b"a", 1, 0, b"");
-    invalid_cuid[17] = b'(';
-    cases.extend([
-        vec![2],
-        trailing,
-        oversized,
-        snapshot(&[snapshot_entry(b"\xff", 1, 0, b"")]),
-        snapshot(&[snapshot_entry(b"a", 0, 0, b"")]),
-        snapshot(&[snapshot_entry(b"a", 1, 2, b"")]),
-        snapshot(&[snapshot_entry(b"a", 1, 1, b"1 2")]),
-        snapshot(&[snapshot_entry(b"a", 1, 1, b"\"\xff\"")]),
-        snapshot(&[invalid_cuid]),
-        snapshot(&[
-            snapshot_entry(b"", 1, 0, b""),
-            snapshot_entry(b"", 2, 0, b""),
-        ]),
-        snapshot(&[
-            snapshot_entry(b"b", 1, 0, b""),
-            snapshot_entry(b"a", 2, 0, b""),
-        ]),
-    ]);
+    cases.push(trailing);
     for (index, bytes) in cases.iter().enumerate() {
         assert!(
-            matches!(crdt.deserialize(bytes), Err(DatatypeError::Internal(_))),
+            matches!(
+                crdt.deserialize(bytes, Default::default()),
+                Err(DatatypeError::SnapshotDecode(SnapshotErrorReason::Invalid))
+            ),
             "case {index}"
         );
-        assert_eq!(crdt.serialize(), before);
+        assert_eq!(crdt.serialize(snapshot_write_options()).unwrap(), before);
     }
-    crdt.deserialize(&valid).unwrap();
+    crdt.deserialize(&valid, Default::default()).unwrap();
     assert_eq!(
         crdt.as_map().unwrap().shared_value("a").as_deref(),
         Some(b"null".as_slice())

@@ -98,6 +98,8 @@ pub(crate) mod datatype {
 pub(crate) mod sync {
     use std::fmt::{Debug, Display};
 
+    pub(crate) const SNAPSHOT_UNAVAILABLE_PREFIX: &str = "snapshot unavailable: ";
+
     pub(crate) const EVENT_LOOP_PREFIX: &str = "event loop: ";
 
     pub(crate) const NON_SEQUENTIAL_CSEQ: &str = "non-sequential cseq in push buffer";
@@ -204,34 +206,19 @@ pub(crate) mod sync {
 }
 
 pub(crate) mod snapshot {
-    pub(crate) const MAP_CONTEXT: &str = "map crdt";
-
-    pub(crate) const MAP_INVALID_KEY_UTF8: &str = "key is not UTF-8";
-
-    pub(crate) const MAP_INVALID_KEY_ORDER: &str = "keys must be strictly ordered";
-
-    pub(crate) const MAP_POSITIVE_TIMESTAMP_REQUIRED: &str = "entry timestamp must be positive";
-
-    pub(crate) const INVALID_JSON: &str = "invalid JSON payload";
-
-    pub(crate) const MAP_INVALID_STATE_TAG: &str = "invalid state tag";
-
-    pub(crate) const LENGTH_OVERFLOW: &str = "length does not fit this platform";
-
     use std::fmt::Display;
+
+    pub(crate) const ENCODE_PREFIX: &str = "snapshot encoding failed: ";
+    pub(crate) const DECODE_PREFIX: &str = "snapshot decoding failed: ";
+    pub(crate) const CAPABILITY: &str = "format or capability is unavailable";
+    pub(crate) const INVALID_DATA: &str = "invalid state or snapshot data";
+    pub(crate) const POLICY_LIMIT: &str =
+        "input, payload, entry count, or Zstd window exceeds policy";
+    pub(crate) const ALLOCATION_FAILED: &str = "memory allocation failed";
 
     pub(crate) const DESERIALIZE_PREFIX: &str = "deserialize: ";
 
-    pub(crate) const COUNTER_CONTEXT: &str = "counter crdt";
-
-    pub(crate) const VARIABLE_CONTEXT: &str = "variable crdt";
-
-    pub(crate) const INVALID_INITIAL_VARIABLE: &str =
-        "Lamport zero is reserved for the initial null state";
-
     pub(crate) const UID_CONTEXT: &str = "uid";
-
-    pub(crate) const TIMESTAMP_CONTEXT: &str = "timestamp";
 
     pub(crate) const INVALID_UTF8: &str = "not valid UTF-8";
 
@@ -239,12 +226,6 @@ pub(crate) mod snapshot {
 
     pub(crate) const INVALID_UID_FORMAT: &str =
         "invalid UID format: expected 16 ASCII letters, digits, '-' or '_'";
-
-    pub(crate) const VERSION_FIELD: &str = "version";
-
-    pub(crate) const TIMESTAMP_FIELD: &str = "winning timestamp";
-
-    pub(crate) const JSON_PAYLOAD_FIELD: &str = "JSON payload";
 
     pub(crate) const NO_SNAPSHOT_OPERATION: &str = "no snapshot operation";
 
@@ -254,22 +235,6 @@ pub(crate) mod snapshot {
 
     pub(crate) fn length_mismatch(expected: impl Display, actual: impl Display) -> String {
         format!("expected {expected} bytes, got {actual}")
-    }
-
-    pub(crate) fn truncated_field(
-        field: impl Display,
-        length: impl Display,
-        remaining: impl Display,
-    ) -> String {
-        format!("truncated {field}: expected {length} bytes, {remaining} remain")
-    }
-
-    pub(crate) fn trailing_bytes(remaining: impl Display) -> String {
-        format!("{remaining} trailing bytes")
-    }
-
-    pub(crate) fn unsupported_version(version: impl Display) -> String {
-        format!("unsupported version {version}")
     }
 }
 

@@ -1,11 +1,13 @@
-use qortoo::{Client, Datatype, LocalConnectivity};
+mod common;
+
+use qortoo::{Client, Datatype};
 use rstest::rstest;
 
 #[rstest]
 #[case::before_creator_sync(false)]
 #[case::after_creator_sync(true)]
 fn can_exclude_unsynced_counter_changes_from_subscription(#[case] sync_creator: bool) {
-    let connectivity = LocalConnectivity::new_arc();
+    let connectivity = common::local_connectivity();
     connectivity.set_realtime(false);
     let creator = Client::builder("snapshot-counter", "creator")
         .with_connectivity(connectivity.clone())
@@ -43,7 +45,7 @@ fn can_exclude_unsynced_counter_changes_from_subscription(#[case] sync_creator: 
 
 #[test]
 fn can_exclude_unsynced_variable_value_from_subscription() {
-    let connectivity = LocalConnectivity::new_arc();
+    let connectivity = common::local_connectivity();
     connectivity.set_realtime(false);
     let creator = Client::builder("snapshot-variable", "creator")
         .with_connectivity(connectivity.clone())
@@ -74,7 +76,7 @@ fn can_exclude_unsynced_variable_value_from_subscription() {
 #[case::different_pending_value("pending")]
 #[case::same_value_higher_pending_timestamp("initial")]
 fn can_preserve_remote_variable_winner_hidden_by_unsynced_changes(#[case] pending: &str) {
-    let connectivity = LocalConnectivity::new_arc();
+    let connectivity = common::local_connectivity();
     connectivity.set_realtime(false);
     let creator = Client::builder("snapshot-variable-winner", "creator")
         .with_connectivity(connectivity.clone())
@@ -119,7 +121,7 @@ fn can_preserve_remote_variable_winner_hidden_by_unsynced_changes(#[case] pendin
 
 #[test]
 fn can_continue_variable_writes_after_a_backend_snapshot() {
-    let connectivity = LocalConnectivity::new_arc();
+    let connectivity = common::local_connectivity();
     connectivity.set_realtime(false);
     let creator = Client::builder("snapshot-variable-future", "creator")
         .with_connectivity(connectivity.clone())

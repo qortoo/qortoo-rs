@@ -94,8 +94,10 @@ cannot hold what is stored — most commonly, a non-nullable type asked to hold 
 current value and stamping it with catch-up metadata would let an old write that arrives after
 the snapshot incorrectly win, because the snapshot's own timestamp would look newest. Carrying
 the real winning timestamp keeps a late-arriving stale write correctly recognized as stale. A
-snapshot that fails to decode leaves the existing state untouched. Variable and Map share
-snapshot readers for versions, timestamps, length-prefixed bytes, and JSON validation.
+snapshot that fails to decode leaves the existing state untouched. The
+[Variable snapshot payload](snapshot-format.md#variable-payload) carries the Lamport clock,
+CUID, and JSON text inside the common QTSN envelope. Variable and Map share framing and
+JSON validation.
 JSON validation checks UTF-8 even inside strings and preserves the original bytes without
 converting numbers or nested values into a Rust JSON value.
 
@@ -176,7 +178,7 @@ both would erase that distinction rather than provide it.
 | Concern | Location |
 |---------|----------|
 | Public API: `set`, `get`, `set_raw`, `get_raw`, `transaction` | `src/datatypes/variable.rs` |
-| The value contract: encode, validate, decode | `src/datatypes/value.rs` |
+| The value contract: encode, validate, decode | `src/utils/json.rs` |
 | The LWW state machine, timestamp comparison, and rollback | `src/datatypes/crdts/variable_crdt.rs` |
 | The wire operation body | `src/operations/body/variable.rs` |
 | Timestamp construction and total order | `src/types/timestamp.rs` |
@@ -186,9 +188,9 @@ both would erase that distinction rather than provide it.
 |-------------|-------|
 | Typed round trip, including a value that changes shape between sets | `can_round_trip_typed_values`, `can_return_the_previous_value_across_json_types` in `src/datatypes/variable.rs` |
 | Initial and explicit null are indistinguishable when read | `can_read_initial_and_explicit_null_into_nullable_destinations` in `src/datatypes/variable.rs`, `can_apply_an_explicit_null_over_the_initial_null_value`, `can_preserve_the_real_timestamp_of_an_explicit_null_set` in `src/datatypes/crdts/tests/variable_crdt.rs` |
-| A non-nullable destination rejects null | `can_reject_null_for_a_non_nullable_destination` in `src/datatypes/variable.rs`, `can_reject_null_for_non_nullable_destination` in `src/datatypes/value.rs` |
+| A non-nullable destination rejects null | `can_reject_null_for_a_non_nullable_destination` in `src/datatypes/variable.rs`, `can_reject_null_for_non_nullable_destination` in `src/utils/json.rs` |
 | A failed encode leaves the variable untouched | `can_keep_the_variable_unchanged_when_encoding_fails` in `src/datatypes/variable.rs` |
-| A composite map key fails to encode; a primitive-keyed map does not | `can_reject_value_that_fails_to_encode` in `src/datatypes/value.rs` |
+| A composite map key fails to encode; a primitive-keyed map does not | `can_reject_value_that_fails_to_encode` in `src/utils/json.rs` |
 | Raw bytes round-trip without reformatting, and invalid raw input is rejected before write access is even checked | `can_round_trip_raw_json_bytes_without_reformatting`, `can_reject_raw_json_that_is_not_exactly_one_value`, `can_validate_raw_json_before_consulting_write_access` in `src/datatypes/variable.rs` |
 | Reading creates no operation and is allowed in every state | `can_read_without_changing_state_version_or_push_buffer` in `src/datatypes/variable.rs` |
 | The four outcomes of applying a set | `can_apply_a_newer_variable_set_and_return_the_previous_state`, `can_ignore_a_stale_variable_set`, `can_ignore_a_duplicate_variable_set`, `can_reject_different_values_for_the_same_variable_timestamp` in `src/datatypes/crdts/tests/variable_crdt.rs` |

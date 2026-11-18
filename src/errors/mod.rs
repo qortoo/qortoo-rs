@@ -87,6 +87,10 @@ mod tests_datatype_errors {
 
     use crossbeam_channel::TrySendError;
 
+    use super::{
+        datatypes::{RecoveryAction, ServerRejectReason, SnapshotErrorReason},
+        push_pull::PushPullError,
+    };
     use crate::{ClientError, DatatypeError, datatypes::event_loop::Event};
 
     #[test]
@@ -144,9 +148,8 @@ mod tests_datatype_errors {
                 check(error.code(), 211, error.to_string())
             },
             {
-                let error = DatatypeError::ServerRejected(crate::ServerRejectReason::CreateFailed(
-                    String::new(),
-                ));
+                let error =
+                    DatatypeError::ServerRejected(ServerRejectReason::CreateFailed(String::new()));
                 check(error.code(), 213, error.to_string())
             },
             {
@@ -159,28 +162,40 @@ mod tests_datatype_errors {
                 check(error.code(), 215, error.to_string())
             },
             {
-                let error = super::push_pull::PushPullError::ProtocolViolation(String::new());
+                let error = DatatypeError::SnapshotEncode(SnapshotErrorReason::Invalid);
+                check(error.code(), 216, error.to_string())
+            },
+            {
+                let error = DatatypeError::SnapshotDecode(SnapshotErrorReason::Invalid);
+                check(error.code(), 217, error.to_string())
+            },
+            {
+                let error = PushPullError::ProtocolViolation(String::new());
                 check(error.code(), 301, error.to_string())
             },
             {
-                let error = super::push_pull::PushPullError::ReadonlyViolation;
+                let error = PushPullError::ReadonlyViolation;
                 check(error.code(), 302, error.to_string())
             },
             {
-                let error = super::push_pull::PushPullError::CreateFailed(String::new());
+                let error = PushPullError::CreateFailed(String::new());
                 check(error.code(), 303, error.to_string())
             },
             {
-                let error = super::push_pull::PushPullError::ResourceNotFound(String::new());
+                let error = PushPullError::ResourceNotFound(String::new());
                 check(error.code(), 304, error.to_string())
             },
             {
-                let error = super::push_pull::PushPullError::MissingSubscription(String::new());
+                let error = PushPullError::MissingSubscription(String::new());
                 check(error.code(), 305, error.to_string())
             },
             {
-                let error = super::push_pull::PushPullError::ServerInternalError(String::new());
+                let error = PushPullError::ServerInternalError(String::new());
                 check(error.code(), 306, error.to_string())
+            },
+            {
+                let error = PushPullError::SnapshotUnavailable(String::new());
+                check(error.code(), 307, error.to_string())
             },
             #[cfg(any(feature = "observability-trace", feature = "observability-metrics"))]
             {
@@ -289,10 +304,8 @@ mod tests_datatype_errors {
                 "[E211] push buffer memory limit exceeded",
             ),
             (
-                super::datatypes::DatatypeError::ServerRejected(
-                    super::datatypes::ServerRejectReason::CreateFailed("detail".into()),
-                )
-                .to_string(),
+                DatatypeError::ServerRejected(ServerRejectReason::CreateFailed("detail".into()))
+                    .to_string(),
                 "[E213] server rejected: creation failed: detail",
             ),
             (
@@ -310,27 +323,27 @@ mod tests_datatype_errors {
                 "[E210] sync failed: connection timed out: detail",
             ),
             (
-                super::push_pull::PushPullError::ProtocolViolation("detail".into()).to_string(),
+                PushPullError::ProtocolViolation("detail".into()).to_string(),
                 "[E301] protocol violation: detail",
             ),
             (
-                super::push_pull::PushPullError::ReadonlyViolation.to_string(),
+                PushPullError::ReadonlyViolation.to_string(),
                 "[E302] readonly client attempted write operation",
             ),
             (
-                super::push_pull::PushPullError::CreateFailed("detail".into()).to_string(),
+                PushPullError::CreateFailed("detail".into()).to_string(),
                 "[E303] creation failed: detail",
             ),
             (
-                super::push_pull::PushPullError::ResourceNotFound("detail".into()).to_string(),
+                PushPullError::ResourceNotFound("detail".into()).to_string(),
                 "[E304] resource not found: detail",
             ),
             (
-                super::push_pull::PushPullError::MissingSubscription("detail".into()).to_string(),
+                PushPullError::MissingSubscription("detail".into()).to_string(),
                 "[E305] missing subscription: detail",
             ),
             (
-                super::push_pull::PushPullError::ServerInternalError("detail".into()).to_string(),
+                PushPullError::ServerInternalError("detail".into()).to_string(),
                 "[E306] server internal error: detail",
             ),
         ];
@@ -340,9 +353,67 @@ mod tests_datatype_errors {
     }
 
     #[test]
-    fn can_describe_server_rejection_reasons() {
-        use super::datatypes::{RecoveryAction, ServerRejectReason};
+    fn can_report_snapshot_operation_and_reason_with_stable_messages() {
+        for (reason, encode_message, decode_message) in [
+            (
+                SnapshotErrorReason::Invalid,
+                "[E216] snapshot encoding failed: invalid state or snapshot data",
+                "[E217] snapshot decoding failed: invalid state or snapshot data",
+            ),
+            (
+                SnapshotErrorReason::Unsupported,
+                "[E216] snapshot encoding failed: format or capability is unavailable",
+                "[E217] snapshot decoding failed: format or capability is unavailable",
+            ),
+            (
+                SnapshotErrorReason::LimitExceeded,
+                "[E216] snapshot encoding failed: input, payload, entry count, or Zstd window exceeds policy",
+                "[E217] snapshot decoding failed: input, payload, entry count, or Zstd window exceeds policy",
+            ),
+            (
+                SnapshotErrorReason::ResourceExhausted,
+                "[E216] snapshot encoding failed: memory allocation failed",
+                "[E217] snapshot decoding failed: memory allocation failed",
+            ),
+        ] {
+            for (error, code, message) in [
+                (DatatypeError::SnapshotEncode(reason), 216, encode_message),
+                (DatatypeError::SnapshotDecode(reason), 217, decode_message),
+            ] {
+                assert_eq!(error.code(), code);
+                assert_eq!(error.to_string(), message);
+                assert_eq!(error.mapping().recovery, RecoveryAction::Disable);
+            }
+        }
+        assert_eq!(
+            DatatypeError::SnapshotDecode(SnapshotErrorReason::Invalid),
+            DatatypeError::SnapshotDecode(SnapshotErrorReason::LimitExceeded),
+        );
+        assert_ne!(
+            DatatypeError::SnapshotEncode(SnapshotErrorReason::Invalid),
+            DatatypeError::SnapshotDecode(SnapshotErrorReason::Invalid),
+        );
+    }
 
+    #[test]
+    fn can_disable_when_the_server_cannot_generate_a_snapshot() {
+        let error = PushPullError::SnapshotUnavailable("detail".into());
+        assert_eq!(error.code(), 307);
+        assert_eq!(error.to_string(), "[E307] snapshot unavailable: detail");
+        let error = error.to_datatype_error();
+        assert!(matches!(
+            error,
+            DatatypeError::ServerRejected(ServerRejectReason::SnapshotUnavailable(_))
+        ));
+        assert_eq!(
+            error.to_string(),
+            "[E213] server rejected: snapshot unavailable: detail"
+        );
+        assert_eq!(error.mapping().recovery, RecoveryAction::Disable);
+    }
+
+    #[test]
+    fn can_describe_server_rejection_reasons() {
         let cases = [
             (
                 ServerRejectReason::CreateFailed("datatype already exists".into()),
@@ -363,6 +434,12 @@ mod tests_datatype_errors {
                 "missing subscription: client 'client-1' has no active subscription",
                 "[E213] server rejected: missing subscription: client 'client-1' has no active subscription",
                 RecoveryAction::Resubscribe,
+            ),
+            (
+                ServerRejectReason::SnapshotUnavailable("configured codec is unavailable".into()),
+                "snapshot unavailable: configured codec is unavailable",
+                "[E213] server rejected: snapshot unavailable: configured codec is unavailable",
+                RecoveryAction::Disable,
             ),
             (
                 ServerRejectReason::ProtocolViolation("unexpected \"state\"\n상세".into()),

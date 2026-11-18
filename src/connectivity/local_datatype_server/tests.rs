@@ -19,7 +19,10 @@ pub(super) use crate::{
         push_pull_pack::PushPullPack,
         uid::{Cuid, Duid},
     },
-    utils::test_utils::{get_test_collection_name, get_test_func_name, get_test_ids},
+    utils::test_utils::{
+        get_test_collection_name, get_test_func_name, get_test_ids, local_connectivity,
+        snapshot_write_options,
+    },
 };
 
 pub(super) fn transaction(cuid: &Cuid, cseq: u64, mut operation: Operation) -> Arc<Transaction> {
@@ -38,7 +41,7 @@ pub(super) struct TestFixture {
 
 impl TestFixture {
     pub(super) fn new(ids: (String, String, String)) -> Self {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         Self {
             connectivity,

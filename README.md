@@ -73,10 +73,29 @@ assert!(readonly_counter.increase().is_err());
 
 | Flag | Description |
 |------|-------------|
+| `snapshot-bitcode` | Enables the revision-one native bitcode snapshot codec |
+| `snapshot-postcard` | Enables the revision-one Postcard snapshot codec |
+| `snapshot-zstd` | Enables single-frame Zstd snapshot compression and decompression |
 | `observability-log` | Exports `QortooLogLayer` — Qortoo's compact stdout formatter with automatic ANSI terminal detection |
 | `observability-trace` | Enables managed stdout logging and OTLP/gRPC trace export, including the unit-test subscriber |
 | `observability-metrics` | Enables opt-in process-global metrics export through Prometheus |
 | `observability` | Umbrella enabling both managed exporter features |
+
+Snapshot capabilities are additive. `snapshot-bitcode` and `snapshot-zstd` are enabled
+by default; the default writer uses native bitcode followed by Zstd level 1.
+Enable `snapshot-postcard` to read or write Postcard payloads. At least one of
+`snapshot-bitcode` or `snapshot-postcard` must be enabled; builds with neither codec
+are rejected at compile time. When using `--no-default-features`, select a codec explicitly.
+Writer option variants exist only for enabled features, so unsupported choices cannot be
+constructed. `SnapshotWriteOptions::default()` and `LocalConnectivity::new_arc()` require
+both `snapshot-bitcode` and `snapshot-zstd`; reduced-feature builds use the infallible
+`LocalConnectivity::new_arc_with_snapshot_options(options)` constructor. Readers accept any
+enabled codec regardless of the writer policy. There is no automatic fallback.
+
+`ClientBuilder::with_snapshot_decode_limits` configures independent inclusive input, raw
+payload, and Map entry caps. Defaults are 129 MiB of complete input, 128 MiB of raw payload,
+and 1,000,000 Map entries including tombstones. These limits do not bound peak heap usage.
+See [Connectivity](docs/connectivity.md) for the snapshot format and failure behavior.
 
 ## Observability
 

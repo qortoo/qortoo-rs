@@ -4,16 +4,13 @@ use crate::{
         common::ReturnType,
         crdts::{
             RollbackAction,
-            snapshot::{SNAPSHOT_VERSION, SnapshotCodec},
+            snapshot::SnapshotCodec,
             variable_crdt::{VariableCrdt, VariableRollbackAction, VariableSetOutcome},
         },
     },
     operations::Operation,
-    types::{
-        operation_context::OperationContext,
-        timestamp::Timestamp,
-        uid::{Cuid, UID_LEN},
-    },
+    types::{operation_context::OperationContext, timestamp::Timestamp, uid::Cuid},
+    utils::test_utils::snapshot_write_options,
 };
 
 fn timestamp(lamport: u64, cuid: &str) -> Timestamp {
@@ -34,15 +31,6 @@ fn apply_set(
     let operation = variable_set_operation(value, timestamp.lamport());
     let context = OperationContext::try_new(&operation, timestamp.cuid())?;
     variable.apply_set(value, &context)
-}
-
-fn serialized_snapshot(lamport: u64, cuid: [u8; UID_LEN], value: &[u8]) -> Vec<u8> {
-    let mut serialized = vec![SNAPSHOT_VERSION];
-    serialized.extend_from_slice(&lamport.to_le_bytes());
-    serialized.extend_from_slice(&cuid);
-    serialized.extend_from_slice(&(value.len() as u64).to_le_bytes());
-    serialized.extend_from_slice(value);
-    serialized
 }
 
 #[test]
@@ -269,14 +257,10 @@ fn can_reject_non_variable_operations() {
 fn can_round_trip_an_initial_null_variable_snapshot() {
     let variable = VariableCrdt::default();
 
-    let serialized = variable.encode_snapshot();
-    let decoded = VariableCrdt::decode_snapshot(&serialized).unwrap();
+    let serialized = variable.encode_snapshot(snapshot_write_options()).unwrap();
+    let decoded = VariableCrdt::decode_snapshot(&serialized, Default::default()).unwrap();
 
-    assert_eq!(serialized[0], SNAPSHOT_VERSION);
-    assert_eq!(&serialized[1..9], &0_u64.to_le_bytes());
-    assert_eq!(&serialized[9..25], b"0000000000000000");
-    assert_eq!(&serialized[25..33], &4_u64.to_le_bytes());
-    assert_eq!(&serialized[33..], b"null");
+    assert_eq!(&serialized[..4], b"QTSN");
     assert_eq!(decoded, variable);
 }
 
@@ -291,14 +275,10 @@ fn can_round_trip_a_variable_snapshot_with_its_winning_timestamp() {
     ] {
         apply_set(&mut variable, value, &timestamp).unwrap();
 
-        let serialized = variable.encode_snapshot();
-        let decoded = VariableCrdt::decode_snapshot(&serialized).unwrap();
+        let serialized = variable.encode_snapshot(snapshot_write_options()).unwrap();
+        let decoded = VariableCrdt::decode_snapshot(&serialized, Default::default()).unwrap();
 
-        assert_eq!(serialized[0], SNAPSHOT_VERSION);
-        assert_eq!(&serialized[1..9], &7_u64.to_le_bytes());
-        assert_eq!(&serialized[9..25], b"0000000000000001");
-        assert_eq!(&serialized[25..33], &(value.len() as u64).to_le_bytes());
-        assert_eq!(&serialized[33..], value);
+        assert_eq!(decoded.value(), value);
         assert_eq!(decoded, variable);
         variable = VariableCrdt::default();
     }
@@ -307,8 +287,10 @@ fn can_round_trip_a_variable_snapshot_with_its_winning_timestamp() {
 #[test]
 fn can_preserve_the_real_timestamp_of_an_explicit_null_set() {
     let explicit_timestamp = timestamp(7, "0000000000000001");
-    let serialized = serialized_snapshot(7, *b"0000000000000001", b"null");
-    let variable = VariableCrdt::decode_snapshot(&serialized).unwrap();
+    let mut source = VariableCrdt::default();
+    apply_set(&mut source, b"null", &explicit_timestamp).unwrap();
+    let serialized = source.encode_snapshot(snapshot_write_options()).unwrap();
+    let variable = VariableCrdt::decode_snapshot(&serialized, Default::default()).unwrap();
 
     assert_eq!(variable.value(), b"null");
     assert_eq!(variable.timestamp(), &explicit_timestamp);
@@ -316,80 +298,11 @@ fn can_preserve_the_real_timestamp_of_an_explicit_null_set() {
 }
 
 #[test]
-fn can_reject_malformed_variable_snapshots() {
-    let valid_cuid = *b"0000000000000001";
-    let mut invalid_utf8_cuid = valid_cuid;
-    invalid_utf8_cuid[0] = 0xff;
-    let mut invalid_format_cuid = valid_cuid;
-    invalid_format_cuid[0] = b'(';
-
-    let nil_cuid = *b"0000000000000000";
-    let mut truncated_payload = serialized_snapshot(7, valid_cuid, b"null");
-    truncated_payload[25..33].copy_from_slice(&5_u64.to_le_bytes());
-    let mut trailing_payload = serialized_snapshot(7, valid_cuid, b"null");
-    trailing_payload.push(0);
-
-    let cases = [
-        ("empty", Vec::new(), "truncated version"),
-        (
-            "missing lamport",
-            vec![SNAPSHOT_VERSION],
-            "truncated winning timestamp",
-        ),
-        (
-            "unsupported version",
-            vec![SNAPSHOT_VERSION + 1],
-            "unsupported version",
-        ),
-        (
-            "truncated CUID",
-            serialized_snapshot(7, valid_cuid, b"null")[..9].to_vec(),
-            "truncated winning timestamp",
-        ),
-        (
-            "invalid UTF-8 CUID",
-            serialized_snapshot(7, invalid_utf8_cuid, b"null"),
-            "deserialize: uid: not valid UTF-8",
-        ),
-        (
-            "invalid CUID format",
-            serialized_snapshot(7, invalid_format_cuid, b"null"),
-            "deserialize: uid: invalid format",
-        ),
-        (
-            "truncated payload",
-            truncated_payload,
-            "truncated JSON payload",
-        ),
-        (
-            "invalid JSON",
-            serialized_snapshot(7, valid_cuid, b"not-json"),
-            "invalid JSON payload",
-        ),
-        (
-            "invalid UTF-8 inside JSON string",
-            serialized_snapshot(7, valid_cuid, b"\"\xff\""),
-            "invalid JSON payload",
-        ),
-        (
-            "non-null initial value",
-            serialized_snapshot(0, nil_cuid, b"false"),
-            "reserved for the initial null state",
-        ),
-        (
-            "non-nil initial CUID",
-            serialized_snapshot(0, valid_cuid, b"null"),
-            "reserved for the initial null state",
-        ),
-        ("trailing payload bytes", trailing_payload, "trailing bytes"),
-    ];
-
-    for (case, serialized, expected_error) in cases {
-        let error = VariableCrdt::decode_snapshot(&serialized).unwrap_err();
-        assert!(matches!(&error, DatatypeError::Internal(_)), "{case}");
-        assert!(
-            error.to_string().contains(expected_error),
-            "{case}: {error}"
-        );
+fn can_reject_truncated_variable_snapshots() {
+    let bytes = VariableCrdt::default()
+        .encode_snapshot(snapshot_write_options())
+        .unwrap();
+    for end in 0..bytes.len() {
+        assert!(VariableCrdt::decode_snapshot(&bytes[..end], Default::default()).is_err());
     }
 }

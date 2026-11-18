@@ -78,6 +78,9 @@ sharing memory directly — see the two-client walkthrough in
 [`docs/getting-started.md`](getting-started.md#syncing-two-clients), which uses a counter for
 exactly this.
 
+The [Counter snapshot payload](snapshot-format.md#counter-payload) encodes the current `i64`
+value inside the common QTSN envelope, without timestamps or per-client contributions.
+
 ## Rationale
 
 **Why an operation-based delta instead of a stored value with a merge function.** Two replicas

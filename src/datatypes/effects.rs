@@ -42,15 +42,15 @@ mod tests {
     };
 
     use crate::{
-        Client, Datatype, DatatypeHandler, DatatypeState, LocalConnectivity,
+        Client, Datatype, DatatypeHandler, DatatypeState,
         datatypes::datatype::DatatypeBlanket,
-        utils::test_utils::{get_test_collection_name, get_test_func_name},
+        utils::test_utils::{get_test_collection_name, get_test_func_name, local_connectivity},
     };
 
     const TIMEOUT: Duration = Duration::from_secs(5);
 
     fn manual_client() -> Client {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)

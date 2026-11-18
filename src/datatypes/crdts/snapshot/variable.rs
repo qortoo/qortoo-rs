@@ -1,41 +1,56 @@
-use super::{SNAPSHOT_VERSION, SnapshotCodec, SnapshotReader, write_sized};
+use super::{
+    SnapshotCodec, WINDOW_LOG,
+    wire::{decode_frame, decode_payload, encode_frame, encode_payload},
+};
 use crate::{
-    DatatypeError,
-    datatypes::crdts::variable_crdt::{INITIAL_VALUE, VariableCrdt, VariableState},
-    errors::{datatypes::deserialize_error, messages::snapshot as snapshot_msg},
-    types::timestamp::Timestamp,
+    SnapshotDecodeLimits, SnapshotErrorReason, SnapshotWriteOptions,
+    datatypes::crdts::variable_crdt::VariableCrdt,
+    types::{timestamp::Timestamp, uid::Cuid},
 };
 
 impl SnapshotCodec for VariableCrdt {
-    fn encode_snapshot(&self) -> Box<[u8]> {
-        let mut serialized = vec![SNAPSHOT_VERSION];
-        serialized.extend_from_slice(&self.timestamp().to_bytes());
-        write_sized(&mut serialized, self.value());
-        serialized.into_boxed_slice()
+    fn encode_snapshot(
+        &self,
+        options: SnapshotWriteOptions,
+    ) -> Result<Box<[u8]>, SnapshotErrorReason> {
+        let dto = SnapshotVariable {
+            lamport: self.timestamp().lamport(),
+            cuid: self.timestamp().cuid().to_bytes(),
+            value: self.validate_state().ok_or(SnapshotErrorReason::Invalid)?,
+        };
+        encode_frame(
+            2,
+            options,
+            &encode_payload!(options.codec, &dto)?,
+            WINDOW_LOG,
+        )
     }
 
-    fn decode_snapshot(snapshot: &[u8]) -> Result<Self, DatatypeError> {
-        let mut reader = SnapshotReader::new(snapshot, snapshot_msg::VARIABLE_CONTEXT);
-        reader.read_version(SNAPSHOT_VERSION)?;
-        let timestamp = reader.read_timestamp(snapshot_msg::TIMESTAMP_FIELD)?;
-        let value = reader.read_json()?;
-        validate_snapshot_state(value, &timestamp)?;
-        let winning = VariableState::new(value, &timestamp);
-
-        reader.finish()?;
-        Ok(Self { winning })
+    fn decode_snapshot(
+        bytes: &[u8],
+        limits: SnapshotDecodeLimits,
+    ) -> Result<Self, SnapshotErrorReason> {
+        let (codec, raw) = decode_frame(bytes, 2, limits, WINDOW_LOG)?;
+        let dto: SnapshotVariable = decode_payload!(codec, raw.as_ref())?;
+        let timestamp = Timestamp::new(
+            dto.lamport,
+            &Cuid::from_bytes(&dto.cuid).map_err(|_| SnapshotErrorReason::Invalid)?,
+        );
+        let candidate = VariableCrdt::new(dto.value.as_bytes(), &timestamp);
+        candidate
+            .validate_state()
+            .ok_or(SnapshotErrorReason::Invalid)?;
+        Ok(candidate)
     }
 }
 
-fn validate_snapshot_state(value: &[u8], timestamp: &Timestamp) -> Result<(), DatatypeError> {
-    if timestamp.lamport() > 0 {
-        return Ok(());
-    }
-    if timestamp.is_initial() && value == INITIAL_VALUE {
-        return Ok(());
-    }
-    Err(deserialize_error(
-        snapshot_msg::VARIABLE_CONTEXT,
-        snapshot_msg::INVALID_INITIAL_VARIABLE,
-    ))
+#[cfg_attr(feature = "snapshot-bitcode", derive(bitcode::Encode, bitcode::Decode))]
+#[cfg_attr(
+    feature = "snapshot-postcard",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+pub(super) struct SnapshotVariable<'a> {
+    pub(super) lamport: u64,
+    pub(super) cuid: [u8; 16],
+    pub(super) value: &'a str,
 }

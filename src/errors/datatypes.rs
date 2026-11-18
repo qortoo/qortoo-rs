@@ -95,6 +95,8 @@ pub enum ServerRejectReason {
     MissingSubscription(String),
     /// The push violated the wire protocol (e.g., unexpected state transition, type mismatch).
     ProtocolViolation(String),
+    /// The server cannot generate a snapshot with its configured writer.
+    SnapshotUnavailable(String),
 }
 
 impl Display for ServerRejectReason {
@@ -104,9 +106,31 @@ impl Display for ServerRejectReason {
             Self::ResourceNotFound(detail) => (sync_msg::RESOURCE_NOT_FOUND_PREFIX, detail),
             Self::MissingSubscription(detail) => (sync_msg::MISSING_SUBSCRIPTION_PREFIX, detail),
             Self::ProtocolViolation(detail) => (sync_msg::PROTOCOL_VIOLATION_PREFIX, detail),
+            Self::SnapshotUnavailable(detail) => (sync_msg::SNAPSHOT_UNAVAILABLE_PREFIX, detail),
         };
         write!(f, "{prefix}{detail}")
     }
+}
+
+/// Why snapshot encoding or decoding failed.
+///
+/// Carried by [`DatatypeError::SnapshotEncode`] and [`DatatypeError::SnapshotDecode`].
+/// Diagnostics use fixed catalog messages without exposing stored values or native errors.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum SnapshotErrorReason {
+    /// The source state, snapshot data, or codec input is invalid.
+    #[error("{}", snapshot_msg::INVALID_DATA)]
+    Invalid,
+    /// The snapshot format or required build capability is unsupported.
+    #[error("{}", snapshot_msg::CAPABILITY)]
+    Unsupported,
+    /// A snapshot size or Zstd window exceeds policy.
+    #[error("{}", snapshot_msg::POLICY_LIMIT)]
+    LimitExceeded,
+    /// A fallible memory reservation or native allocation failed.
+    #[error("{}", snapshot_msg::ALLOCATION_FAILED)]
+    ResourceExhausted,
 }
 
 /// Errors that can occur while working with Qortoo datatypes.
@@ -168,6 +192,12 @@ pub enum DatatypeError {
     /// A datatype operation received an invalid caller argument. Never routed to the event loop.
     #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = datatype_msg::INVALID_ARGUMENT_PREFIX)]
     InvalidArgument(String) = 215,
+    /// The CRDT state could not be encoded into a snapshot.
+    #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = snapshot_msg::ENCODE_PREFIX)]
+    SnapshotEncode(SnapshotErrorReason) = 216,
+    /// A snapshot could not be decoded into a valid CRDT state.
+    #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = snapshot_msg::DECODE_PREFIX)]
+    SnapshotDecode(SnapshotErrorReason) = 217,
 }
 
 impl DatatypeError {
@@ -186,6 +216,8 @@ impl DatatypeError {
             Self::ServerRejected(_) => 213,
             Self::ValueConversion(_) => 214,
             Self::InvalidArgument(_) => 215,
+            Self::SnapshotEncode(_) => 216,
+            Self::SnapshotDecode(_) => 217,
         }
     }
 
@@ -212,7 +244,9 @@ impl DatatypeError {
             }
             DatatypeError::Internal(_)
             | DatatypeError::ServerRejected(_)
-            | DatatypeError::ReadonlyViolation => {
+            | DatatypeError::ReadonlyViolation
+            | DatatypeError::SnapshotEncode(_)
+            | DatatypeError::SnapshotDecode(_) => {
                 DatatypeErrorWithAction::new(self, RecoveryAction::Disable)
             }
             DatatypeError::PushBufferExceededMaxMemSize => {
@@ -240,9 +274,7 @@ impl PartialEq for DatatypeError {
     }
 }
 
-// Manual impl (not #[derive(Eq)]) because derive would add `ServerRejectReason: Eq` as a where
-// bound, which fails since ServerRejectReason does not implement Eq. The unconditional impl is
-// sound because the custom PartialEq above is discriminant-only, so reflexivity always holds.
+// Equality ignores reason payloads, matching the discriminant-only PartialEq implementation.
 impl Eq for DatatypeError {}
 
 /// How the SDK recovers from a routed datatype error.

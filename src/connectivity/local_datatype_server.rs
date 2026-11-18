@@ -8,7 +8,7 @@ use crossbeam_channel::Sender;
 use tracing::{instrument, trace};
 
 use crate::{
-    DataType, DatatypeState,
+    DataType, DatatypeState, SnapshotWriteOptions,
     datatypes::{Crdt, common::Attribute, event_loop::Event, wired::WiredDatatype},
     errors::{connectivity::ConnectivityError, messages::sync as msg, push_pull::PushPullError},
     operations::{Operation, transaction::Transaction},
@@ -71,12 +71,14 @@ struct SyncedState {
     history: VecDeque<Arc<Transaction>>,
     sseq_history_pruned: u64,
     sseq_gc_safe: u64,
+    snapshot_write_options: SnapshotWriteOptions,
 }
 
 impl SyncedState {
-    fn new(r#type: DataType) -> Self {
+    fn new(r#type: DataType, snapshot_write_options: SnapshotWriteOptions) -> Self {
         Self {
             crdt: Crdt::new(r#type),
+            snapshot_write_options,
             lamport: 0,
             sseq_at_server: 0,
             checkpoints: HashMap::new(),
@@ -177,13 +179,17 @@ impl SyncedState {
         }
     }
 
-    fn get_subscribe_snapshot(&self) -> Transaction {
-        let mut operation = Operation::new_snapshot(self.crdt.serialize());
+    fn get_subscribe_snapshot(&self) -> Result<Transaction, PushPullError> {
+        let bytes = self
+            .crdt
+            .serialize(self.snapshot_write_options)
+            .map_err(|error| PushPullError::SnapshotUnavailable(error.to_string()))?;
+        let mut operation = Operation::new_snapshot(bytes);
         operation.set_lamport(self.lamport);
         let mut transaction = Transaction::new_with_cuid(&Cuid::new_nil());
         transaction.sseq = self.sseq_at_server;
         transaction.push_operation(operation);
-        transaction
+        Ok(transaction)
     }
 
     fn pull_transactions(&self, pulled: &mut PushPullPack) {
@@ -224,12 +230,16 @@ impl Display for LocalDatatypeServer {
 }
 
 impl LocalDatatypeServer {
-    pub(super) fn new(attr: &Attribute, max_sub_gens: HashMap<Cuid, u64>) -> Self {
+    pub(super) fn new(
+        attr: &Attribute,
+        max_sub_gens: HashMap<Cuid, u64>,
+        snapshot_write_options: SnapshotWriteOptions,
+    ) -> Self {
         Self {
             max_sub_gens,
             wired_map: HashMap::new(),
             sender_map: HashMap::new(),
-            synced: SyncedState::new(attr.r#type),
+            synced: SyncedState::new(attr.r#type, snapshot_write_options),
             collection: attr.client_common.collection.clone(),
             key: attr.key.clone(),
             r#type: attr.r#type,
@@ -616,8 +626,8 @@ impl LocalDatatypeServer {
     ) -> Result<(), PushPullError> {
         self.validate_subscription(pushed)?;
         let initial = self.synced.sseq_history_prunable();
+        let snapshot = self.synced.get_subscribe_snapshot()?;
         pulled.duid = self.duid.clone();
-        let snapshot = self.synced.get_subscribe_snapshot();
         pulled.checkpoint = CheckPoint::new(
             snapshot.sseq,
             self.synced.cseq_at_server(&pushed.cuid),

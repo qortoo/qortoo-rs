@@ -7,8 +7,9 @@ use tracing::instrument;
 
 use crate::{
     Client, Datatype, DatatypeState,
-    connectivity::local_connectivity::LocalConnectivity,
-    utils::test_utils::{get_test_collection_name, get_test_func_name, get_test_ids},
+    utils::test_utils::{
+        get_test_collection_name, get_test_func_name, get_test_ids, local_connectivity,
+    },
 };
 
 struct DropSignal(mpsc::Sender<()>);
@@ -23,7 +24,7 @@ impl Drop for DropSignal {
 #[case::registered(false)]
 #[case::subscribed(true)]
 fn can_release_local_client_ownership_without_unsubscribing(#[case] sync: bool) {
-    let connectivity = LocalConnectivity::new_arc();
+    let connectivity = local_connectivity();
     connectivity.set_realtime(false);
     let (collection, key, resource_id) = get_test_ids!();
     let client = Client::builder(collection, "drop-only")
@@ -68,7 +69,7 @@ fn can_release_local_client_ownership_without_unsubscribing(#[case] sync: bool) 
 
 #[test]
 fn can_keep_an_in_flight_exchange_alive_until_stop_is_processed() {
-    let connectivity = LocalConnectivity::new_arc();
+    let connectivity = local_connectivity();
     connectivity.set_realtime(false);
     let (collection, key, resource_id) = get_test_ids!();
     let client = Client::builder(collection, "in-flight-drop")
@@ -112,7 +113,7 @@ fn can_keep_an_in_flight_exchange_alive_until_stop_is_processed() {
 #[test]
 #[instrument]
 fn can_compare_manual_and_realtime_local_connectivity() {
-    let lc_manual = LocalConnectivity::new_arc();
+    let lc_manual = local_connectivity();
     lc_manual.set_realtime(false);
     let client_manual = Client::builder(get_test_collection_name!(), "manual client")
         .with_connectivity(lc_manual)
@@ -123,7 +124,7 @@ fn can_compare_manual_and_realtime_local_connectivity() {
         .build_counter()
         .unwrap();
 
-    let lc_realtime = LocalConnectivity::new_arc();
+    let lc_realtime = local_connectivity();
     let client_realtime = Client::builder(get_test_collection_name!(), "realtime client")
         .with_connectivity(lc_realtime)
         .build()
@@ -145,7 +146,7 @@ fn can_compare_manual_and_realtime_local_connectivity() {
 #[test]
 #[instrument]
 fn can_notify_other_clients_after_realtime_push() {
-    let connectivity = LocalConnectivity::new_arc();
+    let connectivity = local_connectivity();
     let (collection, key, _) = get_test_ids!();
     let client1 = Client::builder(collection.clone(), "client1")
         .with_connectivity(connectivity.clone())
@@ -180,7 +181,7 @@ fn can_notify_other_clients_after_realtime_push() {
 #[test]
 #[instrument]
 fn does_not_notify_other_clients_in_manual_mode() {
-    let connectivity = LocalConnectivity::new_arc();
+    let connectivity = local_connectivity();
     connectivity.set_realtime(false);
     let (collection, key, _) = get_test_ids!();
     let client1 = Client::builder(collection.clone(), "client1")
@@ -214,7 +215,7 @@ fn does_not_notify_other_clients_in_manual_mode() {
 #[test]
 #[instrument]
 fn can_keep_serving_snapshots_after_the_creator_unsubscribes() {
-    let connectivity = LocalConnectivity::new_arc();
+    let connectivity = local_connectivity();
     connectivity.set_realtime(false);
     let (collection, key, _) = get_test_ids!();
     let client1 = Client::builder(collection.clone(), "client1")
@@ -267,7 +268,7 @@ fn can_preserve_client_generation_bounds_across_resource_recreation() {
         errors::push_pull::PushPullError,
         types::push_pull_pack::PushPullPack,
     };
-    let connectivity = LocalConnectivity::new_arc();
+    let connectivity = local_connectivity();
     connectivity.set_realtime(false);
     let attr = new_attribute!(DataType::Counter);
     let wired = WiredDatatype::new_arc_for_test(
@@ -379,7 +380,7 @@ fn can_preserve_client_generation_bounds_across_resource_recreation() {
 #[test]
 #[instrument]
 fn can_remove_server_when_last_client_unsubscribes() {
-    let connectivity = LocalConnectivity::new_arc();
+    let connectivity = local_connectivity();
     connectivity.set_realtime(false);
     let (collection, key, resource_id) = get_test_ids!();
     let client1 = Client::builder(collection.clone(), "client1")

@@ -1,26 +1,35 @@
+#[cfg(feature = "snapshot-zstd")]
+mod compression;
 mod counter;
 mod map;
-mod reader;
 mod variable;
+mod wire;
 
-use reader::SnapshotReader;
+#[cfg(test)]
+mod tests;
 
-use crate::DatatypeError;
+use crate::{
+    SnapshotDecodeLimits, SnapshotErrorReason, SnapshotWriteOptions,
+    defaults::SNAPSHOT_MAX_ZSTD_WINDOW_LOG as WINDOW_LOG,
+};
 
-pub(super) const SNAPSHOT_VERSION: u8 = 1;
-
-fn write_sized(bytes: &mut Vec<u8>, value: &[u8]) {
-    let length = u64::try_from(value.len()).expect("snapshot field length exceeds u64");
-    bytes.extend_from_slice(&length.to_le_bytes());
-    bytes.extend_from_slice(value);
+fn buffer_with_capacity(size: usize) -> Result<Vec<u8>, SnapshotErrorReason> {
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(size)
+        .map_err(|_| SnapshotErrorReason::ResourceExhausted)?;
+    Ok(bytes)
 }
 
 /// Converts a concrete CRDT state to and from its snapshot representation.
-///
-/// Decoding returns a fully validated replacement so callers can preserve the
-/// current state when an invalid snapshot is received.
+/// Decoding validates a complete candidate before the caller replaces current state.
 pub(crate) trait SnapshotCodec: Sized {
-    fn encode_snapshot(&self) -> Box<[u8]>;
-
-    fn decode_snapshot(snapshot: &[u8]) -> Result<Self, DatatypeError>;
+    fn encode_snapshot(
+        &self,
+        options: SnapshotWriteOptions,
+    ) -> Result<Box<[u8]>, SnapshotErrorReason>;
+    fn decode_snapshot(
+        snapshot: &[u8],
+        limits: SnapshotDecodeLimits,
+    ) -> Result<Self, SnapshotErrorReason>;
 }

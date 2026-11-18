@@ -107,7 +107,8 @@ impl Attribute {
         let key = paths.pop_back().unwrap_or(format!("{type}")).into();
         let client_alias = paths.pop_back().unwrap_or("client".into()).into();
         let collection = paths.pop_back().unwrap_or("collection".to_owned()).into();
-        let client_common = ClientCommon::new_arc(collection, client_alias, connectivity);
+        let client_common =
+            ClientCommon::new_arc(collection, client_alias, connectivity, Default::default());
         Arc::new(Self {
             key,
             r#type,

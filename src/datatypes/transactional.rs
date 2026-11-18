@@ -424,7 +424,7 @@ mod tests_transactional {
     use tracing_opentelemetry::OpenTelemetrySpanExt;
 
     use crate::{
-        Client, DataType, Datatype, DatatypeError, DatatypeState, LocalConnectivity,
+        Client, DataType, Datatype, DatatypeError, DatatypeState,
         clients::common::ClientCommon,
         datatypes::{
             common::{Attribute, ReturnType, new_attribute},
@@ -432,17 +432,24 @@ mod tests_transactional {
             transactional::{TransactionAdmission, TransactionContext, TransactionalDatatype},
         },
         operations::{MemoryMeasurable, Operation, transaction::Transaction},
-        utils::test_utils::{get_test_collection_name, get_test_func_name},
+        utils::{
+            json::decode_json_value,
+            test_utils::{
+                get_test_collection_name, get_test_func_name, local_connectivity,
+                snapshot_write_options,
+            },
+        },
     };
 
     // Tests inspecting unacknowledged batches must not race automatic synchronization.
     fn manual_counter_attribute() -> Arc<Attribute> {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let common = ClientCommon::new_arc(
             get_test_collection_name!().into(),
             get_test_func_name!().into(),
             connectivity,
+            Default::default(),
         );
         Arc::new(Attribute::new(
             get_test_func_name!().into(),
@@ -476,7 +483,7 @@ mod tests_transactional {
                 .as_map()
                 .unwrap()
                 .shared_value(key)
-                .map(|bytes| crate::datatypes::value::decode_json_value(&bytes))
+                .map(|bytes| decode_json_value(&bytes))
                 .transpose()?;
             let op = match value {
                 Some(value) => Operation::new_map_put(key.into(), Box::from(value)),
@@ -519,7 +526,10 @@ mod tests_transactional {
                 )?;
                 let (id, snapshot) = {
                     let mutable = datatype.core.mutable.read();
-                    (mutable.op_id.clone(), mutable.crdt.serialize())
+                    (
+                        mutable.op_id.clone(),
+                        mutable.crdt.serialize(snapshot_write_options()).unwrap(),
+                    )
                 };
                 let result = typed_map_write(
                     &datatype,
@@ -531,7 +541,10 @@ mod tests_transactional {
                 {
                     let mutable = datatype.core.mutable.read();
                     assert_eq!(mutable.op_id, id);
-                    assert_eq!(mutable.crdt.serialize(), snapshot);
+                    assert_eq!(
+                        mutable.crdt.serialize(snapshot_write_options()).unwrap(),
+                        snapshot
+                    );
                 }
                 if propagate {
                     result.map(|_| ())
@@ -591,7 +604,7 @@ mod tests_transactional {
         let (snapshot, id, buffer_size, option) = {
             let mut mutable = datatype.core.mutable.write();
             let baseline = (
-                mutable.crdt.serialize(),
+                mutable.crdt.serialize(snapshot_write_options()).unwrap(),
                 mutable.op_id.clone(),
                 mutable.push_buffer.mem_size,
                 mutable.push_buffer.option.clone(),
@@ -620,7 +633,10 @@ mod tests_transactional {
         assert_eq!(result, Err(DatatypeError::PushBufferExceededMaxMemSize));
         {
             let mut mutable = datatype.core.mutable.write();
-            assert_eq!(mutable.crdt.serialize(), snapshot);
+            assert_eq!(
+                mutable.crdt.serialize(snapshot_write_options()).unwrap(),
+                snapshot
+            );
             assert_eq!(mutable.op_id, id);
             assert!(mutable.is_transaction_record_empty());
             assert_eq!(mutable.push_buffer.mem_size, buffer_size);
@@ -662,10 +678,9 @@ mod tests_transactional {
             .map(|worker| worker.join().unwrap().map(|value| value.as_u64().unwrap()))
             .collect();
         let mutable = datatype.core.mutable.read();
-        let current: serde_json::Value = crate::datatypes::value::decode_json_value(
-            &mutable.crdt.as_map().unwrap().shared_value("key").unwrap(),
-        )
-        .unwrap();
+        let current: serde_json::Value =
+            decode_json_value(&mutable.crdt.as_map().unwrap().shared_value("key").unwrap())
+                .unwrap();
         observed.push(Some(current.as_u64().unwrap()));
         observed.sort();
         assert_eq!(
@@ -737,7 +752,7 @@ mod tests_transactional {
         #[case] call: ReentrantCall,
         #[case] propagate: bool,
     ) {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
@@ -812,7 +827,7 @@ mod tests_transactional {
 
     #[test]
     fn can_read_uncommitted_values_and_join_callback_writes_from_another_thread() {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
@@ -842,7 +857,7 @@ mod tests_transactional {
 
     #[test]
     fn can_complete_sync_from_another_thread_after_local_rollback() {
-        let connectivity = LocalConnectivity::new_arc();
+        let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let collection = get_test_collection_name!();
         let client = Client::builder(collection.clone(), get_test_func_name!())

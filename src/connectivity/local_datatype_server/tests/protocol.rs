@@ -14,7 +14,7 @@ fn can_reject_unsupported_deletion_without_changing_backend_state(#[case] create
         DatatypeState::Creating,
         WiredInterceptor::new_arc(),
     );
-    let mut server = LocalDatatypeServer::new(&attr, Default::default());
+    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
     let (sender, receiver) = crossbeam_channel::unbounded();
     server.insert_client_item(wired.clone(), sender);
     let mut pushed = PushPullPack::new(&attr, DatatypeState::Creating);
@@ -31,7 +31,11 @@ fn can_reject_unsupported_deletion_without_changing_backend_state(#[case] create
         assert!(server.process(&pushed, false).unwrap().error.is_none());
     }
     let duid = server.duid.clone();
-    let crdt = server.synced.crdt.serialize();
+    let crdt = server
+        .synced
+        .crdt
+        .serialize(snapshot_write_options())
+        .unwrap();
     let lamport = server.synced.lamport;
     let sseq = server.synced.sseq_at_server;
     let history = server.synced.history.clone();
@@ -56,7 +60,14 @@ fn can_reject_unsupported_deletion_without_changing_backend_state(#[case] create
     assert_eq!(server.synced.sseq_history_prunable(), sseq_history_prunable);
     assert_eq!(server.duid, duid);
     assert_eq!(server.is_created(), created);
-    assert_eq!(server.synced.crdt.serialize(), crdt);
+    assert_eq!(
+        server
+            .synced
+            .crdt
+            .serialize(snapshot_write_options())
+            .unwrap(),
+        crdt
+    );
     assert_eq!(server.synced.lamport, lamport);
     assert_eq!(server.synced.sseq_at_server, sseq);
     assert_eq!(server.synced.history, history);
@@ -77,12 +88,16 @@ fn can_reject_unsupported_deletion_without_changing_backend_state(#[case] create
 #[case::backward_sequence(&[2, 3, 2, 4])]
 fn can_reject_nonsequential_new_transactions_without_publishing_batch(#[case] sequences: &[u64]) {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr, Default::default());
+    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
     let mut pushed = PushPullPack::new(&attr, DatatypeState::Creating);
     let accepted = transaction(&pushed.cuid, 1, Operation::new_counter_increase(7));
     pushed.transactions = vec![accepted.clone()];
     assert!(server.process(&pushed, false).unwrap().error.is_none());
-    let before = server.synced.crdt.serialize();
+    let before = server
+        .synced
+        .crdt
+        .serialize(snapshot_write_options())
+        .unwrap();
     let history = server.synced.history.clone();
     let checkpoints = server.synced.checkpoints.clone();
 
@@ -104,7 +119,14 @@ fn can_reject_nonsequential_new_transactions_without_publishing_batch(#[case] se
         failed.error,
         Some(PushPullError::ProtocolViolation(_))
     ));
-    assert_eq!(server.synced.crdt.serialize(), before);
+    assert_eq!(
+        server
+            .synced
+            .crdt
+            .serialize(snapshot_write_options())
+            .unwrap(),
+        before
+    );
     assert_eq!(server.synced.history, history);
     assert_eq!(server.synced.sseq_history_pruned, 0);
     assert_eq!(server.synced.checkpoints, checkpoints);
@@ -134,7 +156,7 @@ fn can_reject_nonsequential_new_transactions_without_publishing_batch(#[case] se
 #[case(DataType::Map)]
 fn can_reject_a_late_batch_failure_without_advancing_backend_state(#[case] data_type: DataType) {
     let attr = new_attribute!(data_type);
-    let mut server = LocalDatatypeServer::new(&attr, Default::default());
+    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
     let operation = |value: i64| match data_type {
         DataType::Counter => Operation::new_counter_increase(value),
         DataType::Variable => {
@@ -149,7 +171,11 @@ fn can_reject_a_late_batch_failure_without_advancing_backend_state(#[case] data_
     let mut pushed = PushPullPack::new(&attr, DatatypeState::Creating);
     pushed.transactions = vec![transaction(&pushed.cuid, 1, operation(7))];
     assert!(server.process(&pushed, false).unwrap().error.is_none());
-    let before = server.synced.crdt.serialize();
+    let before = server
+        .synced
+        .crdt
+        .serialize(snapshot_write_options())
+        .unwrap();
     let history = server.synced.history.clone();
     let checkpoints = server.synced.checkpoints.clone();
     pushed.state = DatatypeState::Subscribed;
@@ -165,7 +191,14 @@ fn can_reject_a_late_batch_failure_without_advancing_backend_state(#[case] data_
         failed.error,
         Some(PushPullError::ProtocolViolation(_))
     ));
-    assert_eq!(server.synced.crdt.serialize(), before);
+    assert_eq!(
+        server
+            .synced
+            .crdt
+            .serialize(snapshot_write_options())
+            .unwrap(),
+        before
+    );
     assert_eq!(server.synced.history, history);
     assert_eq!(server.synced.sseq_history_pruned, 0);
     assert_eq!(server.synced.checkpoints, checkpoints);
@@ -176,11 +209,22 @@ fn can_reject_a_late_batch_failure_without_advancing_backend_state(#[case] data_
     assert!(server.process(&pushed, false).unwrap().error.is_none());
     assert_eq!(server.synced.sseq_at_server, 3);
     assert_eq!(server.synced.lamport, 3);
-    let after = server.synced.crdt.serialize();
+    let after = server
+        .synced
+        .crdt
+        .serialize(snapshot_write_options())
+        .unwrap();
     assert!(server.process(&pushed, false).unwrap().error.is_none());
     pushed.transactions.clear();
     assert!(server.process(&pushed, false).unwrap().error.is_none());
-    assert_eq!(server.synced.crdt.serialize(), after);
+    assert_eq!(
+        server
+            .synced
+            .crdt
+            .serialize(snapshot_write_options())
+            .unwrap(),
+        after
+    );
     assert_eq!(server.synced.history.len(), 3);
     assert_eq!(server.synced.sseq_at_server, 3);
 }
@@ -209,7 +253,7 @@ fn can_keep_a_failed_creation_unpublished(
     #[case] state: DatatypeState,
 ) {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr, Default::default());
+    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
     let mut pushed = PushPullPack::new(&attr, state);
     let mut tx = (*transaction(&pushed.cuid, 1, Operation::new_counter_increase(7))).clone();
     match mutation {
@@ -765,7 +809,7 @@ fn can_reject_push_from_disabled_client() {
 #[test]
 fn can_fence_previous_subscription_and_retry_without_reapplying_transactions() {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr, Default::default());
+    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
     let mut push = PushPullPack::new(&attr, DatatypeState::Creating);
     push.transactions = vec![transaction(
         &push.cuid,
@@ -808,7 +852,7 @@ fn can_fence_previous_subscription_and_retry_without_reapplying_transactions() {
 #[case::subscribe_or_create(DatatypeState::SubscribingOrCreating)]
 fn can_replace_only_with_a_valid_new_subscription_generation(#[case] state: DatatypeState) {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr, Default::default());
+    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
     let mut old = PushPullPack::new(&attr, DatatypeState::Creating);
     old.transactions = vec![transaction(
         &old.cuid,
@@ -913,14 +957,18 @@ fn can_replace_only_with_a_valid_new_subscription_generation(#[case] state: Data
 #[test]
 fn can_fence_retired_generations_and_accept_a_fresh_subscription() {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr, Default::default());
+    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
     let mut old = PushPullPack::new(&attr, DatatypeState::Creating);
     assert!(server.process(&old, false).unwrap().error.is_none());
     let mut new = PushPullPack::new(&attr, DatatypeState::Subscribing);
     assert!(server.process(&new, false).unwrap().error.is_none());
     new.state = DatatypeState::Unsubscribing;
     assert!(server.process(&new, false).unwrap().error.is_none());
-    let crdt = server.synced.crdt.serialize();
+    let crdt = server
+        .synced
+        .crdt
+        .serialize(snapshot_write_options())
+        .unwrap();
     let head = server.synced.sseq_at_server;
     let gc = server.synced.sseq_gc_safe;
     for generation in [old.sub_gen, new.sub_gen] {
@@ -948,7 +996,14 @@ fn can_fence_retired_generations_and_accept_a_fresh_subscription() {
         assert_eq!(response.state, DatatypeState::Disabled);
     }
     assert!(server.synced.checkpoints.is_empty());
-    assert_eq!(server.synced.crdt.serialize(), crdt);
+    assert_eq!(
+        server
+            .synced
+            .crdt
+            .serialize(snapshot_write_options())
+            .unwrap(),
+        crdt
+    );
     assert_eq!(server.synced.sseq_at_server, head);
     assert_eq!(server.synced.sseq_gc_safe, gc);
     assert!(server.synced.history.is_empty());
@@ -980,7 +1035,7 @@ fn can_require_a_snapshot_before_recreating_an_existing_resource(
     #[values(false, true)] with_transactions: bool,
 ) {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr, Default::default());
+    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
     let mut push = PushPullPack::new(&attr, DatatypeState::Creating);
     push.transactions = vec![transaction(
         &push.cuid,
@@ -1012,7 +1067,11 @@ fn can_require_a_snapshot_before_recreating_an_existing_resource(
             Operation::new_counter_increase(3),
         )];
     }
-    let crdt = server.synced.crdt.serialize();
+    let crdt = server
+        .synced
+        .crdt
+        .serialize(snapshot_write_options())
+        .unwrap();
     let checkpoints = server.synced.checkpoints.clone();
     let generations = server.max_sub_gens.clone();
     let history = server.synced.history.clone();
@@ -1030,7 +1089,14 @@ fn can_require_a_snapshot_before_recreating_an_existing_resource(
         assert!(response.snapshot_transaction.is_none());
         assert_eq!(response.sseq_gc_safe, gc);
         assert_eq!(server.duid, attr.get_duid());
-        assert_eq!(server.synced.crdt.serialize(), crdt);
+        assert_eq!(
+            server
+                .synced
+                .crdt
+                .serialize(snapshot_write_options())
+                .unwrap(),
+            crdt
+        );
         assert_eq!(server.synced.checkpoints, checkpoints);
         assert_eq!(server.max_sub_gens, generations);
         assert_eq!(server.synced.history, history);

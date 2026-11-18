@@ -3,13 +3,14 @@ use std::sync::Arc;
 use tracing::instrument;
 
 use crate::{
-    DataType, DatatypeError,
+    DataType, DatatypeError, SnapshotErrorReason,
     datatypes::{
         common::ReturnType,
         crdts::{Crdt, counter_crdt::CounterCrdt},
     },
     operations::Operation,
     types::{operation_context::OperationContext, uid::Cuid},
+    utils::test_utils::snapshot_write_options,
 };
 
 #[test]
@@ -26,7 +27,7 @@ fn can_report_unsupported_operations_with_a_shared_message() {
         operation.set_lamport(1);
         let context = OperationContext::try_new(&operation, &cuid).unwrap();
         let mut crdt = Crdt::new(datatype);
-        let before = crdt.serialize();
+        let before = crdt.serialize(snapshot_write_options()).unwrap();
         for error in [
             crdt.execute_local_operation(&context).unwrap_err(),
             crdt.execute_remote_operation(&context).unwrap_err(),
@@ -36,7 +37,7 @@ fn can_report_unsupported_operations_with_a_shared_message() {
                 "[E202] internal error: execute operation: operation is not supported by this datatype"
             );
         }
-        assert_eq!(crdt.serialize(), before);
+        assert_eq!(crdt.serialize(snapshot_write_options()).unwrap(), before);
     }
 }
 
@@ -75,16 +76,16 @@ fn can_serialize_and_deserialize() {
     let crdt1 = Crdt::Counter(counter);
 
     let mut crdt2 = Crdt::new(DataType::Counter);
-    let serialized = crdt1.serialize();
-    crdt2.deserialize(&serialized).unwrap();
+    let serialized = crdt1.serialize(snapshot_write_options()).unwrap();
+    crdt2.deserialize(&serialized, Default::default()).unwrap();
 
     let c = crdt2.as_counter().expect("expected a counter crdt");
     assert_eq!(c.value(), 100);
 
     // Invalid input returns Err; counter value must not change.
     assert!(matches!(
-        crdt2.deserialize("{}".as_bytes()),
-        Err(DatatypeError::Internal(_))
+        crdt2.deserialize("{}".as_bytes(), Default::default()),
+        Err(DatatypeError::SnapshotDecode(SnapshotErrorReason::Invalid))
     ));
     let c = crdt2.as_counter().expect("expected a counter crdt");
     assert_eq!(c.value(), 100);
@@ -148,19 +149,30 @@ fn can_dispatch_remote_variable_execution_and_snapshot_round_trip() {
         format!("(size:{}, timestamp:{})", value.len(), context.timestamp())
     );
     assert!(!display.contains("qortoo"));
-    let serialized = source.serialize();
+    let serialized = source.serialize(snapshot_write_options()).unwrap();
     let mut restored = Crdt::new(DataType::Variable);
-    restored.deserialize(&serialized).unwrap();
+    restored
+        .deserialize(&serialized, Default::default())
+        .unwrap();
 
-    assert_eq!(restored.serialize(), serialized);
+    assert_eq!(
+        restored.serialize(snapshot_write_options()).unwrap(),
+        serialized
+    );
     let variable = restored.as_variable().expect("expected a variable crdt");
     assert_eq!(variable.value(), value);
     assert_eq!(variable.timestamp(), context.timestamp());
 
-    let before_invalid_snapshot = restored.serialize();
-    let error = restored.deserialize(&[1]).unwrap_err();
-    assert!(matches!(error, DatatypeError::Internal(_)));
-    assert_eq!(restored.serialize(), before_invalid_snapshot);
+    let before_invalid_snapshot = restored.serialize(snapshot_write_options()).unwrap();
+    let error = restored.deserialize(&[1], Default::default()).unwrap_err();
+    assert!(matches!(
+        error,
+        DatatypeError::SnapshotDecode(SnapshotErrorReason::Invalid)
+    ));
+    assert_eq!(
+        restored.serialize(snapshot_write_options()).unwrap(),
+        before_invalid_snapshot
+    );
 }
 
 #[test]
@@ -182,4 +194,45 @@ fn can_reject_a_rollback_action_for_a_different_crdt() {
     );
     let counter = counter.as_counter().expect("expected a counter crdt");
     assert_eq!(counter.value(), 0);
+}
+
+#[test]
+fn can_distinguish_snapshot_encoding_from_decoding_failures() {
+    use crate::{datatypes::crdts::variable_crdt::VariableCrdt, types::timestamp::Timestamp};
+
+    let invalid = Crdt::Variable(VariableCrdt::new(b"{", &Timestamp::initial()));
+    assert!(matches!(
+        invalid.serialize(snapshot_write_options()),
+        Err(DatatypeError::SnapshotEncode(SnapshotErrorReason::Invalid))
+    ));
+
+    for datatype in [DataType::Counter, DataType::Variable, DataType::Map] {
+        let mut crdt = Crdt::new(datatype);
+        let before = crdt.serialize(snapshot_write_options()).unwrap();
+        assert!(matches!(
+            crdt.deserialize(b"", Default::default()),
+            Err(DatatypeError::SnapshotDecode(SnapshotErrorReason::Invalid))
+        ));
+        assert!(matches!(
+            crdt.deserialize(
+                &before,
+                crate::SnapshotDecodeLimits {
+                    max_input_bytes: 0,
+                    ..Default::default()
+                }
+            ),
+            Err(DatatypeError::SnapshotDecode(
+                SnapshotErrorReason::LimitExceeded
+            ))
+        ));
+        let mut unsupported = before.to_vec();
+        unsupported[4] = 255;
+        assert!(matches!(
+            crdt.deserialize(&unsupported, Default::default()),
+            Err(DatatypeError::SnapshotDecode(
+                SnapshotErrorReason::Unsupported
+            ))
+        ));
+        assert_eq!(crdt.serialize(snapshot_write_options()).unwrap(), before);
+    }
 }

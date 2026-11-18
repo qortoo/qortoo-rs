@@ -10,6 +10,7 @@ use parking_lot::RwLock;
 use tokio::runtime::Handle;
 
 use crate::{
+    SnapshotDecodeLimits,
     clients::datatype_manager::DatatypeManager,
     connectivity::Connectivity,
     types::{common::ArcStr, uid::Cuid},
@@ -22,6 +23,7 @@ pub struct ClientCommon {
     pub alias: ArcStr,
     pub handle: Handle,
     pub connectivity: Arc<dyn Connectivity>,
+    pub snapshot_decode_limits: SnapshotDecodeLimits,
     datatype_manager: RwLock<Weak<RwLock<DatatypeManager>>>,
     last_sub_gen: AtomicU64,
 }
@@ -31,6 +33,7 @@ impl ClientCommon {
         collection: ArcStr,
         alias: ArcStr,
         connectivity: Arc<dyn Connectivity>,
+        snapshot_decode_limits: SnapshotDecodeLimits,
     ) -> Arc<Self> {
         let cuid = Cuid::new();
         let thread_name = format!("{collection}/{alias}/{cuid}");
@@ -40,6 +43,7 @@ impl ClientCommon {
             alias,
             cuid,
             connectivity,
+            snapshot_decode_limits,
             datatype_manager: RwLock::new(Weak::new()),
             last_sub_gen: AtomicU64::new(0),
         })
@@ -71,7 +75,12 @@ impl ClientCommon {
         paths.pop_back();
         let alias = paths.pop_back().unwrap_or("collection".into()).into();
         let collection = paths.pop_back().unwrap_or("client".into()).into();
-        Self::new_arc(collection, alias, Arc::new(NullConnectivity::new()))
+        Self::new_arc(
+            collection,
+            alias,
+            Arc::new(NullConnectivity::new()),
+            Default::default(),
+        )
     }
 }
 

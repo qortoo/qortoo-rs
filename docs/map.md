@@ -50,26 +50,11 @@ local no-op. A delayed Put older than the tombstone cannot recreate `k`; a newer
 
 ### Snapshot format
 
-Version 1 uses little-endian lengths and strictly ascending UTF-8 keys:
-
-```text
-version: u8 = 1
-entry_count: u64
-repeat entry_count times:
-    key_length: u64
-    key: [u8; key_length]
-    timestamp: [u8; 24]
-    state: u8              # 0 = tombstone, 1 = live
-    if live:
-        value_length: u64
-        value: [u8; value_length]
-```
-
-Timestamps must have positive Lamport values; nil client IDs remain valid. Duplicate or
-unsorted keys, non-UTF-8 keys, invalid JSON, unknown tags/versions, truncated fields,
-and trailing bytes are rejected. Version, timestamp, length-prefixed byte, and JSON readers
-are shared with Variable; JSON validation preserves the original bytes and checks UTF-8
-inside strings. Decoding builds a temporary map before replacing state.
+The [Map snapshot payload](snapshot-format.md#map-payload) uses the common QTSN envelope,
+a snapshot-local CUID table, and codec-encoded blocks of 32 rows in strictly ascending key
+order. Both live entries and tombstones retain their timestamps; live JSON null remains
+distinct from a tombstone. The format document specifies fields, padding, and validation.
+Decoding builds a validated temporary map before replacing state.
 Counts are recomputed and local GC approvals are cleared. Validated snapshot approval and
 GC integration remain future work; snapshots alone do not authorize reclamation.
 

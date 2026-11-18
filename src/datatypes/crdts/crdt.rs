@@ -8,7 +8,7 @@ use super::{
     variable_crdt::VariableCrdt,
 };
 use crate::{
-    DataType, DatatypeError,
+    DataType, DatatypeError, SnapshotDecodeLimits, SnapshotWriteOptions,
     errors::{datatypes::InternalReason, messages::datatype as msg},
     types::operation_context::OperationContext,
 };
@@ -101,28 +101,29 @@ impl Crdt {
         }
     }
 
-    pub fn serialize(&self) -> Box<[u8]> {
+    pub fn serialize(&self, options: SnapshotWriteOptions) -> Result<Box<[u8]>, DatatypeError> {
         match self {
-            Self::Counter(c) => c.encode_snapshot(),
-            Self::Variable(v) => v.encode_snapshot(),
-            Self::Map(m) => m.encode_snapshot(),
+            Self::Counter(c) => c.encode_snapshot(options),
+            Self::Variable(v) => v.encode_snapshot(options),
+            Self::Map(m) => m.encode_snapshot(options),
         }
+        .map_err(DatatypeError::SnapshotEncode)
     }
 
-    pub fn deserialize(&mut self, serialized: &[u8]) -> Result<(), DatatypeError> {
-        match self {
-            Self::Counter(c) => {
-                *c = CounterCrdt::decode_snapshot(serialized)?;
-                Ok(())
+    pub fn deserialize(
+        &mut self,
+        serialized: &[u8],
+        limits: SnapshotDecodeLimits,
+    ) -> Result<(), DatatypeError> {
+        let candidate = match self {
+            Self::Counter(_) => CounterCrdt::decode_snapshot(serialized, limits).map(Self::Counter),
+            Self::Variable(_) => {
+                VariableCrdt::decode_snapshot(serialized, limits).map(Self::Variable)
             }
-            Self::Variable(v) => {
-                *v = VariableCrdt::decode_snapshot(serialized)?;
-                Ok(())
-            }
-            Self::Map(m) => {
-                *m = MapCrdt::decode_snapshot(serialized)?;
-                Ok(())
-            }
+            Self::Map(_) => MapCrdt::decode_snapshot(serialized, limits).map(Self::Map),
         }
+        .map_err(DatatypeError::SnapshotDecode)?;
+        *self = candidate;
+        Ok(())
     }
 }
