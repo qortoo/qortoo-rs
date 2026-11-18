@@ -27,8 +27,8 @@ flowchart TD
     B["build() — validates the collection name"]
     INTENT["create_datatype(key) — create<br/>subscribe_datatype(key) — subscribe<br/>subscribe_or_create_datatype(key) — either"]
     OPT["optional: .with_readonly()<br/>.with_max_memory_size_of_push_buffer(bytes)<br/>.with_handler(priority, handler)"]
-    TERM["build_counter() / build_variable()<br/>validates the key, registers it, constructs the datatype"]
-    DT["Counter / Variable"]
+    TERM["build_counter() / build_variable() / build_map()<br/>validates the key, registers it, constructs the datatype"]
+    DT["Counter / Variable / Map"]
 
     CB --> WC --> B --> INTENT --> OPT --> TERM --> DT
 ```

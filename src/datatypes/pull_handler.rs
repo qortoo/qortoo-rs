@@ -220,8 +220,7 @@ impl<'a> PullHandler<'a> {
     }
 
     fn execute_transactions(&mut self) -> Result<(), DatatypeErrorWithAction> {
-        let transactions = self.pulled_ppp.transactions[self.skip..].to_vec();
-        for tx in transactions {
+        for tx in &self.pulled_ppp.transactions[self.skip..] {
             self.mutable
                 .execute_remote_transaction(tx)
                 .map_err(|e| e.mapping())?;

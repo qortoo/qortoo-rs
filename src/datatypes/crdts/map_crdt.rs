@@ -12,6 +12,7 @@ use crate::{
     errors::{datatypes::InternalReason, messages::datatype as msg},
     operations::body::OperationBody,
     types::{operation_context::OperationContext, timestamp::Timestamp},
+    utils::json::decode_json_value,
 };
 
 /// Logical byte overhead per tombstone entry (timestamp + lengths + tags + metadata reservation).
@@ -61,10 +62,24 @@ impl MapCrdt {
         }
     }
 
-    #[cfg(test)]
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.live_count
     }
+
+    pub(crate) fn contains_key(&self, key: &str) -> bool {
+        self.entries.get(key).is_some_and(|entry| entry.v.is_some())
+    }
+
+    pub(crate) fn to_json(&self) -> Result<serde_json::Value, DatatypeError> {
+        let mut object = serde_json::Map::new();
+        for (key, entry) in self.entries.iter() {
+            if let Some(value) = &entry.v {
+                object.insert(key.to_string(), decode_json_value(value)?);
+            }
+        }
+        Ok(serde_json::Value::Object(object))
+    }
+
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.live_count == 0

@@ -13,17 +13,30 @@ use crate::{
     operations::Operation,
 };
 
-/// A counter is a conflict-free datatype that supports increment operations.
+/// A conflict-free datatype that accumulates signed increments.
 ///
-/// The value starts at `0` and changes only through increments. Increments made
-/// concurrently on different replicas all survive rather than overwriting one
-/// another, so every replica converges to their sum.
+/// The value starts at `0`. Replicas converge to the sum of their increments.
+/// Addition wraps modulo 2^64, including during rollback.
 ///
-/// Arithmetic uses wrapping `i64` addition (modulo 2^64) on every path, rollback
-/// included, so increasing [`i64::MAX`] by 1 produces [`i64::MIN`].
+/// Use [`DatatypeBuilder::build_counter`](crate::DatatypeBuilder::build_counter)
+/// to obtain a handle and [`Datatype`](crate::Datatype) for lifecycle,
+/// synchronization, and handlers. Reads are local and available in every
+/// lifecycle state, including on read-only handles. See the
+/// [Counter guide](https://github.com/qortoo/qortoo-rs/blob/main/docs/counter.md).
 ///
-/// Like every datatype, a `Counter` shares the lifecycle, synchronization, and
-/// handler API of [`Datatype`](crate::Datatype).
+/// # Examples
+///
+/// ```
+/// use qortoo::Client;
+///
+/// let client = Client::builder("doc-example", "counter").build().unwrap();
+/// let counter = client.create_datatype("balance").build_counter().unwrap();
+///
+/// assert_eq!(counter.get_value(), 0);
+/// assert_eq!(counter.increase_by(5).unwrap(), 5);
+/// assert_eq!(counter.increase_by(-2).unwrap(), 3);
+/// assert_eq!(counter.increase().unwrap(), 4);
+/// ```
 #[derive(Clone)]
 pub struct Counter {
     datatype: Arc<TransactionalDatatype>,
@@ -48,31 +61,15 @@ impl Counter {
     }
 
     datatype_instrument! {
-    /// Increases the counter by the specified delta value.
+    /// Adds `delta` using wrapping addition and returns the new value.
     ///
-    /// The increment is recorded as a conflict-free operation, so it can be
-    /// called concurrently with increments on other replicas without any of
-    /// them being lost.
+    /// Use a negative delta to decrease the value. Adding `1` to [`i64::MAX`]
+    /// yields [`i64::MIN`].
     ///
-    /// # Arguments
+    /// # Errors
     ///
-    /// * `delta` - The amount to increase the counter by (can be negative for decrease)
-    ///
-    /// # Returns
-    ///
-    /// The new counter value, or an error if writes are not allowed or the
-    /// change cannot be applied locally. On error, the counter is unchanged.
-    /// For writes inside a transaction, see [`transaction`](Self::transaction).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use qortoo::{Client, Counter, DatatypeState};
-    /// let client = Client::builder("doc-example", "increase_by-test").build().unwrap();
-    /// let counter = client.create_datatype("test-counter").build_counter().unwrap();
-    /// assert_eq!(counter.increase_by(5).unwrap(), 5);
-    /// assert_eq!(counter.increase_by(-2).unwrap(), 3);
-    /// ```
+    /// Returns an error if the write is rejected or cannot commit locally.
+    /// On error, the counter retains its previous value.
     pub fn increase_by(&self, delta: i64) -> Result<i64, DatatypeError> {
         let op = Operation::new_counter_increase(delta);
 
@@ -86,48 +83,16 @@ impl Counter {
         }
     }}
 
-    /// Increases the counter by 1.
+    /// Adds `1` using wrapping addition and returns the new value.
     ///
-    /// This is a convenience method equivalent to
-    /// [`increase_by(1)`](Self::increase_by) and reports the same errors.
+    /// # Errors
     ///
-    /// # Returns
-    ///
-    /// The new counter-value after incrementing by 1
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use qortoo::{Client, Counter, DatatypeState};
-    /// let client = Client::builder("doc-example", "increase-test").build().unwrap();
-    /// let counter = client.create_datatype("test-counter").build_counter().unwrap();
-    /// assert_eq!(counter.increase().unwrap(), 1);
-    /// assert_eq!(counter.increase().unwrap(), 2);
-    /// ```
+    /// Returns the same errors as [`increase_by(1)`](Self::increase_by).
     pub fn increase(&self) -> Result<i64, DatatypeError> {
         self.increase_by(1)
     }
 
-    /// Gets the current counter-value without modifying it.
-    ///
-    /// This is a local read: it creates no operation and does not change the
-    /// datatype version, so it is allowed in every state, readonly datatypes
-    /// included.
-    ///
-    /// # Returns
-    ///
-    /// The current counter-value
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use qortoo::{Client, Counter, DatatypeState};
-    /// let client = Client::builder("doc-example", "get_value-test").build().unwrap();
-    /// let counter = client.create_datatype("test-counter").build_counter().unwrap();
-    /// assert_eq!(counter.get_value(), 0);
-    /// counter.increase();
-    /// assert_eq!(counter.get_value(), 1);
-    /// ```
+    /// Returns the current local counter value.
     pub fn get_value(&self) -> i64 {
         let mutable = self.datatype.core.mutable.read();
         mutable
@@ -138,50 +103,42 @@ impl Counter {
     }
 
     datatype_instrument! {
-    /// Executes multiple operations atomically within a transaction.
+    /// Executes a batch of writes as one local transaction.
     ///
-    /// Writes inside the callback are kept only if this method succeeds.
-    /// Use the callback handle for writes. On the callback thread, starting another
-    /// transaction on this datatype or writing through a captured original handle
-    /// returns [`DatatypeError::Disallowed`]. Reads may observe uncommitted writes.
-    /// Complete any work sharing the callback handle before returning.
+    /// Use the callback handle or its clones for writes and finish that work
+    /// before returning. Reads may observe uncommitted writes. `tag` labels the
+    /// transaction. On success, the writes have committed locally. See
+    /// [transaction guarantees](https://github.com/qortoo/qortoo-rs/blob/main/docs/transaction-and-rollback.md#rules-and-guarantees).
     ///
-    /// # Arguments
+    /// # Errors
     ///
-    /// * `tag` - A descriptive label for the transaction
-    /// * `tx_func` - Function containing the operations to execute atomically
-    ///
-    /// # Returns
-    ///
-    /// `Ok(())` when all changes are applied locally. On failure, the changes
-    /// made by this transaction are undone and an error is returned.
-    /// Success does not mean the changes have reached the server.
-    ///
-    /// See [transaction guarantees](https://github.com/qortoo/qortoo-rs/blob/main/docs/transaction-and-rollback.md#rules-and-guarantees).
+    /// Returns an error if writes are disallowed or the batch cannot commit
+    /// locally. A callback error becomes [`DatatypeError::TransactionFailed`].
+    /// Callback and commit failures roll back the batch. On the callback thread,
+    /// starting another transaction on the same datatype or writing through a
+    /// captured original handle returns [`DatatypeError::Disallowed`].
     ///
     /// # Examples
     ///
     /// ```
-    /// # use qortoo::{Client, Counter, DatatypeState};
-    /// let client = Client::builder("doc-example", "transaction-test").build().unwrap();
-    /// let counter = client.create_datatype("test-counter").build_counter().unwrap();
+    /// use qortoo::{Client, DatatypeError};
     ///
-    /// // Successful transaction
-    /// let result = counter.transaction("batch-update", |c| {
-    ///     c.increase_by(10);
-    ///     c.increase_by(5);
+    /// let client = Client::builder("doc-example", "counter-transaction").build().unwrap();
+    /// let counter = client.create_datatype("balance").build_counter().unwrap();
+    ///
+    /// counter.transaction("adjust balance", |balance| {
+    ///     balance.increase_by(10)?;
+    ///     balance.increase_by(-2)?;
     ///     Ok(())
-    /// });
-    /// assert!(result.is_ok());
-    /// assert_eq!(counter.get_value(), 15);
+    /// }).unwrap();
+    /// assert_eq!(counter.get_value(), 8);
     ///
-    /// // Failed transaction - changes are rolled back
-    /// let result = counter.transaction("failing-update", |c| {
-    ///     c.increase_by(100);
-    ///     Err("something went wrong".into())
+    /// let result = counter.transaction("cancel adjustment", |balance| {
+    ///     balance.increase_by(100)?;
+    ///     Err("adjustment canceled".into())
     /// });
-    /// assert!(result.is_err());
-    /// assert_eq!(counter.get_value(), 15); // unchanged
+    /// assert!(matches!(result, Err(DatatypeError::TransactionFailed(_))));
+    /// assert_eq!(counter.get_value(), 8);
     /// ```
     pub fn transaction<T>(
         &self,

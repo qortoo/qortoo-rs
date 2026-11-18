@@ -13,7 +13,7 @@ is defined in its own document, linked from here.
 |------|---------|
 | Client | A handle to one collection, carrying that client's identity and its connection to a backend |
 | Collection | The namespace a client works in; a datatype key is unique within one collection |
-| Datatype | One replicated value — a `Counter` or a `Variable` — addressed by key within a collection |
+| Datatype | One replicated value — a `Counter`, `Variable`, or `Map` — addressed by key within a collection |
 | Datatype table | The client's map from key to live datatype, so one key yields one instance |
 | Layer | One of the five responsibilities every datatype is composed from, listed below |
 | Mutable state | The per-datatype state that changes as operations execute and sync completes, guarded by a single lock |
@@ -24,9 +24,6 @@ A client owns a datatype table and hands out datatype handles; the handles are c
 clone and every clone refers to the same replicated value. Nothing is replicated between two
 datatypes of the same client — a datatype converges only with the same key in the same
 collection on other clients.
-
-The internal [Map core](map.md) also implements CRDT dispatch and snapshots; its public handle
-and builder are pending.
 
 Each datatype is composed from five layers:
 
@@ -57,7 +54,7 @@ flowchart TD
     end
 
     subgraph Datatype["One datatype"]
-        API["Public API: Counter / Variable"]
+        API["Public API: Counter / Variable / Map"]
         TX["Transactional layer"]
         MUT["Mutable state<br/>single lock"]
         CRDT["CRDT state machine"]

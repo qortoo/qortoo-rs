@@ -184,9 +184,9 @@ pub enum DatatypeError {
     ServerRejected(ServerRejectReason) = 213,
     /// A user value could not be converted to or from its stored JSON representation.
     ///
-    /// Returned directly to the API caller when encoding a value into JSON bytes or
-    /// decoding stored JSON bytes into the requested type fails. The datatype state is
-    /// unchanged, and this error is never routed through the event loop.
+    /// Returned directly to the caller when JSON encoding, validation, or
+    /// decoding fails. See the operation's documentation for the state after
+    /// this error.
     #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = value_msg::CONVERSION_PREFIX)]
     ValueConversion(String) = 214,
     /// A datatype operation received an invalid caller argument. Never routed to the event loop.

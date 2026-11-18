@@ -202,7 +202,7 @@ would force one of those two questions to be answered approximately.
 | `OperationId`, its advance methods, and its transaction-boundary logic | `src/types/operation_id.rs` |
 | `CheckPoint` and merging two of them | `src/types/checkpoint.rs` |
 | Where a local timestamp is assembled and the local clock advances | `src/datatypes/mutable.rs` (`execute_local_operation`) |
-| Where a remote timestamp is assembled and the local clock absorbs it | `src/datatypes/mutable.rs` (`execute_remote_transaction`) |
+| Where remote timestamps are assembled and the receiving clock absorbs them | `src/datatypes/crdts/crdt.rs` (`Crdt::execute_remote_transaction`) |
 
 | Verified by | Tests |
 |-------------|-------|

@@ -5,8 +5,7 @@
 //!
 //! # Features
 //!
-//! - **CRDT Datatypes**: Conflict-free replicated data types ([`Counter`] and [`Variable`],
-//!   with more coming)
+//! - **CRDT Datatypes**: Conflict-free replicated data types ([`Counter`], [`Variable`], and [`Map`])
 //! - **Transaction Support**: Atomic transactions with automatic rollback on failure
 //! - **Read-Only Mode**: Create read-only datatypes for observation without modification
 //! - **Event Loop System**: Priority-based event processing with graceful shutdown
@@ -84,7 +83,7 @@ pub use crate::{
     connectivity::local_connectivity::LocalConnectivity,
     datatypes::{
         builder::DatatypeBuilder, counter::Counter, datatype::Datatype, datatype_set::DatatypeSet,
-        handler::DatatypeHandler, variable::Variable,
+        handler::DatatypeHandler, map::Map, variable::Variable,
     },
     errors::{
         BoxedError,

@@ -16,7 +16,6 @@ use crate::{
         checkpoint::CheckPoint,
         common::ArcStr,
         notification::Notification,
-        operation_context::OperationContext,
         push_pull_pack::PushPullPack,
         uid::{Cuid, Duid},
     },
@@ -138,13 +137,8 @@ impl SyncedState {
                     msg::INVALID_TRANSACTION.into(),
                 ));
             }
-            for operation in tx.iter() {
-                let context = OperationContext::try_new(operation, &tx.cuid)
-                    .map_err(|e| PushPullError::ProtocolViolation(e.to_string()))?;
-                crdt.execute_remote_operation(&context)
-                    .map_err(|e| PushPullError::ProtocolViolation(e.to_string()))?;
-                lamport = lamport.max(operation.lamport);
-            }
+            crdt.execute_remote_transaction(tx, &mut lamport)
+                .map_err(|e| PushPullError::ProtocolViolation(e.to_string()))?;
             sseq += 1;
             let mut owned_tx: Transaction = (**tx).clone();
             owned_tx.sseq = sseq;

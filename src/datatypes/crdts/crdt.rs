@@ -10,6 +10,7 @@ use super::{
 use crate::{
     DataType, DatatypeError, SnapshotDecodeLimits, SnapshotWriteOptions,
     errors::{datatypes::InternalReason, messages::datatype as msg},
+    operations::transaction::Transaction,
     types::operation_context::OperationContext,
 };
 
@@ -54,7 +55,6 @@ impl Crdt {
         }
     }
 
-    #[cfg(test)]
     pub fn as_map(&self) -> Option<&MapCrdt> {
         match self {
             Self::Map(map) => Some(map),
@@ -71,6 +71,21 @@ impl Crdt {
             Crdt::Variable(v) => v.execute_local_operation(context),
             Crdt::Map(m) => m.execute_local_operation(context),
         }
+    }
+
+    /// Applies operations in order and advances the supplied clock after each success.
+    /// On error, earlier operations and their clock updates remain applied.
+    pub(crate) fn execute_remote_transaction(
+        &mut self,
+        tx: &Transaction,
+        lamport: &mut u64,
+    ) -> Result<(), DatatypeError> {
+        for op in tx.iter() {
+            let context = OperationContext::try_new(op, &tx.cuid)?;
+            self.execute_remote_operation(&context)?;
+            *lamport = (*lamport).max(op.lamport);
+        }
+        Ok(())
     }
 
     pub(crate) fn execute_remote_operation(

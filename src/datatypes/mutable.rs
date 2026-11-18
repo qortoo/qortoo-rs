@@ -174,16 +174,9 @@ impl MutableDatatype {
         }
     }
 
-    pub fn execute_remote_transaction(
-        &mut self,
-        tx: Arc<Transaction>,
-    ) -> Result<(), DatatypeError> {
-        for op in tx.iter() {
-            let context = OperationContext::try_new(op, &tx.cuid)?;
-            self.crdt.execute_remote_operation(&context)?;
-            self.op_id.lamport = self.op_id.lamport.max(op.lamport);
-        }
-        Ok(())
+    pub fn execute_remote_transaction(&mut self, tx: &Transaction) -> Result<(), DatatypeError> {
+        self.crdt
+            .execute_remote_transaction(tx, &mut self.op_id.lamport)
     }
 
     #[instrument(skip_all)]
@@ -366,7 +359,7 @@ mod tests_mutable_datatype {
             Default::default(),
         );
         let cuid = Cuid::new();
-        for (lamport, mut op, valid) in [
+        for (lamport, mut op, accepted) in [
             (
                 10,
                 Operation::new_map_put("key".into(), Box::from(b"1".as_slice())),
@@ -377,13 +370,28 @@ mod tests_mutable_datatype {
                 Operation::new_map_put("key".into(), Box::from(b"2".as_slice())),
                 true,
             ),
+            // The backend validates JSON. A stale Put needs only the LWW check here.
+            (
+                4,
+                Operation::new_map_put("key".into(), Box::from(b"{".as_slice())),
+                true,
+            ),
+            (
+                10,
+                Operation::new_map_put("key".into(), Box::from(b"3".as_slice())),
+                false,
+            ),
             (20, Operation::new_counter_increase(1), false),
         ] {
             op.set_lamport(lamport);
             let mut tx = Transaction::new(&cuid, 1);
             tx.push_operation(op);
-            let result = mutable.execute_remote_transaction(std::sync::Arc::new(tx));
-            assert_eq!(result.is_ok(), valid);
+            let result = mutable.execute_remote_transaction(&tx);
+            if accepted {
+                result.unwrap();
+            } else {
+                assert!(matches!(result, Err(DatatypeError::Internal(..))));
+            }
             assert_eq!(mutable.op_id.lamport, 10);
             assert_eq!(
                 mutable
@@ -505,10 +513,13 @@ mod tests_mutable_datatype {
         let mut mutable = MutableDatatype::new(attr, Default::default(), Default::default());
         let cuid = Cuid::try_from("0000000000000001").unwrap();
         let mut transaction = Transaction::new(&cuid, 1);
+        let mut valid = Operation::new_counter_increase(3);
+        valid.set_lamport(5);
+        transaction.push_operation(valid);
         transaction.push_operation(Operation::new_counter_increase(1));
 
         let error = mutable
-            .execute_remote_transaction(std::sync::Arc::new(transaction))
+            .execute_remote_transaction(&transaction)
             .unwrap_err();
 
         assert!(
@@ -517,9 +528,10 @@ mod tests_mutable_datatype {
                 .contains("modification operation must use a positive Lamport timestamp")
         );
         let counter = mutable.crdt.as_counter().expect("expected a counter crdt");
-        assert_eq!(counter.value(), 0);
-        assert_eq!(mutable.op_id.lamport, 0);
+        assert_eq!(counter.value(), 3);
+        assert_eq!(mutable.op_id.lamport, 5);
     }
+
     #[test]
     fn can_preserve_pending_work_until_failed_snapshot_recovery_disables_it() {
         let mut mutable = MutableDatatype::new(

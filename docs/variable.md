@@ -84,7 +84,7 @@ transaction contained the first-ever set. See
 [`docs/transaction-and-rollback.md`](transaction-and-rollback.md) for the mechanism this plugs
 into.
 
-**Reading never fails and is always allowed.** Reading is a local operation that creates no
+**Reads are always allowed.** Reading is a local operation that creates no
 operation and changes no version, so it is permitted in every lifecycle state including
 read-only ones. Reading in the byte form cannot fail, because the stored bytes are always
 exactly one JSON value already. Reading in a typed form can fail only if the requested type
@@ -107,6 +107,12 @@ converting numbers or nested values into a Rust JSON value.
 and returns the value the variable held immediately before — decoded as dynamic JSON, because
 successive sets are not required to store the same type. `variable.get::<T>()` decodes the
 current value into whatever type the caller asks for.
+
+`set` decodes the previous value after applying the write. If the previous value was stored
+with `set_raw` and cannot be represented as `serde_json::Value`, such as `1e400`, `set`
+returns `ValueConversion` after updating the stored value. Use `set_raw` to replace it and
+receive the previous bytes. In an explicit transaction, propagating the error from the
+callback rolls back the write.
 
 ```rust
 let previous = variable.set(&Profile { name: "qortoo".into(), age: 3 })?;

@@ -77,7 +77,7 @@ call; routed variants are paired with an action.
 | `TransactionFailed` | 201 | The transaction closure returned an error, or the commit could not complete |
 | `Disallowed` | 205 | Access denied for a reason other than state or readonly configuration, such as a key this client does not manage |
 | `NotWritable` | 206 | The datatype's lifecycle state does not permit writes |
-| `ValueConversion` | 214 | A value could not be converted to or from the datatype's representation; nothing was applied |
+| `ValueConversion` | 214 | JSON encoding, validation, or decoding failed. The operation's API documents any effect on the stored value. |
 | `InvalidArgument` | 215 | A datatype argument is invalid; shared with the C ABI |
 
 **Routed.**
