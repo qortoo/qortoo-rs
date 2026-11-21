@@ -77,8 +77,8 @@ fn build_client(
 ) -> Result<qortoo::Client, Box<dyn std::error::Error>> {
     let client = Client::builder("example-trace", alias)
         .with_connectivity(connectivity)
-        .build()?;
-    info!("client built");
+        .build_and_open()?;
+    info!("client opened");
     Ok(client)
 }
 

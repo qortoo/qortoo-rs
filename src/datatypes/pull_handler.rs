@@ -464,7 +464,7 @@ mod tests_push_handlers {
     #[instrument]
     fn can_check_versions() {
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client
             .create_datatype(get_test_func_name!())

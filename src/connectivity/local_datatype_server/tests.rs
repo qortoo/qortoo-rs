@@ -54,7 +54,7 @@ impl TestFixture {
     pub(super) fn client(&self, alias: impl crate::types::common::IntoString) -> Client {
         Client::builder(self.collection.clone(), alias)
             .with_connectivity(self.connectivity.clone())
-            .build()
+            .build_and_open()
             .unwrap()
     }
 

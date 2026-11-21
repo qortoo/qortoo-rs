@@ -29,7 +29,9 @@ use crate::{
 /// ```
 /// use qortoo::Client;
 ///
-/// let client = Client::builder("doc-example", "counter").build().unwrap();
+/// let client = Client::builder("doc-example", "counter")
+///     .build_and_open()
+///     .unwrap();
 /// let counter = client.create_datatype("balance").build_counter().unwrap();
 ///
 /// assert_eq!(counter.get_value(), 0);
@@ -123,7 +125,9 @@ impl Counter {
     /// ```
     /// use qortoo::{Client, DatatypeError};
     ///
-    /// let client = Client::builder("doc-example", "counter-transaction").build().unwrap();
+    /// let client = Client::builder("doc-example", "counter-transaction")
+    ///     .build_and_open()
+    ///     .unwrap();
     /// let counter = client.create_datatype("balance").build_counter().unwrap();
     ///
     /// counter.transaction("adjust balance", |balance| {
@@ -189,7 +193,7 @@ mod tests_counter {
     #[instrument]
     fn can_notify_on_error_when_enqueue_fails(#[case] explicit: bool) {
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client
             .create_datatype(get_test_func_name!())
@@ -251,7 +255,7 @@ mod tests_counter {
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client
             .create_datatype(get_test_func_name!())

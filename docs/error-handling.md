@@ -64,6 +64,10 @@ Returned directly to the caller; never routed.
 |---------|------|---------|
 | `InvalidCollectionName` | 100 | The collection name fails naming validation |
 | `FailedToSubscribeOrCreateDatatype` | 101 | The datatype key is invalid, or the client already holds that key |
+| `FailedToOpenClient` | 102 | The backend could not open the client |
+| `InvalidCollectionLimits` | 103 | The requested collection policy fails backend validation |
+| `CollectionAlreadyExists` | 104 | The collection already has an immutable policy |
+| `ClientNotOpen` | 105 | A datatype build requires an open client |
 
 ### Datatype errors (codes 200–)
 

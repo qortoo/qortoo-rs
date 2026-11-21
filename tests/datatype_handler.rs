@@ -8,7 +8,7 @@ mod tests_datatype_handler {
     #[instrument]
     fn can_use_datatype_handler() {
         let client = Client::builder("test-collection", "can_use_datatype_handler")
-            .build()
+            .build_and_open()
             .unwrap();
         let (tx, rx) = crossbeam_channel::unbounded();
         let tx_priority_0 = tx.clone();

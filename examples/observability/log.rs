@@ -28,7 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let client = Client::builder("example-log", "client-a")
         .with_connectivity(connectivity)
-        .build()?;
+        .build_and_open()?;
 
     let counter = client.create_datatype("log-counter").build_counter()?;
     counter.increase_by(3)?;

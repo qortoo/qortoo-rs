@@ -120,6 +120,23 @@ mod tests_datatype_errors {
                 check(error.code(), 101, error.to_string())
             },
             {
+                let error = ClientError::FailedToOpenClient("timeout".into());
+                assert_eq!(error.to_string(), "[E102] cannot open client: timeout");
+                check(error.code(), 102, error.to_string())
+            },
+            {
+                let error = ClientError::InvalidCollectionLimits(String::new());
+                check(error.code(), 103, error.to_string())
+            },
+            {
+                let error = ClientError::CollectionAlreadyExists(String::new());
+                check(error.code(), 104, error.to_string())
+            },
+            {
+                let error = ClientError::ClientNotOpen;
+                check(error.code(), 105, error.to_string())
+            },
+            {
                 let error = DatatypeError::TransactionFailed(String::new());
                 check(error.code(), 201, error.to_string())
             },

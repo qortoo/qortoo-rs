@@ -16,7 +16,9 @@ use crate::{
 /// ```
 /// use qortoo::{Client, DataType, Datatype};
 ///
-/// let client = Client::builder("doc-example", "datatype-trait").build().unwrap();
+/// let client = Client::builder("doc-example", "datatype-trait")
+///     .build_and_open()
+///     .unwrap();
 /// let map = client.create_datatype("settings").build_map().unwrap();
 /// assert_eq!(map.get_key(), "settings");
 /// assert_eq!(map.get_type(), DataType::Map);
@@ -80,7 +82,7 @@ pub trait Datatype {
     /// connectivity.set_realtime(false);
     /// let client = Client::builder("doc-example", "Datatype-sync")
     ///     .with_connectivity(connectivity)
-    ///     .build()
+    ///     .build_and_open()
     ///     .unwrap();
     /// let counter = client.create_datatype("key").build_counter().unwrap();
     /// counter.increase().unwrap();
@@ -215,7 +217,7 @@ mod tests_datatype_trait {
     #[test]
     fn can_read_counter_and_variable_logical_state_sizes() {
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client.create_datatype("counter").build_counter().unwrap();
         let variable = client.create_datatype("variable").build_variable().unwrap();
@@ -239,7 +241,7 @@ mod tests_datatype_trait {
 
         let client1 = Client::builder(collection, key.clone())
             .with_connectivity(connectivity.clone())
-            .build()
+            .build_and_open()
             .unwrap();
         let counter1 = client1.create_datatype(key).build_counter().unwrap();
 
@@ -270,7 +272,7 @@ mod tests_datatype_trait {
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client
             .create_datatype(get_test_func_name!())
@@ -291,7 +293,7 @@ mod tests_datatype_trait {
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client
             .create_datatype(get_test_func_name!())
@@ -312,7 +314,7 @@ mod tests_datatype_trait {
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client
             .create_datatype(get_test_func_name!())
@@ -341,7 +343,7 @@ mod tests_datatype_trait {
         let (collection, key, resource_id) = get_test_ids!();
         let client = Client::builder(collection, get_test_func_name!())
             .with_connectivity(connectivity.clone())
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client.create_datatype(key).build_counter().unwrap();
         counter.sync().unwrap();
@@ -366,7 +368,7 @@ mod tests_datatype_trait {
         let (collection, key, resource_id) = get_test_ids!();
         let client = Client::builder(collection, get_test_func_name!())
             .with_connectivity(connectivity.clone())
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client.create_datatype(key).build_counter().unwrap();
         counter.sync().unwrap();
@@ -396,11 +398,11 @@ mod tests_datatype_trait {
         let (collection, key, _) = get_test_ids!();
         let client1 = Client::builder(collection.clone(), "client1")
             .with_connectivity(connectivity.clone())
-            .build()
+            .build_and_open()
             .unwrap();
         let client2 = Client::builder(collection, "client2")
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
 
         let counter1 = client1
@@ -428,7 +430,7 @@ mod tests_datatype_trait {
         let connectivity = local_connectivity();
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client
             .create_datatype(get_test_func_name!())

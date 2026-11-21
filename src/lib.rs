@@ -19,7 +19,9 @@
 //! use qortoo::Client;
 //!
 //! // Create a client
-//! let client = Client::builder("my-collection", "my-client").build().unwrap();
+//! let client = Client::builder("my-collection", "my-client")
+//!     .build_and_open()
+//!     .unwrap();
 //!
 //! // Create and use a counter
 //! let counter = client
@@ -79,7 +81,7 @@ pub use crate::observability::settings::{
     DEFAULT_METRICS_LISTEN_ADDR, MetricsSettings, resolve_metrics_listen_addr,
 };
 pub use crate::{
-    clients::client::Client,
+    clients::{client::Client, collection_info::CollectionInfo},
     connectivity::local_connectivity::LocalConnectivity,
     datatypes::{
         builder::DatatypeBuilder, counter::Counter, datatype::Datatype, datatype_set::DatatypeSet,

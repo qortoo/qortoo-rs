@@ -164,7 +164,7 @@ impl MutableDatatype {
 
         let (transactions, _tx_size) = self.push_buffer.get_pushing_transactions(
             self.checkpoint.cseq + 1,
-            defaults::DEFAULT_MAX_TRANSMISSION_SIZE,
+            defaults::DEFAULT_MAX_TRANSMISSION_BYTES,
         )?;
 
         ppp.transactions = transactions;

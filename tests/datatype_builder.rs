@@ -6,7 +6,7 @@ mod tests_datatype_builder {
     #[instrument]
     fn can_build_counter() {
         let client = Client::builder("test-collection", "can_build_counter")
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client
             .create_datatype("counter-1")

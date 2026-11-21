@@ -355,7 +355,7 @@ fn can_disable_after_a_snapshot_limit_failure_without_installing_state(
     let reader = Client::builder(f.collection.clone(), "reader")
         .with_connectivity(f.connectivity.clone())
         .with_snapshot_decode_limits(limits)
-        .build()
+        .build_and_open()
         .unwrap();
     let replica = reader
         .subscribe_or_create_datatype(f.key.clone())

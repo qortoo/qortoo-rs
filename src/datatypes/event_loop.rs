@@ -380,7 +380,7 @@ mod tests_event_loop {
         let (collection, key, resource_id) = get_test_ids!();
         let client = Client::builder(collection, "client")
             .with_connectivity(connectivity.clone())
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client.create_datatype(key).build_counter().unwrap();
 
@@ -414,7 +414,7 @@ mod tests_event_loop {
 
         let client = Client::builder(collection, "client")
             .with_connectivity(connectivity.clone())
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client.create_datatype(key).build_counter().unwrap();
 
@@ -457,7 +457,7 @@ mod tests_event_loop {
 
         let client = Client::builder(collection, "client")
             .with_connectivity(connectivity.clone())
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client.create_datatype(key).build_counter().unwrap();
 
@@ -503,7 +503,7 @@ mod tests_event_loop {
 
         let client = Client::builder(collection, "client")
             .with_connectivity(connectivity.clone())
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client.create_datatype(key).build_counter().unwrap();
 

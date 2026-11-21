@@ -6,11 +6,12 @@ use std::{
     },
 };
 
+use once_cell::sync::OnceCell;
 use parking_lot::RwLock;
 use tokio::runtime::Handle;
 
 use crate::{
-    SnapshotDecodeLimits,
+    CollectionInfo, SnapshotDecodeLimits,
     clients::datatype_manager::DatatypeManager,
     connectivity::Connectivity,
     types::{common::ArcStr, uid::Cuid},
@@ -23,6 +24,7 @@ pub struct ClientCommon {
     pub alias: ArcStr,
     pub handle: Handle,
     pub connectivity: Arc<dyn Connectivity>,
+    pub(super) collection_info: OnceCell<Arc<CollectionInfo>>,
     pub snapshot_decode_limits: SnapshotDecodeLimits,
     datatype_manager: RwLock<Weak<RwLock<DatatypeManager>>>,
     last_sub_gen: AtomicU64,
@@ -43,6 +45,7 @@ impl ClientCommon {
             alias,
             cuid,
             connectivity,
+            collection_info: OnceCell::new(),
             snapshot_decode_limits,
             datatype_manager: RwLock::new(Weak::new()),
             last_sub_gen: AtomicU64::new(0),

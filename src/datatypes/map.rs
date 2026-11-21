@@ -33,7 +33,9 @@ use crate::{
 /// use qortoo::Client;
 /// use serde_json::Value;
 ///
-/// let client = Client::builder("doc-example", "map").build().unwrap();
+/// let client = Client::builder("doc-example", "map")
+///     .build_and_open()
+///     .unwrap();
 /// let map = client.create_datatype("settings").build_map().unwrap();
 ///
 /// assert_eq!(map.get::<Value>("theme").unwrap(), None);
@@ -237,7 +239,9 @@ impl Map {
     /// ```
     /// use qortoo::{Client, DatatypeError};
     ///
-    /// let client = Client::builder("doc-example", "map-transaction").build().unwrap();
+    /// let client = Client::builder("doc-example", "map-transaction")
+    ///     .build_and_open()
+    ///     .unwrap();
     /// let map = client.create_datatype("settings").build_map().unwrap();
     ///
     /// let result = map.transaction("update settings", |settings| {

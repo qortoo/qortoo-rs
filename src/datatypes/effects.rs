@@ -54,7 +54,7 @@ mod tests {
         connectivity.set_realtime(false);
         Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap()
     }
 

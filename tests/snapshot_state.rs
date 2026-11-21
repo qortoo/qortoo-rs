@@ -11,11 +11,11 @@ fn can_exclude_unsynced_counter_changes_from_subscription(#[case] sync_creator: 
     connectivity.set_realtime(false);
     let creator = Client::builder("snapshot-counter", "creator")
         .with_connectivity(connectivity.clone())
-        .build()
+        .build_and_open()
         .unwrap();
     let subscriber = Client::builder("snapshot-counter", "subscriber")
         .with_connectivity(connectivity)
-        .build()
+        .build_and_open()
         .unwrap();
     let source = creator.create_datatype("counter").build_counter().unwrap();
     source.increase_by(7).unwrap();
@@ -49,11 +49,11 @@ fn can_exclude_unsynced_variable_value_from_subscription() {
     connectivity.set_realtime(false);
     let creator = Client::builder("snapshot-variable", "creator")
         .with_connectivity(connectivity.clone())
-        .build()
+        .build_and_open()
         .unwrap();
     let subscriber = Client::builder("snapshot-variable", "subscriber")
         .with_connectivity(connectivity)
-        .build()
+        .build_and_open()
         .unwrap();
     let source = creator
         .create_datatype("variable")
@@ -80,15 +80,15 @@ fn can_preserve_remote_variable_winner_hidden_by_unsynced_changes(#[case] pendin
     connectivity.set_realtime(false);
     let creator = Client::builder("snapshot-variable-winner", "creator")
         .with_connectivity(connectivity.clone())
-        .build()
+        .build_and_open()
         .unwrap();
     let writer = Client::builder("snapshot-variable-winner", "writer")
         .with_connectivity(connectivity.clone())
-        .build()
+        .build_and_open()
         .unwrap();
     let subscriber = Client::builder("snapshot-variable-winner", "subscriber")
         .with_connectivity(connectivity)
-        .build()
+        .build_and_open()
         .unwrap();
     let source = creator
         .create_datatype("variable")
@@ -125,15 +125,15 @@ fn can_continue_variable_writes_after_a_backend_snapshot() {
     connectivity.set_realtime(false);
     let creator = Client::builder("snapshot-variable-future", "creator")
         .with_connectivity(connectivity.clone())
-        .build()
+        .build_and_open()
         .unwrap();
     let writer = Client::builder("snapshot-variable-future", "writer")
         .with_connectivity(connectivity.clone())
-        .build()
+        .build_and_open()
         .unwrap();
     let observer = Client::builder("snapshot-variable-future", "observer")
         .with_connectivity(connectivity)
-        .build()
+        .build_and_open()
         .unwrap();
     let source = creator
         .create_datatype("variable")

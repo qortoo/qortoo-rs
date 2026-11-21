@@ -32,7 +32,9 @@ use crate::{
 /// use qortoo::Client;
 /// use serde_json::{Value, json};
 ///
-/// let client = Client::builder("doc-example", "variable").build().unwrap();
+/// let client = Client::builder("doc-example", "variable")
+///     .build_and_open()
+///     .unwrap();
 /// let variable = client.create_datatype("status").build_variable().unwrap();
 ///
 /// assert_eq!(variable.get::<Option<String>>().unwrap(), None);
@@ -181,7 +183,9 @@ impl Variable {
     /// ```
     /// use qortoo::{Client, DatatypeError};
     ///
-    /// let client = Client::builder("doc-example", "variable-transaction").build().unwrap();
+    /// let client = Client::builder("doc-example", "variable-transaction")
+    ///     .build_and_open()
+    ///     .unwrap();
     /// let variable = client.create_datatype("measurement").build_variable().unwrap();
     /// variable.set_raw(b"1e400").unwrap();
     ///
@@ -343,7 +347,7 @@ mod tests_variable {
         let (collection, key, _) = get_test_ids!();
         let client = Client::builder(collection, "read-invariants")
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
         let variable = client.create_datatype(key).build_variable().unwrap();
         variable.set(&sample_profile()).unwrap();
@@ -450,11 +454,11 @@ mod tests_variable {
         let (collection, _, _) = get_test_ids!();
         let client_a = Client::builder(collection.clone(), "client-a")
             .with_connectivity(connectivity.clone())
-            .build()
+            .build_and_open()
             .unwrap();
         let client_b = Client::builder(collection, "client-b")
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
         (client_a, client_b)
     }

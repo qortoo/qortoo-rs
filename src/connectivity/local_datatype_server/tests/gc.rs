@@ -16,7 +16,7 @@ fn can_hold_gc_acknowledgements_until_the_entire_push_buffer_is_drained() {
     for _ in 0..3 {
         writer
             .transaction(
-                "x".repeat(crate::defaults::DEFAULT_MAX_TRANSMISSION_SIZE as usize / 2 + 1),
+                "x".repeat(crate::defaults::DEFAULT_MAX_TRANSMISSION_BYTES as usize / 2 + 1),
                 |counter| {
                     counter.increase()?;
                     Ok(())

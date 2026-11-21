@@ -1,4 +1,4 @@
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 
 use qortoo::{
     Client, Datatype, DatatypeError, DatatypeHandler, DatatypeSet, DatatypeState,
@@ -6,9 +6,24 @@ use qortoo::{
 };
 use serde_json::{Value, json};
 
+fn manual_connectivity() -> Arc<LocalConnectivity> {
+    #[cfg(feature = "snapshot-bitcode")]
+    let codec = SnapshotCodecKind::Bitcode;
+    #[cfg(not(feature = "snapshot-bitcode"))]
+    let codec = SnapshotCodecKind::Postcard;
+    let connectivity = LocalConnectivity::new_arc_with_snapshot_options(SnapshotWriteOptions {
+        codec,
+        compression: SnapshotCompression::None,
+    });
+    connectivity.set_realtime(false);
+    connectivity
+}
+
 #[test]
 fn can_use_map_crud_and_distinguish_null_from_absence() {
-    let client = Client::builder("test-map", "crud").build().unwrap();
+    let client = Client::builder("test-map", "crud")
+        .build_and_open()
+        .unwrap();
     let map = client.create_datatype("settings").build_map().unwrap();
     assert!(map.is_empty());
     assert_eq!(map.get::<Value>("").unwrap(), None);
@@ -37,7 +52,9 @@ fn can_use_map_crud_and_distinguish_null_from_absence() {
 
 #[test]
 fn can_preserve_map_values_and_prior_writes_when_conversion_fails() {
-    let client = Client::builder("test-map", "conversion").build().unwrap();
+    let client = Client::builder("test-map", "conversion")
+        .build_and_open()
+        .unwrap();
     let map = client.create_datatype("settings").build_map().unwrap();
     map.put_raw("wide", b"1e400").unwrap();
     assert!(matches!(
@@ -79,7 +96,10 @@ fn can_preserve_map_values_and_prior_writes_when_conversion_fails() {
 
 #[test]
 fn can_read_map_logical_state_size_with_pending_writes_and_tombstones() {
-    let client = Client::builder("test-map", "state-size").build().unwrap();
+    let client = Client::builder("test-map", "state-size")
+        .with_connectivity(manual_connectivity())
+        .build_and_open()
+        .unwrap();
     let map = client.create_datatype("settings").build_map().unwrap();
     assert_eq!(map.get_state_bytes(), 0);
 
@@ -110,19 +130,11 @@ fn can_sync_map_through_all_builders_and_resolve_its_handler() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<Map>();
 
-    #[cfg(feature = "snapshot-bitcode")]
-    let codec = SnapshotCodecKind::Bitcode;
-    #[cfg(not(feature = "snapshot-bitcode"))]
-    let codec = SnapshotCodecKind::Postcard;
-    let connectivity = LocalConnectivity::new_arc_with_snapshot_options(SnapshotWriteOptions {
-        codec,
-        compression: SnapshotCompression::None,
-    });
-    connectivity.set_realtime(false);
+    let connectivity = manual_connectivity();
     let client = |alias| {
         Client::builder("test-map", alias)
             .with_connectivity(connectivity.clone())
-            .build()
+            .build_and_open()
             .unwrap()
     };
 

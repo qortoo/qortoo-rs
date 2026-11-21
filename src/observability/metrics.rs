@@ -146,7 +146,7 @@ mod tests_metrics {
 
         let collection = get_test_collection_name!();
         let client = Client::builder(collection.clone(), get_test_func_name!())
-            .build()
+            .build_and_open()
             .unwrap();
         for key in ["c1", "c2"] {
             client
@@ -217,11 +217,11 @@ mod tests_metrics {
         connectivity.set_realtime(false);
         let client1 = Client::builder(collection.clone(), "client1")
             .with_connectivity(connectivity.clone())
-            .build()
+            .build_and_open()
             .unwrap();
         let client2 = Client::builder(collection.clone(), "client2")
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
 
         let counter1 = client1
@@ -281,7 +281,7 @@ mod tests_metrics {
         connectivity.set_realtime(false);
         let client = Client::builder(collection, "client")
             .with_connectivity(connectivity.clone())
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client.create_datatype(key).build_counter().unwrap();
 

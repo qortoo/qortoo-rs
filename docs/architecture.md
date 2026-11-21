@@ -11,14 +11,45 @@ is defined in its own document, linked from here.
 
 | Term | Meaning |
 |------|---------|
-| Client | A handle to one collection, carrying that client's identity and its connection to a backend |
-| Collection | The namespace a client works in; a datatype key is unique within one collection |
+| Client | An SDK handle scoped to one collection, with its own client identity (CUID) |
+| Collection | A named set of datatypes on a server, with a namespace for their keys |
+| Connectivity | The client-side layer that provides access to a synchronization backend and manages any transport connections it uses |
 | Datatype | One replicated value — a `Counter`, `Variable`, or `Map` — addressed by key within a collection |
 | Datatype table | The client's map from key to live datatype, so one key yields one instance |
 | Layer | One of the five responsibilities every datatype is composed from, listed below |
 | Mutable state | The per-datatype state that changes as operations execute and sync completes, guarded by a single lock |
 | Event loop | A per-datatype loop that drives synchronization for that datatype |
 | Shared attributes | Per-datatype identity and configuration, plus the references a datatype needs to reach its client |
+
+### Collections and clients
+
+A collection groups datatypes in the backend and provides a namespace for their keys.
+An application builds a client for each collection it accesses. Each client stays bound to
+the collection named at construction, and multiple clients can use the same collection.
+For example, an application that uses `profiles` and `orders` builds two clients and can pass
+the same `Arc<LocalConnectivity>` to both. Each client still has its own datatype table
+and [runtime](runtime-resources.md). The collection also provides a scope for future
+collection-wide APIs on `Client`.
+
+`ClientBuilder::build()` creates the client locally. `Client::open()` then opens its identity
+through the backend using the collection name and CUID and stores the returned `CollectionInfo` in
+`ClientCommon`. The local backend records the CUID under
+the collection for the lifetime of the backend. Datatype subscriptions have their own
+lifecycle. [Connectivity](connectivity.md#rules-and-guarantees) describes client open and
+backend behavior.
+
+### Shared connectivity
+
+Both bundled backends run in-process. Sharing a `LocalConnectivity` instance gives
+multiple clients access to the same in-process backend, including across collections.
+
+For a future remote backend, a connection is the transport to a server, created with a
+chosen transport kind and server endpoint. Connectivity manages that connection so
+clients targeting the same server can reuse it across collections. The server still
+needs a client record for each collection and CUID. With a shared connection, adding
+another collection requires opening another client over the existing transport.
+
+### Datatype composition
 
 A client owns a datatype table and hands out datatype handles; the handles are cheap to
 clone and every clone refers to the same replicated value. Nothing is replicated between two
@@ -50,8 +81,9 @@ shared ownership and synchronization, while each layer keeps its own execution p
 flowchart TD
     subgraph Client["Client (one collection)"]
         DTT["datatype table: key → datatype"]
-        CONN["Connectivity backend"]
     end
+
+    CONN["Connectivity backend<br/>can be shared by clients"]
 
     subgraph Datatype["One datatype"]
         API["Public API: Counter / Variable / Map"]
@@ -271,7 +303,7 @@ in return.
 | Concern | Location |
 |---------|----------|
 | `Client`, its builder, and the datatype table it owns | `src/clients/client.rs` |
-| `ClientCommon` — collection, client identity, runtime handle, backend | `src/clients/common.rs` |
+| `ClientCommon` — collection, client identity, runtime handle, backend, and policy received at open | `src/clients/common.rs` |
 | `DatatypeManager` — key-to-datatype table, subscribe-or-create, detach | `src/clients/datatype_manager.rs` |
 | Shared runtimes keyed by group | `src/utils/runtime.rs` |
 | `DatatypeCore` — shared attributes, mutable state, transaction gate, and effects gate | `src/datatypes/core.rs` |

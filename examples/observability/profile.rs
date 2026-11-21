@@ -69,10 +69,10 @@ fn run_counter_workload(duration: Duration) -> Result<(), Box<dyn std::error::Er
 
     let client_a = Client::builder("example-profile", "client-a")
         .with_connectivity(connectivity.clone())
-        .build()?;
+        .build_and_open()?;
     let client_b = Client::builder("example-profile", "client-b")
         .with_connectivity(connectivity)
-        .build()?;
+        .build_and_open()?;
 
     let counter_a = client_a
         .create_datatype("profile-counter")

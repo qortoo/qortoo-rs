@@ -1,11 +1,10 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use dyn_fmt::AsStrFormatExt;
 use parking_lot::RwLock;
 
 use crate::{
-    DataType, DatatypeBuilder, DatatypeError, DatatypeHandler, DatatypeState, IntoString,
-    SnapshotDecodeLimits,
+    CollectionInfo, DataType, DatatypeBuilder, DatatypeError, DatatypeHandler, DatatypeState,
+    IntoString, SnapshotDecodeLimits,
     clients::{common::ClientCommon, datatype_manager::DatatypeManager},
     connectivity::{Connectivity, null_connectivity::NullConnectivity},
     datatypes::{datatype_set::DatatypeSet, option::DatatypeOption},
@@ -15,8 +14,9 @@ use crate::{
 
 /// A builder for constructing a [`Client`].
 ///
-/// Use [`Client::builder`] to start, then call [`ClientBuilder::build`]
-/// to obtain a ready-to-use client instance.
+/// Use [`Client::builder`] to start, then call [`ClientBuilder::build`].
+/// Open the returned client with [`Client::open`] before building datatypes.
+/// Use [`ClientBuilder::build_and_open`] to perform both steps in one call.
 ///
 /// # Examples
 /// ```
@@ -33,17 +33,13 @@ pub struct ClientBuilder {
 }
 
 impl ClientBuilder {
-    /// Finalizes the builder and returns a new [`Client`].
-    ///
-    /// It initializes client metadata and datatype management structures.
+    /// Builds a client for the configured collection without contacting the backend.
     ///
     /// # Errors
     /// Returns [`ClientError::InvalidCollectionName`] if the collection name is invalid.
     pub fn build(self) -> Result<Client, ClientError> {
         if !is_valid_collection_name(&self.collection) {
-            return Err(ClientError::InvalidCollectionName(
-                msg::INVALID_COLLECTION_NAME_TEMPLATE.format(&[self.collection]),
-            ));
+            return Err(ClientError::invalid_collection_name(&self.collection));
         }
 
         let common = ClientCommon::new_arc(
@@ -58,6 +54,31 @@ impl ClientBuilder {
             datatype_manager,
             common,
         })
+    }
+
+    /// Builds a client and opens it through the configured backend.
+    ///
+    /// To retry opening the same client identity after a failure, use
+    /// [`Self::build`] and [`Client::open`] separately.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error from [`Self::build`] or [`Client::open`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use qortoo::Client;
+    ///
+    /// let client = Client::builder("doc-example", "alias").build_and_open()?;
+    /// assert!(client.is_open());
+    /// let _counter = client.create_datatype("counter").build_counter()?;
+    /// # Ok::<(), qortoo::ClientError>(())
+    /// ```
+    pub fn build_and_open(self) -> Result<Client, ClientError> {
+        let client = self.build()?;
+        client.open()?;
+        Ok(client)
     }
 
     /// Sets inclusive snapshot input, raw payload, and Map entry limits for this client.
@@ -87,7 +108,7 @@ impl ClientBuilder {
     /// let connectivity = LocalConnectivity::new_arc();
     /// let client = Client::builder("collection", "alias")
     ///     .with_connectivity(connectivity)
-    ///     .build()
+    ///     .build_and_open()
     ///     .unwrap();
     /// # }
     /// ```
@@ -103,8 +124,8 @@ impl ClientBuilder {
 /// are propagated into tracing metadata and used to associate created
 /// datatypes with their owner.
 ///
-/// Use [`Client::builder`] to construct a client, and the `create_datatype` / `subscribe_datatype` / `subscribe_or_create_datatype`
-/// helpers to get specific datatypes.
+/// Use [`Client::builder`] and `ClientBuilder::build_and_open` to get a client
+/// ready to create or subscribe to datatypes.
 pub struct Client {
     common: Arc<ClientCommon>,
     datatype_manager: Arc<RwLock<DatatypeManager>>,
@@ -129,6 +150,29 @@ impl Client {
         }
     }
 
+    /// Registers this client's CUID for its collection through the configured backend.
+    /// On success, the client stores the returned collection information.
+    ///
+    /// After a successful open, subsequent calls return success without contacting the backend.
+    /// A failed call can be retried with the same client identity.
+    ///
+    /// # Errors
+    /// Returns [`ClientError::FailedToOpenClient`] if the backend cannot open this client.
+    pub fn open(&self) -> Result<(), ClientError> {
+        self.common.collection_info.get_or_try_init(|| {
+            self.common
+                .connectivity
+                .open_client(&self.common.collection, &self.common.cuid)
+                .map_err(|error| ClientError::FailedToOpenClient(error.to_string()))
+        })?;
+        Ok(())
+    }
+
+    /// Returns whether this client has successfully completed [`Self::open`].
+    pub fn is_open(&self) -> bool {
+        self.get_collection_info().is_some()
+    }
+
     pub(crate) fn do_subscribe_or_create_datatype(
         &self,
         key: String,
@@ -138,6 +182,10 @@ impl Client {
         is_readonly: bool,
         handlers: BTreeMap<usize, DatatypeHandler>,
     ) -> Result<DatatypeSet, ClientError> {
+        if !self.is_open() {
+            return Err(ClientError::ClientNotOpen);
+        }
+
         self.datatype_manager.write().subscribe_or_create_datatype(
             &key,
             r#type,
@@ -179,6 +227,11 @@ impl Client {
         &self.common.collection
     }
 
+    /// Returns the collection information, or `None` until [`Self::open`] succeeds.
+    pub(crate) fn get_collection_info(&self) -> Option<&CollectionInfo> {
+        self.common.collection_info.get().map(Arc::as_ref)
+    }
+
     /// Returns the alias (application/client name) for this client.
     pub fn get_alias(&self) -> &str {
         &self.common.alias
@@ -216,14 +269,22 @@ impl Client {
 
 #[cfg(test)]
 mod tests_client {
-    use std::{sync::mpsc, time::Duration};
+    use std::{
+        sync::{Arc, mpsc},
+        time::Duration,
+    };
 
+    use crossbeam_channel::Sender;
+    use parking_lot::Mutex;
     use tracing::instrument;
 
     use crate::{
-        Datatype, DatatypeState,
+        ClientError, CollectionInfo, Datatype, DatatypeState,
         clients::client::Client,
-        datatypes::datatype::DatatypeBlanket,
+        connectivity::Connectivity,
+        datatypes::{datatype::DatatypeBlanket, event_loop::Event, wired::WiredDatatype},
+        errors::connectivity::ConnectivityError,
+        types::{push_pull_pack::PushPullPack, uid::Cuid},
         utils::test_utils::{get_test_collection_name, get_test_func_name, local_connectivity},
     };
 
@@ -242,13 +303,78 @@ mod tests_client {
     }
 
     #[test]
+    fn can_retry_open_with_the_same_identity_and_publish_collection_info_once() {
+        #[derive(Debug, Default)]
+        struct OpenBackend {
+            attempts: Mutex<Vec<Cuid>>,
+        }
+
+        impl Connectivity for OpenBackend {
+            fn open_client(
+                &self,
+                collection: &str,
+                cuid: &Cuid,
+            ) -> Result<Arc<CollectionInfo>, ConnectivityError> {
+                assert_eq!(collection, "collection");
+                let mut attempts = self.attempts.lock();
+                attempts.push(cuid.clone());
+                if attempts.len() == 1 {
+                    return Err(ConnectivityError::TimedOut("opening client".into()));
+                }
+                Ok(Arc::new(CollectionInfo::default()))
+            }
+
+            fn register(&self, _: Arc<WiredDatatype>, _: Sender<Event>) {
+                unreachable!()
+            }
+
+            fn push_pull(&self, _: &PushPullPack) -> Result<PushPullPack, ConnectivityError> {
+                unreachable!()
+            }
+
+            fn is_realtime(&self) -> bool {
+                false
+            }
+        }
+
+        let backend = Arc::new(OpenBackend::default());
+        let client = Client::builder("collection", "alias")
+            .with_connectivity(backend.clone())
+            .build()
+            .unwrap();
+        assert!(!client.is_open());
+        assert!(matches!(
+            client.open(),
+            Err(ClientError::FailedToOpenClient(_))
+        ));
+        assert!(!client.is_open());
+        assert_eq!(client.get_collection_info(), None);
+
+        std::thread::scope(|scope| {
+            let other_open = scope.spawn(|| client.open());
+            client.open().unwrap();
+            other_open.join().unwrap().unwrap();
+        });
+        client.open().unwrap();
+        assert!(client.is_open());
+        assert_eq!(
+            client.get_collection_info(),
+            Some(&CollectionInfo::default())
+        );
+        assert_eq!(
+            *backend.attempts.lock(),
+            [client.get_cuid(), client.get_cuid()]
+        );
+    }
+
+    #[test]
     fn can_release_mutable_state_before_waiting_for_registry_detach() {
         const TIMEOUT: Duration = Duration::from_secs(5);
         let connectivity = local_connectivity();
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
         let manager = &client.datatype_manager;
         let (notify_tx, notify_rx) = mpsc::channel();
@@ -299,7 +425,7 @@ mod tests_client {
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
         let key = get_test_func_name!();
         let counter = client.create_datatype(&key).build_counter().unwrap();
@@ -335,7 +461,7 @@ mod tests_client {
         lc.set_realtime(false);
         let client1 = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(lc)
-            .build()
+            .build_and_open()
             .unwrap();
 
         assert!(client1.get_datatype("k1").is_none());
@@ -344,13 +470,13 @@ mod tests_client {
         assert!(client1.get_datatype("k1").is_some());
 
         let client2 = Client::builder(get_test_collection_name!(), get_test_collection_name!())
-            .build()
+            .build_and_open()
             .unwrap();
         let counter2 = client2.create_datatype("k1").build_counter().unwrap();
         assert_eq!(DatatypeState::Creating, counter2.get_state());
 
         let client3 = Client::builder(get_test_collection_name!(), get_test_collection_name!())
-            .build()
+            .build_and_open()
             .unwrap();
         let counter3 = client3
             .subscribe_or_create_datatype("k1")
@@ -396,11 +522,11 @@ mod tests_client {
         let key = get_test_func_name!();
         let client1 = Client::builder(collection.clone(), "client1")
             .with_connectivity(connectivity.clone())
-            .build()
+            .build_and_open()
             .unwrap();
         let client2 = Client::builder(collection, "client2")
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
 
         client1
@@ -431,7 +557,7 @@ mod tests_client {
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
         let key = get_test_func_name!();
 
@@ -456,7 +582,7 @@ mod tests_client {
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
 
         let counter = client
@@ -490,7 +616,7 @@ mod tests_client {
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
 
         let counter = client
@@ -518,7 +644,7 @@ mod tests_client {
         let connectivity = local_connectivity();
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
 
         let counter = client
@@ -546,7 +672,7 @@ mod tests_client {
         let connectivity = local_connectivity();
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
 
         let counter = client
@@ -573,7 +699,7 @@ mod tests_client {
     #[instrument]
     fn can_reject_unsubscribe_for_unmanaged_key() {
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
-            .build()
+            .build_and_open()
             .unwrap();
 
         assert!(matches!(
