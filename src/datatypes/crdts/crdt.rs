@@ -22,6 +22,14 @@ pub enum Crdt {
 }
 
 impl Crdt {
+    pub(crate) fn logical_state_bytes(&self) -> u64 {
+        match self {
+            Self::Counter(_) => size_of::<i64>() as u64,
+            Self::Variable(variable) => variable.value().len() as u64,
+            Self::Map(map) => map.logical_state_bytes(),
+        }
+    }
+
     /// Creates an isolated batch candidate in O(1), sharing immutable payloads.
     /// Never clone CRDT collections here; new datatypes must provide an O(1) fork.
     /// Batch writes must not defer a full collection copy to copy-on-write either.

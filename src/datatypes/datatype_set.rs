@@ -43,6 +43,15 @@ impl DatatypeSet {
         }
     }
 
+    /// Returns the contained datatype's [logical state size in bytes](Datatype::get_state_bytes).
+    pub fn get_state_bytes(&self) -> u64 {
+        match self {
+            Self::Counter(counter) => counter.get_state_bytes(),
+            Self::Variable(variable) => variable.get_state_bytes(),
+            Self::Map(map) => map.get_state_bytes(),
+        }
+    }
+
     pub(crate) fn get_core_id(&self) -> usize {
         match self {
             DatatypeSet::Counter(cnt) => cnt.get_core() as *const TransactionalDatatype as usize,

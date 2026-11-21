@@ -9,6 +9,9 @@ use crate::{
     types::timestamp::Timestamp,
 };
 
+/// Logical metadata cost, including the reservation for GC approval.
+const LOGICAL_OVERHEAD_BYTES: u64 = 42;
+
 #[derive(Clone, PartialEq, Eq)]
 pub(super) struct TimedNode {
     pub(super) ts: Timestamp,
@@ -18,6 +21,11 @@ pub(super) struct TimedNode {
 }
 
 impl TimedNode {
+    pub(super) fn logical_bytes(&self) -> Option<u64> {
+        let value_bytes = self.v.as_ref().map_or(0, |value| value.len() as u64);
+        LOGICAL_OVERHEAD_BYTES.checked_add(value_bytes)
+    }
+
     pub(super) fn validate_local_timestamp(
         &self,
         timestamp: &Timestamp,

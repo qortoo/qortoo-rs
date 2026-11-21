@@ -44,6 +44,7 @@ pub(crate) mod datatype {
     pub(crate) const INVALID_ARGUMENT_PREFIX: &str = "invalid argument: ";
 
     pub(crate) const UNSUPPORTED_OPERATION: &str = "operation is not supported by this datatype";
+    pub(crate) const STATE_SIZE_OVERFLOW: &str = "logical state size exceeds its accounting range";
 
     pub(crate) const EXECUTE_OPERATION_PREFIX: &str = "execute operation: ";
 

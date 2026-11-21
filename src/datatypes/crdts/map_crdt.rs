@@ -15,15 +15,13 @@ use crate::{
     utils::json::decode_json_value,
 };
 
-/// Logical byte overhead per tombstone entry (timestamp + lengths + tags + metadata reservation).
-pub(super) const TOMBSTONE_LOGICAL_OVERHEAD_BYTES: u64 = 42;
-
 #[derive(PartialEq, Eq)]
 pub struct MapCrdt {
     pub(super) entries: RedBlackTreeMapSync<Arc<str>, TimedNode>,
     pub(super) live_count: usize,
     pub(super) tombstone_count: usize,
     pub(super) tombstone_bytes: u64,
+    logical_bytes: u64,
 }
 
 impl Default for MapCrdt {
@@ -33,6 +31,7 @@ impl Default for MapCrdt {
             live_count: 0,
             tombstone_count: 0,
             tombstone_bytes: 0,
+            logical_bytes: 0,
         }
     }
 }
@@ -59,11 +58,16 @@ impl MapCrdt {
             live_count: self.live_count,
             tombstone_count: self.tombstone_count,
             tombstone_bytes: self.tombstone_bytes,
+            logical_bytes: self.logical_bytes,
         }
     }
 
     pub(crate) fn len(&self) -> usize {
         self.live_count
+    }
+
+    pub(super) fn logical_state_bytes(&self) -> u64 {
+        self.logical_bytes
     }
 
     pub(crate) fn contains_key(&self, key: &str) -> bool {
@@ -89,14 +93,43 @@ impl MapCrdt {
         self.entries.get(key).and_then(|entry| entry.v.clone())
     }
 
-    pub(super) fn replace(&mut self, key: Arc<str>, next: Option<TimedNode>) -> Option<TimedNode> {
+    pub(super) fn replace(
+        &mut self,
+        key: Arc<str>,
+        next: Option<TimedNode>,
+    ) -> Result<Option<TimedNode>, DatatypeError> {
         let previous = self.entries.get(key.as_ref()).cloned();
-        if let Some(entry) = &previous {
+        self.update_entry_stats(&key, previous.as_ref(), next.as_ref())?;
+
+        if let Some(entry) = next {
+            self.entries.insert_mut(key, entry);
+        } else {
+            self.entries.remove_mut(key.as_ref());
+        }
+        Ok(previous)
+    }
+
+    fn update_entry_stats(
+        &mut self,
+        key: &str,
+        previous: Option<&TimedNode>,
+        next: Option<&TimedNode>,
+    ) -> Result<(), DatatypeError> {
+        let previous_bytes = Self::entry_logical_bytes(key, previous)?;
+        let next_bytes = Self::entry_logical_bytes(key, next)?;
+        let logical_bytes = self
+            .logical_bytes
+            .checked_sub(previous_bytes)
+            .and_then(|remaining| remaining.checked_add(next_bytes))
+            .ok_or_else(|| execution_error(msg::STATE_SIZE_OVERFLOW))?;
+
+        // Tombstone bytes are a subset of the checked total before and after replacement.
+        if let Some(entry) = previous {
             if entry.v.is_some() {
                 self.live_count -= 1;
             } else {
                 self.tombstone_count -= 1;
-                self.tombstone_bytes -= key.len() as u64 + TOMBSTONE_LOGICAL_OVERHEAD_BYTES;
+                self.tombstone_bytes -= previous_bytes;
             }
         }
         if let Some(entry) = next {
@@ -104,13 +137,21 @@ impl MapCrdt {
                 self.live_count += 1;
             } else {
                 self.tombstone_count += 1;
-                self.tombstone_bytes += key.len() as u64 + TOMBSTONE_LOGICAL_OVERHEAD_BYTES;
+                self.tombstone_bytes += next_bytes;
             }
-            self.entries.insert_mut(key, entry);
-        } else {
-            self.entries.remove_mut(key.as_ref());
         }
-        previous
+        self.logical_bytes = logical_bytes;
+        Ok(())
+    }
+
+    fn entry_logical_bytes(key: &str, entry: Option<&TimedNode>) -> Result<u64, DatatypeError> {
+        let Some(entry) = entry else {
+            return Ok(0);
+        };
+        entry
+            .logical_bytes()
+            .and_then(|bytes| bytes.checked_add(key.len() as u64))
+            .ok_or_else(|| execution_error(msg::STATE_SIZE_OVERFLOW))
     }
 
     pub(crate) fn execute_local_operation(
@@ -134,7 +175,7 @@ impl MapCrdt {
             }
             OperationBody::MapRemove(_) => self.remove(key.clone(), context.timestamp()),
             _ => return Err(execution_error(msg::UNSUPPORTED_OPERATION)),
-        };
+        }?;
         let previous_value = previous.as_ref().and_then(|entry| entry.v.clone());
         Ok(LocalOperationOutcome::new(
             ReturnType::Map(previous_value),
@@ -154,17 +195,22 @@ impl MapCrdt {
         }
         match context.body() {
             OperationBody::MapPut(body) => {
-                self.put(key.into(), body.value.as_ref(), context.timestamp());
+                self.put(key.into(), body.value.as_ref(), context.timestamp())?;
             }
             OperationBody::MapRemove(_) => {
-                self.remove(key.into(), context.timestamp());
+                self.remove(key.into(), context.timestamp())?;
             }
             _ => return Err(execution_error(msg::UNSUPPORTED_OPERATION)),
         }
         Ok(())
     }
 
-    fn put(&mut self, key: Arc<str>, value: &[u8], timestamp: &Timestamp) -> Option<TimedNode> {
+    fn put(
+        &mut self,
+        key: Arc<str>,
+        value: &[u8],
+        timestamp: &Timestamp,
+    ) -> Result<Option<TimedNode>, DatatypeError> {
         self.replace(
             key,
             Some(TimedNode {
@@ -175,7 +221,11 @@ impl MapCrdt {
         )
     }
 
-    fn remove(&mut self, key: Arc<str>, timestamp: &Timestamp) -> Option<TimedNode> {
+    fn remove(
+        &mut self,
+        key: Arc<str>,
+        timestamp: &Timestamp,
+    ) -> Result<Option<TimedNode>, DatatypeError> {
         self.replace(
             key,
             Some(TimedNode {
@@ -190,7 +240,7 @@ impl MapCrdt {
         &mut self,
         action: MapRollbackAction,
     ) -> Result<(), DatatypeError> {
-        self.replace(action.key, action.previous);
+        self.replace(action.key, action.previous)?;
         Ok(())
     }
 }
@@ -216,5 +266,28 @@ impl Display for MapCrdt {
             "(live:{}, tombstones:{}, tombstone_bytes:{})",
             self.live_count, self.tombstone_count, self.tombstone_bytes
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn can_reject_state_size_overflow_without_changing_the_map() {
+        let mut map = MapCrdt {
+            logical_bytes: u64::MAX,
+            ..Default::default()
+        };
+        let before = map.fork_for_batch();
+        let error = map
+            .put("key".into(), b"null", &Timestamp::initial())
+            .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "[E202] internal error: execute operation: logical state size exceeds its accounting range"
+        );
+        assert_eq!(map, before);
     }
 }

@@ -13,6 +13,9 @@ assert_eq!(map.get::<String>("theme")?.as_deref(), Some("dark"));
 `put` and `remove` return the previous value as an `Option<serde_json::Value>`.
 `put_raw`, `get_raw`, and `remove_raw` preserve the original JSON bytes.
 `len`, `is_empty`, `contains_key`, and `to_json` report only live entries.
+`Datatype::get_state_bytes()` includes both live entries and tombstones. Each entry
+contributes its UTF-8 key length plus 42 metadata bytes. A live entry also contributes
+its stored JSON byte length. The result includes pending local writes.
 `to_json` captures a consistent root under the read lock and decodes it after releasing the
 lock. Use `transaction` and its callback handle to commit multiple writes together.
 Datatype handlers receive a `DatatypeSet::Map` variant for Map events. Include this variant
@@ -47,9 +50,8 @@ are immutable `Arc` values. Counts and approval fields belong to each fork's sta
   creates or advances a tombstone even for a missing key.
 - An accepted remote operation advances the observed Lamport clock, including stale and
   duplicate operations. An invalid operation does not advance it.
-- Rollback restores the previous entry, timestamp, approval field, live count, and tombstone
-  count/byte total. Actions run in reverse transaction order. Tombstone accounting uses
-  `key UTF-8 bytes + 42` logical bytes per entry; it does not measure allocator usage.
+- Rollback restores the previous entry, timestamp, approval field, entry counts, and logical
+  byte totals. Actions run in reverse transaction order.
 - Debug and display output expose sizes and counts rather than map keys or JSON payloads.
 
 The transactional layer provides a closure boundary under its normal transaction gate and
@@ -74,8 +76,9 @@ Decoding builds a validated temporary map before replacing state. The snapshot r
 counts live entries and tombstones toward `SnapshotDecodeLimits::max_map_entries`
 (1,000,000 by default). An operation stream can grow a Map beyond this limit, at which point
 a receiver with that limit will reject its snapshot.
-Counts are recomputed and local GC approvals are cleared. Validated snapshot approval and
-GC integration remain future work; snapshots alone do not authorize reclamation.
+Counts and logical byte totals are recomputed and local GC approvals are cleared.
+Validated snapshot approval and GC integration remain future work; snapshots alone do not
+authorize reclamation.
 
 ## Rationale
 

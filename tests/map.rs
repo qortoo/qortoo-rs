@@ -78,6 +78,34 @@ fn can_preserve_map_values_and_prior_writes_when_conversion_fails() {
 }
 
 #[test]
+fn can_read_map_logical_state_size_with_pending_writes_and_tombstones() {
+    let client = Client::builder("test-map", "state-size").build().unwrap();
+    let map = client.create_datatype("settings").build_map().unwrap();
+    assert_eq!(map.get_state_bytes(), 0);
+
+    map.put_raw("한", b" null ").unwrap();
+    assert_eq!(map.get_state_bytes(), 51);
+    assert_eq!(map.get_synced_client_version(), 0);
+
+    let result = map.transaction("rollback size changes", |map| {
+        map.remove_raw("한")?;
+        map.put_raw("z", b"true")?;
+        assert_eq!(map.get_state_bytes(), 92);
+        map.put_raw("invalid", b"null true")?;
+        Ok(())
+    });
+    assert!(matches!(result, Err(DatatypeError::TransactionFailed(_))));
+    assert_eq!(map.get_state_bytes(), 51);
+    map.remove_raw("한").unwrap();
+    assert!(map.is_empty());
+    assert_eq!(map.get_state_bytes(), 45);
+    assert_eq!(
+        client.get_datatype("settings").unwrap().get_state_bytes(),
+        45
+    );
+}
+
+#[test]
 fn can_sync_map_through_all_builders_and_resolve_its_handler() {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<Map>();

@@ -159,7 +159,9 @@ impl MapCrdt {
                 }
                 let node = row.to_timed_node(cuids)?;
                 let key: Arc<str> = row.key.into();
-                state.replace(key.clone(), Some(node));
+                state
+                    .replace(key.clone(), Some(node))
+                    .map_err(|_| SnapshotErrorReason::LimitExceeded)?;
                 previous = Some(key);
             }
         }

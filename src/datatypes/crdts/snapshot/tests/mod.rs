@@ -38,18 +38,20 @@ fn fixture(count: usize) -> MapCrdt {
         } else {
             Cuid::try_from("0000000000000001").unwrap()
         };
-        state.replace(
-            format!("k{i:04}").into(),
-            Some(TimedNode {
-                ts: Timestamp::new(1, &cuid),
-                v: if i % 2 == 0 {
-                    None
-                } else {
-                    Some(Arc::from(&b"null"[..]))
-                },
-                approved_sseq_upper: None,
-            }),
-        );
+        state
+            .replace(
+                format!("k{i:04}").into(),
+                Some(TimedNode {
+                    ts: Timestamp::new(1, &cuid),
+                    v: if i % 2 == 0 {
+                        None
+                    } else {
+                        Some(Arc::from(&b"null"[..]))
+                    },
+                    approved_sseq_upper: None,
+                }),
+            )
+            .unwrap();
     }
     state
 }

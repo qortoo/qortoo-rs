@@ -20,6 +20,7 @@ use crate::{
 /// let map = client.create_datatype("settings").build_map().unwrap();
 /// assert_eq!(map.get_key(), "settings");
 /// assert_eq!(map.get_type(), DataType::Map);
+/// assert_eq!(map.get_state_bytes(), 0);
 /// ```
 pub trait Datatype {
     /// Returns the key that identifies this datatype within its collection.
@@ -28,6 +29,14 @@ pub trait Datatype {
     fn get_type(&self) -> DataType;
     /// Returns the current lifecycle state.
     fn get_state(&self) -> DatatypeState;
+    /// Returns the logical size in bytes of the current local CRDT state.
+    ///
+    /// Includes pending local changes and provisional changes during an active
+    /// transaction. Counter uses 8 bytes. Variable uses its stored JSON byte
+    /// length. Each Map entry uses 42 metadata bytes plus its UTF-8 key length
+    /// and, for a live entry, its stored JSON byte length.
+    /// Heap allocation, serialized snapshots, and buffered operations have separate sizes.
+    fn get_state_bytes(&self) -> u64;
     /// Returns the server sequence recorded in this client's sync checkpoint.
     ///
     /// The checkpoint starts at `0`. A sync can advance it by more than one
@@ -130,6 +139,10 @@ where
         self.get_core().get_state()
     }
 
+    fn get_state_bytes(&self) -> u64 {
+        self.get_core().get_state_bytes()
+    }
+
     fn get_server_version(&self) -> u64 {
         self.get_core().get_server_version()
     }
@@ -193,9 +206,28 @@ mod tests_datatype_trait {
         assert_eq!(data.get_key(), key);
         assert_eq!(data.get_type(), DataType::Counter);
         assert_eq!(data.get_state(), DatatypeState::Creating);
+        assert_eq!(data.get_state_bytes(), 8);
         assert_eq!(data.get_server_version(), 0);
         assert_eq!(data.get_client_version(), 0);
         assert_eq!(data.get_synced_client_version(), 0);
+    }
+
+    #[test]
+    fn can_read_counter_and_variable_logical_state_sizes() {
+        let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .build()
+            .unwrap();
+        let counter = client.create_datatype("counter").build_counter().unwrap();
+        let variable = client.create_datatype("variable").build_variable().unwrap();
+        assert_eq!(variable.get_state_bytes(), 4);
+        counter.increase().unwrap();
+        variable.set_raw(b" [1, 2, 3] ").unwrap();
+        assert_eq!(counter.get_state_bytes(), 8);
+        assert_eq!(variable.get_state_bytes(), 11);
+        assert_eq!(
+            client.get_datatype("variable").unwrap().get_state_bytes(),
+            11
+        );
     }
 
     #[test]

@@ -141,6 +141,10 @@ impl Datatype for TransactionalDatatype {
         self.core.mutable.read().get_state()
     }
 
+    fn get_state_bytes(&self) -> u64 {
+        self.core.mutable.read().crdt.logical_state_bytes()
+    }
+
     fn get_server_version(&self) -> u64 {
         self.core.mutable.read().checkpoint.sseq
     }
