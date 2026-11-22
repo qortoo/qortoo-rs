@@ -159,7 +159,7 @@ fn can_restart_client_sequences_after_unsubscribe_and_resubscribe() {
 #[test]
 fn can_clear_client_progress_when_unsubscribe_rejects_pending_work() {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
+    let mut server = test_server(&attr);
     let mut pushed = PushPullPack::new(&attr, DatatypeState::Creating);
     pushed.transactions = vec![transaction(
         &pushed.cuid,

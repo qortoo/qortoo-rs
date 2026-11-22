@@ -24,6 +24,26 @@ pub(super) use crate::{
         snapshot_write_options,
     },
 };
+use crate::{
+    CollectionInfo, LocalCollectionOptions, SnapshotWriteOptions,
+    connectivity::local_connectivity::LocalCollectionConfig,
+};
+
+pub(super) fn collection_config(options: SnapshotWriteOptions) -> Arc<LocalCollectionConfig> {
+    Arc::new(LocalCollectionConfig::new(
+        CollectionInfo::default(),
+        LocalCollectionOptions::default(),
+        options,
+    ))
+}
+
+pub(super) fn test_server(attr: &crate::datatypes::common::Attribute) -> LocalDatatypeServer {
+    LocalDatatypeServer::new(
+        attr,
+        Default::default(),
+        collection_config(snapshot_write_options()),
+    )
+}
 
 pub(super) fn transaction(cuid: &Cuid, cseq: u64, mut operation: Operation) -> Arc<Transaction> {
     operation.set_lamport(cseq);

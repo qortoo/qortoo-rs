@@ -198,6 +198,9 @@ pub enum DatatypeError {
     /// A snapshot could not be decoded into a valid CRDT state.
     #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = snapshot_msg::DECODE_PREFIX)]
     SnapshotDecode(SnapshotErrorReason) = 217,
+    /// A local write or server batch was rejected by the collection's write policy.
+    #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = datatype_msg::COLLECTION_POLICY_VIOLATION_PREFIX)]
+    CollectionPolicyViolation(String) = 218,
 }
 
 impl DatatypeError {
@@ -218,13 +221,14 @@ impl DatatypeError {
             Self::InvalidArgument(_) => 215,
             Self::SnapshotEncode(_) => 216,
             Self::SnapshotDecode(_) => 217,
+            Self::CollectionPolicyViolation(_) => 218,
         }
     }
 
     /// Converts this error into its recovery action.
     ///
     /// This is the single source of truth for action routing. Variants handled here:
-    /// - `SyncFailed`       — transient connectivity failure → `RetryWithBackOff`
+    /// - `SyncFailed` or a server `CollectionPolicyViolation` → `RetryWithBackOff`
     /// - `Internal`         — fatal SDK-internal fault → `Disable`
     ///   (reason-level overrides live in [`InternalReason::mapping`])
     /// - `ServerRejected(MissingSubscription)` — discard pending work and fetch a snapshot
@@ -233,10 +237,10 @@ impl DatatypeError {
     /// - `PushBufferExceededMaxMemSize` — the transaction cannot be buffered
     ///   → `RollbackTransaction`
     ///
-    /// Variants that are returned directly to API callers must never reach this method.
+    /// Callers use creation-site routing for local commit failures.
     pub(crate) fn mapping(self) -> DatatypeErrorWithAction {
         match self {
-            DatatypeError::SyncFailed(_) => {
+            DatatypeError::SyncFailed(_) | DatatypeError::CollectionPolicyViolation(_) => {
                 DatatypeErrorWithAction::new(self, RecoveryAction::RetryWithBackOff)
             }
             DatatypeError::ServerRejected(ServerRejectReason::MissingSubscription(_)) => {

@@ -1,7 +1,8 @@
 use crate::{
-    ClientError, SnapshotWriteOptions,
+    ClientError,
     defaults::{DEFAULT_MAX_SNAPSHOT_BYTES, DEFAULT_MAX_TRANSMISSION_BYTES},
-    errors::messages::client as msg,
+    errors::messages::{client as msg, datatype as write_msg},
+    operations::body::OperationBody,
 };
 
 /// Information about a collection returned by the backend when a client opens.
@@ -21,16 +22,47 @@ pub struct CollectionInfo {
     pub forbidden_keys: Vec<String>,
     /// Maximum encoded snapshot size including its header.
     pub max_snapshot_bytes: usize,
-    /// Writer options for this collection's snapshots.
-    ///
-    /// On creation, `None` selects the backend's default. In the open response,
-    /// `None` means the backend does not report any writer options.
-    pub snapshot_write_options: Option<SnapshotWriteOptions>,
     /// Byte limit for a batch of transactions. A single transaction may exceed it.
     pub max_transmission_bytes: u64,
 }
 
 impl CollectionInfo {
+    pub(crate) fn validate_write(&self, body: &OperationBody) -> Result<(), String> {
+        if let OperationBody::MapPut(put) = body {
+            let key_bytes = put.key.len() as u64;
+            let value_bytes = put.value.len() as u64;
+            if self.max_key_bytes != 0 && key_bytes > self.max_key_bytes {
+                return Err(write_msg::collection_byte_limit(
+                    "max_key_bytes",
+                    key_bytes,
+                    self.max_key_bytes,
+                ));
+            }
+            if self.max_value_bytes != 0 && value_bytes > self.max_value_bytes {
+                return Err(write_msg::collection_byte_limit(
+                    "max_value_bytes",
+                    value_bytes,
+                    self.max_value_bytes,
+                ));
+            }
+            if self.forbidden_keys.contains(&put.key) {
+                return Err(write_msg::COLLECTION_FORBIDDEN_KEY.to_owned());
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_state_change(&self, before: u64, after: u64) -> Result<(), String> {
+        if self.max_state_bytes != 0 && after > self.max_state_bytes && after >= before {
+            return Err(write_msg::collection_byte_limit(
+                "max_state_bytes",
+                after,
+                self.max_state_bytes,
+            ));
+        }
+        Ok(())
+    }
+
     /// Validates the configured byte limits.
     pub(crate) fn validate_limits(&self) -> Result<(), ClientError> {
         for (field, bytes, minimum, allows_zero) in [
@@ -68,7 +100,6 @@ impl Default for CollectionInfo {
             max_value_bytes: 0,
             forbidden_keys: Vec::new(),
             max_snapshot_bytes: DEFAULT_MAX_SNAPSHOT_BYTES,
-            snapshot_write_options: None,
             max_transmission_bytes: DEFAULT_MAX_TRANSMISSION_BYTES,
         }
     }

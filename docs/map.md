@@ -66,6 +66,16 @@ Putting `null` at `k` creates a live entry and returns the previously stored byt
 Removing `k` replaces it with a tombstone and returns `null`'s bytes. Removing it again is a
 local no-op. A delayed Put older than the tombstone cannot recreate `k`; a newer Put can.
 
+### Collection write limits
+
+A collection can limit the UTF-8 byte length of Map keys and the uncompressed JSON
+byte length of each Put value. Raw JSON whitespace counts toward the value limit.
+The collection can also disallow exact keys for Put. Reads and removes can still
+access those keys if they exist.
+
+The logical state limit applies to the final size of a committed transaction, including
+tombstones. See [collection policy](connectivity.md#collection-policy).
+
 ### Snapshot format
 
 The [Map snapshot payload](snapshot-format.md#map-payload) uses the common QTSN envelope,

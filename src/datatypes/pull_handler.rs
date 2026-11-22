@@ -118,10 +118,12 @@ impl<'a> PullHandler<'a> {
         self.new_state = self.pulled_ppp.state;
         if let Some(sppe) = self.pulled_ppp.error.as_ref() {
             let error = sppe.to_datatype_error().mapping();
-            if matches!(
-                error.recovery,
-                RecoveryAction::Resubscribe | RecoveryAction::ResubscribeWithBackOff
-            ) {
+            if matches!(error.error, DatatypeError::CollectionPolicyViolation(_))
+                || matches!(
+                    error.recovery,
+                    RecoveryAction::Resubscribe | RecoveryAction::ResubscribeWithBackOff
+                )
+            {
                 self.new_state = self.old_state;
             }
             return Err(error);

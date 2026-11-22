@@ -55,13 +55,15 @@ The response carries the work the client should apply and either the new state o
 ## Collection Policy
 
 Call `LocalConnectivity::create_collection(name, info)` to configure a collection
-before opening a client for it. Set `CollectionInfo::snapshot_write_options` to choose
-the collection's codec and compression. When omitted, the backend fills in its default
-writer options. Opening the first client for an unconfigured collection uses default
-limits and the backend's default writer options. The local backend returns the
-resolved options and limits on open. They stay fixed for the lifetime of the collection.
-`NullConnectivity` returns default limits with no writer options and does not retain
-client records.
+before opening a client for it. Use `create_collection_with_options(name, info, options)`
+to set server-only `LocalCollectionOptions`. Its `snapshot_write_options` selects the
+codec and compression for the collection. When omitted, the backend uses its default
+writer. Clients read the codec and compression from the snapshot header.
+
+Opening the first client for an unconfigured collection uses default limits and
+server options. Opening a client returns the shared `CollectionInfo`. Both the shared
+information and the server options stay fixed for the lifetime of the collection.
+`NullConnectivity` returns default limits and does not retain client records.
 
 | Field | Default | Meaning |
 |-------|---------|---------|
@@ -77,7 +79,24 @@ transmission batch target. The client decoder applies its own input limit to eac
 received snapshot. Zero disables a state, key, or value limit. When
 enabled, state limits must be at least 10,000 bytes and key and value limits must
 each be at least 10 bytes. Opening the client makes this configuration available to it.
-Enforcement for writes, generated snapshots, and batch sizing is planned work.
+The client checks Map Put keys and values on each operation and checks the logical state
+size at transaction commit. A datatype already over its state limit may commit a
+transaction that strictly reduces its size. Map reads and removes can use forbidden keys.
+Removes still count the resulting tombstones toward the state size.
+
+By default, the local backend applies the same checks to every new transaction in its
+candidate state, including writes merged with changes from other clients. Set
+`LocalCollectionOptions::validate_writes` to `false` to skip server checks on Map Put
+keys and values, including forbidden keys. Set `validate_state_size` to `false` to
+skip the server's logical state size check. Client write checks and server protocol
+validation still apply. The backend publishes the batch only if every transaction
+passes the applicable checks. A rejected batch leaves the client's pending writes
+and sync progress in place for retry. Later transactions stay behind the rejected ones
+until the server can accept them. Already accepted remote transactions and snapshots
+bypass write admission.
+
+Enforcement of the generated snapshot limit and use of the collection's batch target
+are planned work.
 
 ## Datatype Exchange
 

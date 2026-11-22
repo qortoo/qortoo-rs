@@ -82,7 +82,7 @@ pub use crate::observability::settings::{
 };
 pub use crate::{
     clients::{client::Client, collection_info::CollectionInfo},
-    connectivity::local_connectivity::LocalConnectivity,
+    connectivity::local_connectivity::{LocalCollectionOptions, LocalConnectivity},
     datatypes::{
         builder::DatatypeBuilder, counter::Counter, datatype::Datatype, datatype_set::DatatypeSet,
         handler::DatatypeHandler, map::Map, variable::Variable,

@@ -56,6 +56,14 @@ pub(crate) mod datatype {
     pub(crate) const UNSUPPORTED_OPERATION: &str = "operation is not supported by this datatype";
     pub(crate) const STATE_SIZE_OVERFLOW: &str = "logical state size exceeds its accounting range";
 
+    pub(crate) const COLLECTION_POLICY_VIOLATION_PREFIX: &str =
+        "collection write policy violation: ";
+    pub(crate) const COLLECTION_FORBIDDEN_KEY: &str = "the Map key is forbidden by the collection";
+
+    pub(crate) fn collection_byte_limit(field: &str, actual: u64, limit: u64) -> String {
+        format!("{field} allows {limit} bytes, got {actual}")
+    }
+
     pub(crate) const EXECUTE_OPERATION_PREFIX: &str = "execute operation: ";
 
     pub(crate) const TRANSACTION_FAILED_PREFIX: &str = "transaction failed: ";

@@ -83,6 +83,7 @@ call; routed variants are paired with an action.
 | `NotWritable` | 206 | The datatype's lifecycle state does not permit writes |
 | `ValueConversion` | 214 | JSON encoding, validation, or decoding failed. The operation's API documents any effect on the stored value. |
 | `InvalidArgument` | 215 | A datatype argument is invalid; shared with the C ABI |
+| `CollectionPolicyViolation` | 218 | A Map Put key or value, or the final state at local commit, violates collection policy |
 
 **Routed.**
 
@@ -95,6 +96,7 @@ call; routed variants are paired with an action.
 | `ServerRejected` | 213 | The server refused the operation; the reason is carried inside | `Resubscribe` for `MissingSubscription`; otherwise `Disable` |
 | `SnapshotEncode` | 216 | CRDT state could not be encoded; carries a `SnapshotErrorReason` | `Disable` |
 | `SnapshotDecode` | 217 | Snapshot could not be decoded into valid CRDT state; carries a `SnapshotErrorReason` | `Disable` |
+| `CollectionPolicyViolation` | 218 | Local commit or server acceptance failed the collection's write checks | `RollbackTransaction` for local commit, `RetryWithBackOff` for server rejection |
 
 \* except the non-sequential-sequence reason, which chooses `RollbackTransaction` at its
 creation site — see **Creation-site routing** below.
@@ -166,14 +168,15 @@ server rejection reasons where a counterpart exists.
 | `MissingSubscription` | 305 | `ServerRejected(MissingSubscription)` |
 | `ServerInternalError` | 306 | `SyncFailed`, treated as transient |
 | `SnapshotUnavailable` | 307 | `ServerRejected(SnapshotUnavailable)`, treated as permanent |
+| `CollectionPolicyViolation` | 308 | `CollectionPolicyViolation`, retaining pending writes and sync progress for retry |
 
 ### Recovery actions
 
 | Action | Lifecycle effect | Scheduling effect | Produced by |
 |--------|------------------|-------------------|-------------|
 | `NotifyOnly` | none; the handler is told and nothing changes | normal | *reserved* |
-| `RetryWithBackOff` | none | exponential backoff | `SyncFailed` |
-| `RollbackTransaction` | undo the pending transaction | never reaches the event loop | `PushBufferExceededMaxMemSize`, non-sequential sequence |
+| `RetryWithBackOff` | none | exponential backoff | `SyncFailed`, server `CollectionPolicyViolation` |
+| `RollbackTransaction` | undo the pending transaction | never reaches the event loop | `PushBufferExceededMaxMemSize`, non-sequential sequence, local commit `CollectionPolicyViolation` |
 | `Resubscribe` | discard pending transactions, reset checkpoint, request a snapshot | one immediate attempt, including manual mode | `ServerRejected(MissingSubscription)` |
 | `ResubscribeWithBackOff` | reset local state, return to subscribing | exponential backoff | *reserved* |
 | `Disable` | disable the datatype | stopped; further sync requests are refused | `Internal`, other `ServerRejected` reasons, `ReadonlyViolation`, repeated missing subscription during immediate recovery |
@@ -278,9 +281,10 @@ need a second identifier. Boundary-only invalid arguments use `E998`, contained 
 
 ### Error routing rules
 
-**One destination per error.** Every error is either returned to its caller or routed, and the
-classification is a property of the variant, not of the situation. The translation boundary
-treats a caller-facing variant as a defect and refuses it rather than choosing a default.
+**One destination per failure.** The SDK returns local operation errors to the caller.
+Commit failures that require rollback use creation-site routing. Exchange failures arrive
+through the sync translation boundary. A collection policy violation uses the same
+public error code at each boundary.
 
 **One action per routed error.** The translation from error to action lives next to the error
 definition, so a new routed variant is added in one place and every consumer matches

@@ -61,6 +61,10 @@ impl ClientCommon {
             + 1
     }
 
+    pub(crate) fn get_collection_info(&self) -> Option<&CollectionInfo> {
+        self.collection_info.get().map(Arc::as_ref)
+    }
+
     pub(crate) fn set_datatype_manager(&self, manager: Weak<RwLock<DatatypeManager>>) {
         *self.datatype_manager.write() = manager;
     }

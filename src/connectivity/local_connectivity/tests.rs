@@ -23,16 +23,11 @@ fn can_open_clients_in_multiple_collections_on_one_backend() {
         max_value_bytes: 512,
         forbidden_keys: vec!["_id".into(), "_rev".into()],
         max_snapshot_bytes: 20_000,
-        snapshot_write_options: None,
         max_transmission_bytes: 1_000,
     };
     backend
         .create_collection("configured", limits.clone())
         .unwrap();
-    let limits = CollectionInfo {
-        snapshot_write_options: Some(backend.default_snapshot_write_options),
-        ..limits
-    };
     let client_builder =
         |collection, alias| Client::builder(collection, alias).with_connectivity(backend.clone());
     let first = client_builder("configured", "first").build().unwrap();
@@ -85,7 +80,6 @@ fn can_open_clients_in_multiple_collections_on_one_backend() {
             max_value_bytes: 0,
             forbidden_keys: Vec::new(),
             max_snapshot_bytes: 10_000_000,
-            snapshot_write_options: Some(backend.default_snapshot_write_options),
             max_transmission_bytes: 4_000_000,
         })
     );
@@ -446,11 +440,12 @@ fn can_write_snapshots_with_collection_options() {
         ..default_options
     };
     backend
-        .create_collection(
+        .create_collection_with_options(
             "plain",
-            CollectionInfo {
+            CollectionInfo::default(),
+            crate::LocalCollectionOptions {
                 snapshot_write_options: Some(plain_options),
-                ..CollectionInfo::default()
+                ..Default::default()
             },
         )
         .unwrap();
@@ -461,8 +456,8 @@ fn can_write_snapshots_with_collection_options() {
             .build_and_open()
             .unwrap();
         assert_eq!(
-            client.get_collection_info().unwrap().snapshot_write_options,
-            Some(options)
+            client.get_collection_info(),
+            Some(&CollectionInfo::default())
         );
         let counter = client.create_datatype("counter").build_counter().unwrap();
         counter.sync().unwrap();
@@ -480,6 +475,96 @@ fn can_write_snapshots_with_collection_options() {
             body.data,
             Crdt::new(DataType::Counter).serialize(options).unwrap()
         );
+    }
+}
+
+#[rstest::rstest]
+#[case::default(true, true, Some("forbidden"))]
+#[case::skip_write_policy(false, true, Some("max_state_bytes"))]
+#[case::skip_state_size(true, false, Some("forbidden"))]
+#[case::skip_both(false, false, None)]
+fn can_configure_server_collection_checks_independently(
+    #[case] validate_writes: bool,
+    #[case] validate_state_size: bool,
+    #[case] expected_policy_error: Option<&str>,
+) {
+    use crate::{
+        DatatypeError, LocalCollectionOptions,
+        datatypes::datatype::DatatypeBlanket,
+        errors::push_pull::PushPullError,
+        operations::{Operation, transaction::Transaction},
+        types::push_pull_pack::PushPullPack,
+    };
+
+    let backend = local_connectivity();
+    backend.set_realtime(false);
+    backend
+        .create_collection_with_options(
+            "configured",
+            CollectionInfo {
+                forbidden_keys: vec!["forbidden".into()],
+                max_state_bytes: 10_000,
+                ..Default::default()
+            },
+            LocalCollectionOptions {
+                validate_writes,
+                validate_state_size,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let client = Client::builder("configured", "writer")
+        .with_connectivity(backend.clone())
+        .build_and_open()
+        .unwrap();
+    let map = client.create_datatype("map").build_map().unwrap();
+    assert!(matches!(
+        map.put("forbidden", &1),
+        Err(DatatypeError::CollectionPolicyViolation(_))
+    ));
+
+    let mut request = PushPullPack::new(&map.get_core().core.attr, DatatypeState::Creating);
+    let tx_with = |mut op: Operation| {
+        op.set_lamport(1);
+        let mut tx = Transaction::new(&client.get_cuid(), 1);
+        tx.push_operation(op);
+        vec![Arc::new(tx)]
+    };
+    request.transactions = tx_with(Operation::new_counter_increase(1));
+    let malformed = backend.push_pull(&request).unwrap();
+    assert!(
+        matches!(malformed.error, Some(PushPullError::ProtocolViolation(_))),
+        "{:?}",
+        malformed.error
+    );
+
+    let value = serde_json::to_vec(&"x".repeat(10_000))
+        .unwrap()
+        .into_boxed_slice();
+    request.transactions = tx_with(Operation::new_map_put("forbidden".into(), value.clone()));
+    let response = backend.push_pull(&request).unwrap();
+    if let Some(detail) = expected_policy_error {
+        assert!(matches!(
+            response.error,
+            Some(PushPullError::CollectionPolicyViolation(message)) if message.contains(detail)
+        ));
+    } else {
+        assert!(response.error.is_none(), "{:?}", response.error);
+        assert_eq!(response.checkpoint.cseq, 1);
+        return;
+    }
+
+    // A valid key isolates the merged size check at the same client sequence.
+    request.transactions = tx_with(Operation::new_map_put("allowed".into(), value));
+    let response = backend.push_pull(&request).unwrap();
+    if validate_state_size {
+        assert!(matches!(
+            response.error,
+            Some(PushPullError::CollectionPolicyViolation(message)) if message.contains("max_state_bytes")
+        ));
+    } else {
+        assert!(response.error.is_none(), "{:?}", response.error);
+        assert_eq!(response.checkpoint.cseq, 1);
     }
 }
 

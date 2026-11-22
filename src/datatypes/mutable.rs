@@ -123,8 +123,8 @@ impl MutableDatatype {
     ///
     /// Returns `Ok(true)` when a committed transaction was enqueued into the push buffer,
     /// `Ok(false)` when rolled back or when no operation was recorded.
-    /// On an enqueue failure, `pending` is restored so that the routed
-    /// `RecoveryAction::RollbackTransaction` can undo the transaction, and the error is returned.
+    /// Policy and enqueue failures retain `pending` so that
+    /// `RecoveryAction::RollbackTransaction` can undo the transaction.
     pub fn end_transaction(
         &mut self,
         tag: Option<String>,
@@ -133,6 +133,21 @@ impl MutableDatatype {
         if !committed {
             self.do_rollback();
             return Ok(false);
+        }
+
+        if self.tx_record.pending.is_some()
+            && let Some(info) = self.attr.client_common.get_collection_info()
+        {
+            info.validate_state_change(
+                self.tx_record.initial_state_bytes,
+                self.crdt.logical_state_bytes(),
+            )
+            .map_err(|detail| {
+                DatatypeErrorWithAction::new(
+                    DatatypeError::CollectionPolicyViolation(detail),
+                    RecoveryAction::RollbackTransaction,
+                )
+            })?;
         }
 
         if let Some(mut tx) = self.tx_record.pending.take() {
@@ -184,6 +199,11 @@ impl MutableDatatype {
         &mut self,
         mut op: Operation,
     ) -> Result<ReturnType, DatatypeError> {
+        if let Some(info) = self.attr.client_common.get_collection_info() {
+            info.validate_write(&op.body)
+                .map_err(DatatypeError::CollectionPolicyViolation)?;
+        }
+        let state_bytes = self.crdt.logical_state_bytes();
         op.set_lamport(self.op_id.lamport + 1);
         let outcome = {
             let context = OperationContext::try_new(&op, &self.op_id.cuid)?;
@@ -196,9 +216,13 @@ impl MutableDatatype {
             } => (return_value, rollback_action),
             LocalOperationOutcome::NoOp { return_value } => return Ok(return_value),
         };
-        let is_new_tx =
-            self.tx_record
-                .record_operation(&self.op_id, self.state, op, rollback_action);
+        let is_new_tx = self.tx_record.record_operation(
+            &self.op_id,
+            self.state,
+            state_bytes,
+            op,
+            rollback_action,
+        );
         self.op_id.next(is_new_tx);
         Ok(return_value)
     }

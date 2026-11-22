@@ -1,6 +1,9 @@
 use thiserror::Error;
 
-use crate::{DatatypeError, ServerRejectReason, errors::messages::sync as msg};
+use crate::{
+    DatatypeError, ServerRejectReason,
+    errors::messages::{datatype as datatype_msg, sync as msg},
+};
 
 /// Wire-level error set by the responder in `PushPullPack.error`.
 ///
@@ -32,6 +35,9 @@ pub enum PushPullError {
     /// The server permanently failed to generate a snapshot; retrying is not automatic.
     #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = msg::SNAPSHOT_UNAVAILABLE_PREFIX)]
     SnapshotUnavailable(String) = 307,
+    /// A submitted write violated the collection's policy. The client retains pending writes.
+    #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = datatype_msg::COLLECTION_POLICY_VIOLATION_PREFIX)]
+    CollectionPolicyViolation(String) = 308,
 }
 
 impl PushPullError {
@@ -47,6 +53,7 @@ impl PushPullError {
             Self::MissingSubscription(_) => 305,
             Self::ServerInternalError(_) => 306,
             Self::SnapshotUnavailable(_) => 307,
+            Self::CollectionPolicyViolation(_) => 308,
         }
     }
 
@@ -69,6 +76,9 @@ impl PushPullError {
             PushPullError::SnapshotUnavailable(msg) => DatatypeError::ServerRejected(
                 ServerRejectReason::SnapshotUnavailable(msg.to_owned()),
             ),
+            PushPullError::CollectionPolicyViolation(msg) => {
+                DatatypeError::CollectionPolicyViolation(msg.to_owned())
+            }
         }
     }
 }

@@ -8,7 +8,8 @@ use crossbeam_channel::Sender;
 use tracing::{instrument, trace};
 
 use crate::{
-    DataType, DatatypeState, SnapshotWriteOptions,
+    DataType, DatatypeState,
+    connectivity::local_connectivity::LocalCollectionConfig,
     datatypes::{Crdt, common::Attribute, event_loop::Event, wired::WiredDatatype},
     errors::{connectivity::ConnectivityError, messages::sync as msg, push_pull::PushPullError},
     operations::{Operation, transaction::Transaction},
@@ -70,14 +71,14 @@ struct SyncedState {
     history: VecDeque<Arc<Transaction>>,
     sseq_history_pruned: u64,
     sseq_gc_safe: u64,
-    snapshot_write_options: SnapshotWriteOptions,
+    config: Arc<LocalCollectionConfig>,
 }
 
 impl SyncedState {
-    fn new(r#type: DataType, snapshot_write_options: SnapshotWriteOptions) -> Self {
+    fn new(r#type: DataType, config: Arc<LocalCollectionConfig>) -> Self {
         Self {
             crdt: Crdt::new(r#type),
-            snapshot_write_options,
+            config,
             lamport: 0,
             sseq_at_server: 0,
             checkpoints: HashMap::new(),
@@ -137,8 +138,11 @@ impl SyncedState {
                     msg::INVALID_TRANSACTION.into(),
                 ));
             }
+            self.config.validate_transaction_writes(tx)?;
+            let before = self.config.state_size_before(&crdt);
             crdt.execute_remote_transaction(tx, &mut lamport)
                 .map_err(|e| PushPullError::ProtocolViolation(e.to_string()))?;
+            self.config.validate_state_change(before, &crdt)?;
             sseq += 1;
             let mut owned_tx: Transaction = (**tx).clone();
             owned_tx.sseq = sseq;
@@ -176,7 +180,7 @@ impl SyncedState {
     fn get_subscribe_snapshot(&self) -> Result<Transaction, PushPullError> {
         let bytes = self
             .crdt
-            .serialize(self.snapshot_write_options)
+            .serialize(self.config.snapshot_write_options)
             .map_err(|error| PushPullError::SnapshotUnavailable(error.to_string()))?;
         let mut operation = Operation::new_snapshot(bytes);
         operation.set_lamport(self.lamport);
@@ -227,13 +231,13 @@ impl LocalDatatypeServer {
     pub(super) fn new(
         attr: &Attribute,
         max_sub_gens: HashMap<Cuid, u64>,
-        snapshot_write_options: SnapshotWriteOptions,
+        config: Arc<LocalCollectionConfig>,
     ) -> Self {
         Self {
             max_sub_gens,
             wired_map: HashMap::new(),
             sender_map: HashMap::new(),
-            synced: SyncedState::new(attr.r#type, snapshot_write_options),
+            synced: SyncedState::new(attr.r#type, config),
             collection: attr.client_common.collection.clone(),
             key: attr.key.clone(),
             r#type: attr.r#type,
@@ -459,8 +463,9 @@ impl LocalDatatypeServer {
         previous: Option<Subscription>,
         max_sub_gen: Option<u64>,
     ) -> PushPullPack {
-        // Unsubscribe closes its generation even when the final batch is rejected.
-        if (result.is_ok() || pushed.state == DatatypeState::Unsubscribing)
+        let closes_subscription = pushed.state == DatatypeState::Unsubscribing
+            && !matches!(result, Err(PushPullError::CollectionPolicyViolation(_)));
+        if (result.is_ok() || closes_subscription)
             && max_sub_gen.is_none_or(|generation| pushed.sub_gen > generation)
         {
             self.max_sub_gens
@@ -589,8 +594,11 @@ impl LocalDatatypeServer {
             Ok(())
         };
 
-        // Always clean up client subscription regardless of error: the client will be Disabled
-        // either way, and leaving stale entries would cause infinite unsubscribe retry loops.
+        // A policy rejection retains the subscription so the final batch can be retried.
+        if matches!(result, Err(PushPullError::CollectionPolicyViolation(_))) {
+            return result;
+        }
+        // Other outcomes close the subscription.
         self.wired_map.remove(&pushed.cuid);
         self.sender_map.remove(&pushed.cuid);
         self.synced.checkpoints.remove(&pushed.cuid);

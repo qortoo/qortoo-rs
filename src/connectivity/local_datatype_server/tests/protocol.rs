@@ -14,7 +14,7 @@ fn can_reject_unsupported_deletion_without_changing_backend_state(#[case] create
         DatatypeState::Creating,
         WiredInterceptor::new_arc(),
     );
-    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
+    let mut server = test_server(&attr);
     let (sender, receiver) = crossbeam_channel::unbounded();
     server.insert_client_item(wired.clone(), sender);
     let mut pushed = PushPullPack::new(&attr, DatatypeState::Creating);
@@ -88,7 +88,7 @@ fn can_reject_unsupported_deletion_without_changing_backend_state(#[case] create
 #[case::backward_sequence(&[2, 3, 2, 4])]
 fn can_reject_nonsequential_new_transactions_without_publishing_batch(#[case] sequences: &[u64]) {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
+    let mut server = test_server(&attr);
     let mut pushed = PushPullPack::new(&attr, DatatypeState::Creating);
     let accepted = transaction(&pushed.cuid, 1, Operation::new_counter_increase(7));
     pushed.transactions = vec![accepted.clone()];
@@ -156,7 +156,7 @@ fn can_reject_nonsequential_new_transactions_without_publishing_batch(#[case] se
 #[case(DataType::Map)]
 fn can_reject_a_late_batch_failure_without_advancing_backend_state(#[case] data_type: DataType) {
     let attr = new_attribute!(data_type);
-    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
+    let mut server = test_server(&attr);
     let operation = |value: i64| match data_type {
         DataType::Counter => Operation::new_counter_increase(value),
         DataType::Variable => {
@@ -253,7 +253,7 @@ fn can_keep_a_failed_creation_unpublished(
     #[case] state: DatatypeState,
 ) {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
+    let mut server = test_server(&attr);
     let mut pushed = PushPullPack::new(&attr, state);
     let mut tx = (*transaction(&pushed.cuid, 1, Operation::new_counter_increase(7))).clone();
     match mutation {
@@ -809,7 +809,7 @@ fn can_reject_push_from_disabled_client() {
 #[test]
 fn can_fence_previous_subscription_and_retry_without_reapplying_transactions() {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
+    let mut server = test_server(&attr);
     let mut push = PushPullPack::new(&attr, DatatypeState::Creating);
     push.transactions = vec![transaction(
         &push.cuid,
@@ -852,7 +852,7 @@ fn can_fence_previous_subscription_and_retry_without_reapplying_transactions() {
 #[case::subscribe_or_create(DatatypeState::SubscribingOrCreating)]
 fn can_replace_only_with_a_valid_new_subscription_generation(#[case] state: DatatypeState) {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
+    let mut server = test_server(&attr);
     let mut old = PushPullPack::new(&attr, DatatypeState::Creating);
     old.transactions = vec![transaction(
         &old.cuid,
@@ -957,7 +957,7 @@ fn can_replace_only_with_a_valid_new_subscription_generation(#[case] state: Data
 #[test]
 fn can_fence_retired_generations_and_accept_a_fresh_subscription() {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
+    let mut server = test_server(&attr);
     let mut old = PushPullPack::new(&attr, DatatypeState::Creating);
     assert!(server.process(&old, false).unwrap().error.is_none());
     let mut new = PushPullPack::new(&attr, DatatypeState::Subscribing);
@@ -1035,7 +1035,7 @@ fn can_require_a_snapshot_before_recreating_an_existing_resource(
     #[values(false, true)] with_transactions: bool,
 ) {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
+    let mut server = test_server(&attr);
     let mut push = PushPullPack::new(&attr, DatatypeState::Creating);
     push.transactions = vec![transaction(
         &push.cuid,
@@ -1122,4 +1122,72 @@ fn can_require_a_snapshot_before_recreating_an_existing_resource(
     )];
     assert!(server.process(&renewed, false).unwrap().error.is_none());
     assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 11);
+}
+
+#[test]
+fn can_apply_collection_policy_to_server_transactions_against_existing_state() {
+    let attr = new_attribute!(DataType::Map);
+    let mut server = test_server(&attr);
+    let put = |key: &str, bytes: usize| {
+        let value = format!("\"{}\"", "x".repeat(bytes));
+        Operation::new_map_put(key.into(), value.into_bytes().into_boxed_slice())
+    };
+    let mut pushed = PushPullPack::new(&attr, DatatypeState::Creating);
+    pushed.transactions = vec![
+        transaction(&pushed.cuid, 1, put("old", 11_000)),
+        transaction(&pushed.cuid, 2, put("other", 100)),
+    ];
+    assert!(server.process(&pushed, false).unwrap().error.is_none());
+    // Seed existing state before applying the policy under test.
+    let config = Arc::get_mut(&mut server.synced.config).unwrap();
+    let info = Arc::get_mut(&mut config.info).unwrap();
+    info.max_state_bytes = 10_000;
+    info.max_key_bytes = 10;
+    info.max_value_bytes = 150;
+    info.forbidden_keys = vec!["old".into()];
+    let synced = &server.synced;
+    let baseline = synced.crdt.serialize(snapshot_write_options()).unwrap();
+    let state_bytes = synced.crdt.logical_state_bytes();
+    let history = synced.history.clone();
+    let checkpoints = synced.checkpoints.clone();
+    let generations = server.max_sub_gens.clone();
+
+    pushed.state = DatatypeState::Subscribed;
+    for (op, expected_detail) in [
+        (put("old", 1), "forbidden"),
+        (put("한한한ab", 1), "max_key_bytes"),
+        (put("other", 149), "max_value_bytes"),
+        (put("other", 100), "max_state_bytes"),
+        (put("new", 1), "max_state_bytes"),
+    ] {
+        pushed.transactions = vec![transaction(&pushed.cuid, 3, op)];
+        let rejected = server.process(&pushed, false).unwrap().error.unwrap();
+        assert!(matches!(
+            &rejected,
+            PushPullError::CollectionPolicyViolation(detail) if detail.contains(expected_detail)
+        ));
+    }
+    let synced = &server.synced;
+    assert_eq!(
+        synced.crdt.serialize(snapshot_write_options()).unwrap(),
+        baseline
+    );
+    assert_eq!(synced.crdt.logical_state_bytes(), state_bytes);
+    assert_eq!(synced.sseq_at_server, 2);
+    assert_eq!(synced.lamport, 2);
+    assert_eq!(synced.history, history);
+    assert_eq!(synced.checkpoints, checkpoints);
+    assert_eq!(synced.sseq_history_pruned, 0);
+    assert_eq!(synced.sseq_gc_safe, 0);
+    assert_eq!(server.max_sub_gens, generations);
+
+    pushed.transactions = vec![transaction(&pushed.cuid, 3, put("other", 90))];
+    assert!(server.process(&pushed, false).unwrap().error.is_none());
+    assert_eq!(server.synced.crdt.logical_state_bytes(), state_bytes - 10);
+    assert!(server.synced.crdt.logical_state_bytes() > 10_000);
+
+    let remove = Operation::new_map_remove("old".into());
+    pushed.transactions = vec![transaction(&pushed.cuid, 4, remove)];
+    assert!(server.process(&pushed, false).unwrap().error.is_none());
+    assert_eq!(server.synced.crdt.logical_state_bytes(), 184);
 }

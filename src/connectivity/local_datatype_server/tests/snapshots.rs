@@ -148,7 +148,7 @@ fn can_keep_a_failed_snapshot_application_unacknowledged() {
 #[test]
 fn can_serve_an_empty_backend_snapshot_before_any_writes() {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
+    let mut server = test_server(&attr);
     let create = PushPullPack::new(&attr, DatatypeState::Creating);
     assert!(server.process(&create, false).unwrap().error.is_none());
     let subscribe = PushPullPack::with_sub_gen(&attr, DatatypeState::Subscribing, create.sub_gen);
@@ -171,7 +171,7 @@ fn can_serve_a_snapshot_without_accessing_client_state(#[case] keep_busy_handle:
         DatatypeState::Subscribed,
         WiredInterceptor::new_arc(),
     );
-    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
+    let mut server = test_server(&attr);
     let (sender, _) = crossbeam_channel::unbounded();
     server.insert_client_item(wired.clone(), sender);
     let mut create = PushPullPack::new(&attr, DatatypeState::Creating);
@@ -257,7 +257,8 @@ fn can_apply_snapshot_policy_for_each_available_writer_and_datatype() {
             let options = SnapshotWriteOptions { codec, compression };
             for kind in [DataType::Counter, DataType::Variable, DataType::Map] {
                 let attr = new_attribute!(kind);
-                let mut server = LocalDatatypeServer::new(&attr, Default::default(), options);
+                let mut server =
+                    LocalDatatypeServer::new(&attr, Default::default(), collection_config(options));
                 let mut create = PushPullPack::new(&attr, DatatypeState::Creating);
                 let operation = match kind {
                     DataType::Counter => Operation::new_counter_increase(7),
@@ -302,7 +303,7 @@ fn can_apply_snapshot_policy_for_each_available_writer_and_datatype() {
 fn can_keep_subscription_progress_when_snapshot_capture_fails() {
     use crate::types::operation_context::OperationContext;
     let attr = new_attribute!(DataType::Variable);
-    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
+    let mut server = test_server(&attr);
     let mut create = PushPullPack::new(&attr, DatatypeState::Creating);
     create.transactions = vec![transaction(
         &create.cuid,

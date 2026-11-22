@@ -229,7 +229,7 @@ impl Client {
 
     /// Returns the collection information, or `None` until [`Self::open`] succeeds.
     pub(crate) fn get_collection_info(&self) -> Option<&CollectionInfo> {
-        self.common.collection_info.get().map(Arc::as_ref)
+        self.common.get_collection_info()
     }
 
     /// Returns the alias (application/client name) for this client.

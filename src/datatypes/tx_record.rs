@@ -11,6 +11,7 @@ pub struct TxRecord {
     pub pending: Option<Transaction>,
     pub rollback_op_id: OperationId,
     pub rollback_state: DatatypeState,
+    pub initial_state_bytes: u64,
     rollback_actions: Vec<RollbackAction>,
 }
 
@@ -20,6 +21,7 @@ impl TxRecord {
             pending: None,
             rollback_op_id: op_id,
             rollback_state: state,
+            initial_state_bytes: 0,
             rollback_actions: Vec::new(),
         }
     }
@@ -33,6 +35,7 @@ impl TxRecord {
         &mut self,
         op_id: &OperationId,
         state: DatatypeState,
+        state_bytes: u64,
         op: Operation,
         rollback_action: RollbackAction,
     ) -> bool {
@@ -41,6 +44,7 @@ impl TxRecord {
             debug_assert!(self.rollback_actions.is_empty());
             self.rollback_op_id = op_id.clone();
             self.rollback_state = state;
+            self.initial_state_bytes = state_bytes;
             self.pending = Some(Transaction::new(&op_id.cuid, op_id.cseq + 1));
         }
         self.pending.as_mut().unwrap().push_operation(op);
@@ -98,12 +102,14 @@ mod tests_tx_record {
         assert!(tx_record.record_operation(
             &op_id,
             Default::default(),
+            8,
             Operation::new_counter_increase(3),
             RollbackAction::Counter(CounterRollbackAction::Increase { delta: -3 }),
         ));
         assert!(!tx_record.record_operation(
             &op_id,
             Default::default(),
+            8,
             Operation::new_counter_increase(5),
             RollbackAction::Counter(CounterRollbackAction::Increase { delta: -5 }),
         ));
