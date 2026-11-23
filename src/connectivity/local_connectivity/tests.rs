@@ -426,31 +426,35 @@ fn can_keep_serving_snapshots_after_the_creator_unsubscribes() {
 #[test]
 fn can_write_snapshots_with_collection_options() {
     use crate::{
-        DataType, SnapshotCompression, SnapshotWriteOptions,
+        DataType, LocalConnectivity, SnapshotCompression, SnapshotWriteOptions,
         datatypes::{Crdt, datatype::DatatypeBlanket},
         operations::body::OperationBody,
         types::{push_pull_pack::PushPullPack, uid::Cuid},
     };
 
-    let backend = local_connectivity();
-    backend.set_realtime(false);
-    let default_options = backend.default_snapshot_write_options;
-    let plain_options = SnapshotWriteOptions {
+    let zstd_options = crate::utils::test_utils::snapshot_write_options();
+    let default_options = SnapshotWriteOptions {
         compression: SnapshotCompression::None,
-        ..default_options
+        ..zstd_options
     };
+    let backend = LocalConnectivity::new_arc_with_snapshot_options(default_options);
+    backend.set_realtime(false);
     backend
         .create_collection_with_options(
-            "plain",
+            "zstd",
             CollectionInfo::default(),
-            crate::LocalCollectionOptions {
-                snapshot_write_options: Some(plain_options),
-                ..Default::default()
-            },
+            crate::LocalCollectionOptions::new(zstd_options),
         )
         .unwrap();
+    backend
+        .create_collection("backend-default", CollectionInfo::default())
+        .unwrap();
 
-    for (collection, options) in [("plain", plain_options), ("default", default_options)] {
+    for (collection, options) in [
+        ("zstd", zstd_options),
+        ("default", default_options),
+        ("backend-default", default_options),
+    ] {
         let client = Client::builder(collection, "writer")
             .with_connectivity(backend.clone())
             .build_and_open()
@@ -507,9 +511,9 @@ fn can_configure_server_collection_checks_independently(
                 ..Default::default()
             },
             LocalCollectionOptions {
+                snapshot_write_options: backend.default_snapshot_write_options,
                 validate_writes,
                 validate_state_size,
-                ..Default::default()
             },
         )
         .unwrap();

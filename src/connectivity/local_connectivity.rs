@@ -12,88 +12,16 @@ use parking_lot::RwLock;
 
 use crate::{
     ClientError, CollectionInfo, DatatypeState, SnapshotWriteOptions,
-    connectivity::{Connectivity, local_datatype_server::LocalDatatypeServer},
-    datatypes::{Crdt, event_loop::Event, wired::WiredDatatype},
+    connectivity::{
+        Connectivity,
+        local_collection_config::{LocalCollectionConfig, LocalCollectionOptions},
+        local_datatype_server::LocalDatatypeServer,
+    },
+    datatypes::{event_loop::Event, wired::WiredDatatype},
     errors::{connectivity::ConnectivityError, messages::sync as msg, push_pull::PushPullError},
-    operations::transaction::Transaction,
     types::{common::ResourceID, push_pull_pack::PushPullPack, uid::Cuid},
     utils::name_validator::is_valid_collection_name,
 };
-
-/// Server-only settings for a collection in [`LocalConnectivity`].
-#[derive(Debug, Clone, Copy)]
-pub struct LocalCollectionOptions {
-    /// Snapshot writer override. `None` uses the backend's default.
-    pub snapshot_write_options: Option<SnapshotWriteOptions>,
-    /// Checks incoming writes against the collection's key and value policy. Defaults to `true`.
-    pub validate_writes: bool,
-    /// Checks the merged logical state size after each transaction. Defaults to `true`.
-    pub validate_state_size: bool,
-}
-
-impl Default for LocalCollectionOptions {
-    fn default() -> Self {
-        Self {
-            snapshot_write_options: None,
-            validate_writes: true,
-            validate_state_size: true,
-        }
-    }
-}
-
-pub(super) struct LocalCollectionConfig {
-    pub(super) info: Arc<CollectionInfo>,
-    pub(super) snapshot_write_options: SnapshotWriteOptions,
-    validate_writes: bool,
-    validate_state_size: bool,
-}
-
-impl LocalCollectionConfig {
-    pub(super) fn new(
-        info: CollectionInfo,
-        options: LocalCollectionOptions,
-        default_writer: SnapshotWriteOptions,
-    ) -> Self {
-        Self {
-            info: Arc::new(info),
-            snapshot_write_options: options.snapshot_write_options.unwrap_or(default_writer),
-            validate_writes: options.validate_writes,
-            validate_state_size: options.validate_state_size,
-        }
-    }
-
-    pub(super) fn validate_transaction_writes(
-        &self,
-        tx: &Transaction,
-    ) -> Result<(), PushPullError> {
-        if self.validate_writes {
-            for op in tx.iter() {
-                self.info
-                    .validate_write(&op.body)
-                    .map_err(PushPullError::CollectionPolicyViolation)?;
-            }
-        }
-        Ok(())
-    }
-
-    pub(super) fn state_size_before(&self, crdt: &Crdt) -> Option<u64> {
-        (self.validate_state_size && self.info.max_state_bytes != 0)
-            .then(|| crdt.logical_state_bytes())
-    }
-
-    pub(super) fn validate_state_change(
-        &self,
-        before: Option<u64>,
-        crdt: &Crdt,
-    ) -> Result<(), PushPullError> {
-        if let Some(before) = before {
-            self.info
-                .validate_state_change(before, crdt.logical_state_bytes())
-                .map_err(PushPullError::CollectionPolicyViolation)?;
-        }
-        Ok(())
-    }
-}
 
 struct LocalCollection {
     config: Arc<LocalCollectionConfig>,
@@ -218,7 +146,11 @@ impl LocalConnectivity {
     ///
     /// Returns an error if the name or limits are invalid, or if the collection already exists.
     pub fn create_collection(&self, name: &str, info: CollectionInfo) -> Result<(), ClientError> {
-        self.create_collection_with_options(name, info, LocalCollectionOptions::default())
+        self.create_collection_with_options(
+            name,
+            info,
+            LocalCollectionOptions::new(self.default_snapshot_write_options),
+        )
     }
 
     /// Creates a collection with shared information and server-only options.
@@ -243,9 +175,7 @@ impl LocalConnectivity {
         match self.collections.write().entry(name.to_owned()) {
             Entry::Vacant(entry) => {
                 entry.insert(LocalCollection::new(LocalCollectionConfig::new(
-                    info,
-                    options,
-                    self.default_snapshot_write_options,
+                    info, options,
                 )));
                 Ok(())
             }
@@ -329,8 +259,7 @@ impl Connectivity for LocalConnectivity {
         let collection = collections.entry(collection.to_owned()).or_insert_with(|| {
             LocalCollection::new(LocalCollectionConfig::new(
                 CollectionInfo::default(),
-                LocalCollectionOptions::default(),
-                self.default_snapshot_write_options,
+                LocalCollectionOptions::new(self.default_snapshot_write_options),
             ))
         });
         collection.clients.insert(cuid.clone());

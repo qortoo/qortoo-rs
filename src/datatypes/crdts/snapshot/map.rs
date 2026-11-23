@@ -6,34 +6,41 @@ use std::{
 use super::{
     SnapshotCodec, WINDOW_LOG,
     wire::{
-        Codec, Result as WireResult, decode_frame, decode_payload, encode_frame, encode_payload,
-        read_size, take_bytes, write_size,
+        Codec, Result as WireResult, decode_frame, decode_payload, encode_payload, read_size,
+        take_bytes, write_size,
     },
 };
 use crate::{
-    SnapshotDecodeLimits, SnapshotErrorReason, SnapshotWriteOptions,
+    SnapshotCodecKind, SnapshotDecodeLimits, SnapshotErrorReason,
     datatypes::crdts::{map_crdt::MapCrdt, timed_node::TimedNode},
     types::{timestamp::Timestamp, uid::Cuid},
     utils::json::validate_json_str,
 };
 
 impl SnapshotCodec for MapCrdt {
-    fn encode_snapshot(
+    const KIND: u8 = 3;
+
+    fn encode_raw(
         &self,
-        options: SnapshotWriteOptions,
-    ) -> Result<Box<[u8]>, SnapshotErrorReason> {
+        codec: SnapshotCodecKind,
+        max_map_entries: usize,
+    ) -> Result<Vec<u8>, SnapshotErrorReason> {
+        let count = self.entries.size();
+        if count > max_map_entries {
+            return Err(SnapshotErrorReason::LimitExceeded);
+        }
         let mut raw = Vec::new();
-        write_size(&mut raw, self.entries.size())?;
+        write_size(&mut raw, count)?;
         let cuid_indices = self.write_cuid_table(&mut raw)?;
-        self.write_map_blocks(options.codec, &cuid_indices, &mut raw)?;
-        encode_frame(3, options, &raw, WINDOW_LOG)
+        self.write_map_blocks(codec, &cuid_indices, &mut raw)?;
+        Ok(raw)
     }
 
     fn decode_snapshot(
         bytes: &[u8],
         limits: SnapshotDecodeLimits,
     ) -> Result<Self, SnapshotErrorReason> {
-        let (codec, raw) = decode_frame(bytes, 3, limits, WINDOW_LOG)?;
+        let (codec, raw) = decode_frame(bytes, Self::KIND, limits, WINDOW_LOG)?;
         let mut cursor = raw.as_ref();
         let count = read_size(&mut cursor)?;
         if count > limits.max_map_entries {

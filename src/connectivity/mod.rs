@@ -9,6 +9,7 @@ use crate::{
     types::{push_pull_pack::PushPullPack, uid::Cuid},
 };
 
+pub(crate) mod local_collection_config;
 #[allow(dead_code)]
 pub mod local_connectivity;
 pub mod local_datatype_server;

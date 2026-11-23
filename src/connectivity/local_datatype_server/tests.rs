@@ -26,14 +26,13 @@ pub(super) use crate::{
 };
 use crate::{
     CollectionInfo, LocalCollectionOptions, SnapshotWriteOptions,
-    connectivity::local_connectivity::LocalCollectionConfig,
+    connectivity::local_collection_config::LocalCollectionConfig,
 };
 
 pub(super) fn collection_config(options: SnapshotWriteOptions) -> Arc<LocalCollectionConfig> {
     Arc::new(LocalCollectionConfig::new(
         CollectionInfo::default(),
-        LocalCollectionOptions::default(),
-        options,
+        LocalCollectionOptions::new(options),
     ))
 }
 

@@ -143,7 +143,7 @@ in `can_describe_server_rejection_reasons`.
 | `ResourceNotFound` | The requested resource does not exist or has an incompatible type |
 | `MissingSubscription` | The server has no subscription entry, for example after losing state |
 | `ProtocolViolation` | The push violated the wire protocol, such as an unexpected state transition or a type mismatch |
-| `SnapshotUnavailable` | The server cannot generate a snapshot with its configured writer |
+| `SnapshotUnavailable` | The server cannot generate a snapshot with its configured writer or the snapshot exceeds a server-side limit |
 
 ### Backend errors
 

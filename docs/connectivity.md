@@ -57,8 +57,10 @@ The response carries the work the client should apply and either the new state o
 Call `LocalConnectivity::create_collection(name, info)` to configure a collection
 before opening a client for it. Use `create_collection_with_options(name, info, options)`
 to set server-only `LocalCollectionOptions`. Its `snapshot_write_options` selects the
-codec and compression for the collection. When omitted, the backend uses its default
-writer. Clients read the codec and compression from the snapshot header.
+codec and compression for the collection. `create_collection` uses the backend's
+default writer. Clients read the codec and compression from the snapshot header.
+Use `LocalCollectionOptions::new(writer)` to set a writer with both server policy
+checks enabled.
 
 Opening the first client for an unconfigured collection uses default limits and
 server options. Opening a client returns the shared `CollectionInfo`. Both the shared
@@ -95,8 +97,14 @@ and sync progress in place for retry. Later transactions stay behind the rejecte
 until the server can accept them. Already accepted remote transactions and snapshots
 bypass write admission.
 
-Enforcement of the generated snapshot limit and use of the collection's batch target
-are planned work.
+The backend encodes a snapshot when a client subscribes. The complete frame must fit
+both `max_snapshot_bytes` and the default decoder input limit. The raw payload and
+Map entry count (including tombstones) must also fit the default decoder limits.
+Exceeding any of these limits fails the subscription with `E307` before the server
+records subscription progress. Existing subscribers can continue syncing transactions
+while new subscriptions fail. A new subscription can succeed once the state fits again.
+Subscribers may enforce stricter decoder limits.
+Using the collection's transmission target for Push and Pull batches is planned.
 
 ## Datatype Exchange
 

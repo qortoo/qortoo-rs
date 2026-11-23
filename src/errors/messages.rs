@@ -117,6 +117,8 @@ pub(crate) mod datatype {
 pub(crate) mod sync {
     use std::fmt::{Debug, Display};
 
+    pub(crate) const SNAPSHOT_SIZE_LIMIT: &str =
+        "snapshot exceeds the collection or default decoder limits";
     pub(crate) const SNAPSHOT_UNAVAILABLE_PREFIX: &str = "snapshot unavailable: ";
 
     pub(crate) const EVENT_LOOP_PREFIX: &str = "event loop: ";

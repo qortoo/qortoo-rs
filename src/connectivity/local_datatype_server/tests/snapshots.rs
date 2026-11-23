@@ -443,3 +443,83 @@ fn can_propagate_snapshot_policy_from_local_connectivity() {
         assert_eq!(replica.get_value(), 7);
     }
 }
+
+#[test]
+fn can_keep_syncing_when_a_new_subscription_exceeds_the_snapshot_limit() {
+    let attr = new_attribute!(DataType::Variable);
+    let mut options = snapshot_write_options();
+    options.compression = crate::SnapshotCompression::None;
+    let config = LocalCollectionConfig::new(
+        crate::CollectionInfo {
+            max_snapshot_bytes: 1000,
+            ..Default::default()
+        },
+        crate::LocalCollectionOptions {
+            validate_state_size: false,
+            ..crate::LocalCollectionOptions::new(options)
+        },
+    );
+    let mut server = LocalDatatypeServer::new(&attr, Default::default(), Arc::new(config));
+    let mut push = PushPullPack::new(&attr, DatatypeState::Creating);
+    let set = |value: &str| Operation::new_variable_set(value.as_bytes().into());
+    push.transactions = vec![transaction(&push.cuid, 1, set("1"))];
+    assert!(server.process(&push, false).unwrap().error.is_none());
+
+    let mut reader = PushPullPack::new(&attr, DatatypeState::Subscribing);
+    reader.cuid = Cuid::new();
+    let subscribed = server.process(&reader, false).unwrap();
+    assert!(subscribed.snapshot_transaction.is_some());
+    reader.state = DatatypeState::Subscribed;
+    reader.duid = subscribed.duid;
+    reader.checkpoint = subscribed.checkpoint;
+
+    let large = format!("\"{}\"", "x".repeat(2000));
+    push.state = DatatypeState::Subscribed;
+    push.transactions = vec![
+        transaction(&push.cuid, 2, set("2")),
+        transaction(&push.cuid, 3, set(&large)),
+    ];
+    let accepted = server.process(&push, false).unwrap();
+    assert!(accepted.error.is_none());
+    assert_eq!(accepted.checkpoint, CheckPoint::new(3, 3));
+
+    let mut subscribe = PushPullPack::new(&attr, DatatypeState::Subscribing);
+    subscribe.cuid = Cuid::new();
+    let history = server.synced.history.clone();
+    let checkpoints = server.synced.checkpoints.clone();
+    let generations = server.max_sub_gens.clone();
+    let rejected = server.process(&subscribe, false).unwrap();
+    assert_eq!(
+        rejected.error,
+        Some(PushPullError::SnapshotUnavailable(
+            "snapshot exceeds the collection or default decoder limits".into()
+        ))
+    );
+    assert!(rejected.snapshot_transaction.is_none());
+    assert_eq!(
+        server.synced.crdt.as_variable().unwrap().value(),
+        large.as_bytes()
+    );
+    assert_eq!(server.synced.history, history);
+    assert_eq!(server.synced.checkpoints, checkpoints);
+    assert_eq!(server.max_sub_gens, generations);
+
+    let pulled = server.process(&reader, false).unwrap();
+    assert!(pulled.error.is_none());
+    assert_eq!(pulled.checkpoint.sseq, 3);
+    assert_eq!(
+        pulled.transactions,
+        history
+            .into_iter()
+            .filter(|tx| tx.sseq > 1)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(pulled.transactions.len(), 2);
+
+    push.checkpoint = accepted.checkpoint;
+    push.transactions = vec![transaction(&push.cuid, 4, set("4"))];
+    assert!(server.process(&push, false).unwrap().error.is_none());
+    let subscribed = server.process(&subscribe, false).unwrap();
+    assert!(subscribed.error.is_none());
+    assert_eq!(subscribed.snapshot_transaction.unwrap().sseq, 4);
+}

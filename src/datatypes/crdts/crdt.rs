@@ -124,13 +124,22 @@ impl Crdt {
         }
     }
 
-    pub fn serialize(&self, options: SnapshotWriteOptions) -> Result<Box<[u8]>, DatatypeError> {
+    pub(crate) fn serialize_with_limits(
+        &self,
+        options: SnapshotWriteOptions,
+        limits: SnapshotDecodeLimits,
+    ) -> Result<Box<[u8]>, DatatypeError> {
         match self {
-            Self::Counter(c) => c.encode_snapshot(options),
-            Self::Variable(v) => v.encode_snapshot(options),
-            Self::Map(m) => m.encode_snapshot(options),
+            Self::Counter(c) => c.encode_snapshot_with_limits(options, limits),
+            Self::Variable(v) => v.encode_snapshot_with_limits(options, limits),
+            Self::Map(m) => m.encode_snapshot_with_limits(options, limits),
         }
         .map_err(DatatypeError::SnapshotEncode)
+    }
+
+    #[cfg(test)]
+    pub fn serialize(&self, options: SnapshotWriteOptions) -> Result<Box<[u8]>, DatatypeError> {
+        self.serialize_with_limits(options, super::snapshot::UNLIMITED)
     }
 
     pub fn deserialize(

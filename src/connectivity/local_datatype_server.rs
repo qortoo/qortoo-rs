@@ -8,8 +8,8 @@ use crossbeam_channel::Sender;
 use tracing::{instrument, trace};
 
 use crate::{
-    DataType, DatatypeState,
-    connectivity::local_connectivity::LocalCollectionConfig,
+    DataType, DatatypeError, DatatypeState, SnapshotDecodeLimits, SnapshotErrorReason,
+    connectivity::local_collection_config::LocalCollectionConfig,
     datatypes::{Crdt, common::Attribute, event_loop::Event, wired::WiredDatatype},
     errors::{connectivity::ConnectivityError, messages::sync as msg, push_pull::PushPullError},
     operations::{Operation, transaction::Transaction},
@@ -178,10 +178,19 @@ impl SyncedState {
     }
 
     fn get_subscribe_snapshot(&self) -> Result<Transaction, PushPullError> {
+        let mut limits = SnapshotDecodeLimits::default();
+        limits.max_input_bytes = limits
+            .max_input_bytes
+            .min(self.config.info.max_snapshot_bytes);
         let bytes = self
             .crdt
-            .serialize(self.config.snapshot_write_options)
-            .map_err(|error| PushPullError::SnapshotUnavailable(error.to_string()))?;
+            .serialize_with_limits(self.config.options.snapshot_write_options, limits)
+            .map_err(|error| match error {
+                DatatypeError::SnapshotEncode(SnapshotErrorReason::LimitExceeded) => {
+                    PushPullError::SnapshotUnavailable(msg::SNAPSHOT_SIZE_LIMIT.into())
+                }
+                _ => PushPullError::SnapshotUnavailable(error.to_string()),
+            })?;
         let mut operation = Operation::new_snapshot(bytes);
         operation.set_lamport(self.lamport);
         let mut transaction = Transaction::new_with_cuid(&Cuid::new_nil());
