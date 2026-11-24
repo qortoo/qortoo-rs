@@ -9,6 +9,7 @@ pub mod datatype_set;
 mod effects;
 pub mod event_loop;
 pub mod handler;
+pub mod map;
 mod mutable;
 pub mod option;
 pub mod pull_handler;

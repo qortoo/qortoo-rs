@@ -51,7 +51,9 @@ value the way [`Variable`](variable.md) does.
 
 ```rust
 # use qortoo::{Client, Counter};
-let client = Client::builder("doc-example", "counter-behavior").build().unwrap();
+let client = Client::builder("doc-example", "counter-behavior")
+    .build_and_open()
+    .unwrap();
 let counter = client.create_datatype("balance").build_counter().unwrap();
 
 assert_eq!(counter.increase_by(5).unwrap(), 5);

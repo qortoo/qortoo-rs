@@ -3,58 +3,68 @@ use crate::{
     datatypes::{handler::DatatypeHandler, transactional::TransactionalDatatype},
 };
 
-/// The `Datatype` trait defines the common interface for all
-/// conflict-free datatypes (e.g., Counter, Register, Document).
+/// Shared metadata, lifecycle, synchronization, and handler methods for
+/// [`Counter`](crate::Counter), [`Variable`](crate::Variable), and [`Map`](crate::Map).
 ///
-/// Each datatype exposes:
-/// - a **key**: a unique identifier used to distinguish instances in a collection,
-/// - a **type**: an enum variant of [`DataType`] describing the kind of datatype,
-/// - a **state**: a [`DatatypeState`] indicating the current lifecycle/state of this datatype.
+/// Cloning a handle shares the same local value and lifecycle state. Value
+/// reads are available in every lifecycle state. Local value writes require a
+/// [writable state](DatatypeState::is_read_writable) and will be rejected for
+/// handles built with [`DatatypeBuilder::with_readonly`](crate::DatatypeBuilder::with_readonly).
 ///
+/// # Examples
 ///
-/// # Example
 /// ```
-/// use qortoo::Client;
-/// use qortoo::{Counter, Datatype};
-/// use qortoo::{DatatypeState, DataType};
-/// let client = Client::builder("doc-example", "Datatype-trait").build().unwrap();
-/// let counter = client.create_datatype("test-counter".to_string()).build_counter().unwrap();
-/// assert_eq!(counter.get_key(), "test-counter");
-/// assert_eq!(counter.get_type(), DataType::Counter);
-/// assert_eq!(counter.get_state(), DatatypeState::Creating);
+/// use qortoo::{Client, DataType, Datatype};
+///
+/// let client = Client::builder("doc-example", "datatype-trait")
+///     .build_and_open()
+///     .unwrap();
+/// let map = client.create_datatype("settings").build_map().unwrap();
+/// assert_eq!(map.get_key(), "settings");
+/// assert_eq!(map.get_type(), DataType::Map);
+/// assert_eq!(map.get_state_bytes(), 0);
 /// ```
 pub trait Datatype {
-    /// Returns a unique identifier used to distinguish instances in a collection.
+    /// Returns the key that identifies this datatype within its collection.
     fn get_key(&self) -> &str;
-    /// Returns an enum variant of [`DataType`] describing the kind of this datatype.
+    /// Returns the kind of this datatype.
     fn get_type(&self) -> DataType;
-    /// Returns a [`DatatypeState`] indicating the current lifecycle/status of this datatype.
+    /// Returns the current lifecycle state.
     fn get_state(&self) -> DatatypeState;
-    /// Returns the server-side version of this datatype.
+    /// Returns the logical size in bytes of the current local CRDT state.
     ///
-    /// The server version is incremented each time the server acknowledges
-    /// a synchronization. Returns 0 if no synchronization has occurred.
+    /// Includes pending local changes and provisional changes during an active
+    /// transaction. Counter uses 8 bytes. Variable uses its stored JSON byte
+    /// length. Each Map entry uses 42 metadata bytes plus its UTF-8 key length
+    /// and, for a live entry, its stored JSON byte length.
+    /// Heap allocation, serialized snapshots, and buffered operations have separate sizes.
+    fn get_state_bytes(&self) -> u64;
+    /// Returns the server sequence recorded in this client's sync checkpoint.
+    ///
+    /// The checkpoint starts at `0`. A sync can advance it by more than one
+    /// or leave it unchanged.
     fn get_server_version(&self) -> u64;
-    /// Returns the client-side version of this datatype.
+    /// Returns the current local transaction sequence.
     ///
-    /// The client version is incremented with each local operation.
-    /// This value represents the total number of operations applied locally.
+    /// The sequence advances once per transaction that records at least one
+    /// operation. A read during an active transaction can see the provisional
+    /// sequence, which rolls back if the transaction fails.
     fn get_client_version(&self) -> u64;
-    /// Returns the last synchronized client version.
+    /// Returns the highest client transaction sequence acknowledged by the backend.
     ///
-    /// This represents the client version that was successfully synchronized
-    /// with the server. Operations with versions greater than this value
-    /// are pending synchronization.
+    /// Committed local transactions with a greater sequence are pending synchronization.
     fn get_synced_client_version(&self) -> u64;
     /// Synchronizes local changes with the connectivity backend.
     ///
-    /// This method pushes local pending operations to the server and pulls
-    /// remote changes. After successful synchronization, the datatype state
-    /// transitions to [`DatatypeState::Subscribed`].
+    /// This method pushes pending local transactions to the server and pulls
+    /// remote changes. A confirmed subscription moves the datatype to
+    /// [`DatatypeState::Subscribed`]. A confirmed unsubscribe moves it to
+    /// [`DatatypeState::Disabled`].
     ///
     /// # Errors
     ///
-    /// Returns [`DatatypeError`] if synchronization fails, or
+    /// Returns an error if synchronization fails, including
+    /// [`DatatypeError::NotWritable`] on a disabled datatype or
     /// [`DatatypeError::Disallowed`] when called on the thread that owns this
     /// datatype's active local transaction. This includes calls through a
     /// captured original handle inside the callback. Calls from other threads
@@ -72,7 +82,7 @@ pub trait Datatype {
     /// connectivity.set_realtime(false);
     /// let client = Client::builder("doc-example", "Datatype-sync")
     ///     .with_connectivity(connectivity)
-    ///     .build()
+    ///     .build_and_open()
     ///     .unwrap();
     /// let counter = client.create_datatype("key").build_counter().unwrap();
     /// counter.increase().unwrap();
@@ -92,11 +102,19 @@ pub trait Datatype {
     /// Once the backend confirms unsubscribe, the datatype transitions to
     /// [`DatatypeState::Disabled`] and client-managed datatypes are detached from
     /// their owning client.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DatatypeError::NotWritable`] if the datatype is outside the
+    /// [`Subscribed`](DatatypeState::Subscribed) state.
     fn unsubscribe(&self) -> Result<(), DatatypeError>;
 
+    /// Registers a handler at priority `id`, replacing any handler at that priority.
+    ///
+    /// Handlers run in ascending priority order.
     fn set_handler(&self, id: usize, handler: DatatypeHandler);
 
-    /// Removes the handler registered at `id`, returning whether one was there.
+    /// Removes the handler at priority `id` and returns whether it existed.
     fn unset_handler(&self, id: usize) -> bool;
 
     #[cfg(test)]
@@ -121,6 +139,10 @@ where
 
     fn get_state(&self) -> DatatypeState {
         self.get_core().get_state()
+    }
+
+    fn get_state_bytes(&self) -> u64 {
+        self.get_core().get_state_bytes()
     }
 
     fn get_server_version(&self) -> u64 {
@@ -186,9 +208,28 @@ mod tests_datatype_trait {
         assert_eq!(data.get_key(), key);
         assert_eq!(data.get_type(), DataType::Counter);
         assert_eq!(data.get_state(), DatatypeState::Creating);
+        assert_eq!(data.get_state_bytes(), 8);
         assert_eq!(data.get_server_version(), 0);
         assert_eq!(data.get_client_version(), 0);
         assert_eq!(data.get_synced_client_version(), 0);
+    }
+
+    #[test]
+    fn can_read_counter_and_variable_logical_state_sizes() {
+        let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
+            .build_and_open()
+            .unwrap();
+        let counter = client.create_datatype("counter").build_counter().unwrap();
+        let variable = client.create_datatype("variable").build_variable().unwrap();
+        assert_eq!(variable.get_state_bytes(), 4);
+        counter.increase().unwrap();
+        variable.set_raw(b" [1, 2, 3] ").unwrap();
+        assert_eq!(counter.get_state_bytes(), 8);
+        assert_eq!(variable.get_state_bytes(), 11);
+        assert_eq!(
+            client.get_datatype("variable").unwrap().get_state_bytes(),
+            11
+        );
     }
 
     #[test]
@@ -200,7 +241,7 @@ mod tests_datatype_trait {
 
         let client1 = Client::builder(collection, key.clone())
             .with_connectivity(connectivity.clone())
-            .build()
+            .build_and_open()
             .unwrap();
         let counter1 = client1.create_datatype(key).build_counter().unwrap();
 
@@ -231,7 +272,7 @@ mod tests_datatype_trait {
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client
             .create_datatype(get_test_func_name!())
@@ -252,7 +293,7 @@ mod tests_datatype_trait {
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client
             .create_datatype(get_test_func_name!())
@@ -273,7 +314,7 @@ mod tests_datatype_trait {
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client
             .create_datatype(get_test_func_name!())
@@ -302,7 +343,7 @@ mod tests_datatype_trait {
         let (collection, key, resource_id) = get_test_ids!();
         let client = Client::builder(collection, get_test_func_name!())
             .with_connectivity(connectivity.clone())
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client.create_datatype(key).build_counter().unwrap();
         counter.sync().unwrap();
@@ -327,7 +368,7 @@ mod tests_datatype_trait {
         let (collection, key, resource_id) = get_test_ids!();
         let client = Client::builder(collection, get_test_func_name!())
             .with_connectivity(connectivity.clone())
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client.create_datatype(key).build_counter().unwrap();
         counter.sync().unwrap();
@@ -357,11 +398,11 @@ mod tests_datatype_trait {
         let (collection, key, _) = get_test_ids!();
         let client1 = Client::builder(collection.clone(), "client1")
             .with_connectivity(connectivity.clone())
-            .build()
+            .build_and_open()
             .unwrap();
         let client2 = Client::builder(collection, "client2")
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
 
         let counter1 = client1
@@ -389,7 +430,7 @@ mod tests_datatype_trait {
         let connectivity = local_connectivity();
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client
             .create_datatype(get_test_func_name!())

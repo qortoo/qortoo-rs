@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
-    Counter, DataType, Datatype, DatatypeState, Variable,
+    Counter, DataType, Datatype, DatatypeState, Map, Variable,
     clients::common::ClientCommon,
     datatypes::{
         common::Attribute, datatype::DatatypeBlanket, option::DatatypeOption,
@@ -10,31 +10,45 @@ use crate::{
     types::common::ArcStr,
 };
 
-/// A typed wrapper for concrete datatypes managed by the client.
+/// A concrete datatype handle returned by client lookups and passed to handlers.
 ///
-/// `DatatypeSet` allows returning a single enum while preserving
-/// type information and shared behavior across datatypes.
+/// Match the variant to access the datatype's methods. Cloning this enum
+/// clones the contained handle, which shares the same local value and state.
 #[derive(Clone)]
 pub enum DatatypeSet {
+    /// A counter handle.
     Counter(Counter),
+    /// A variable handle.
     Variable(Variable),
+    /// A map handle.
+    Map(Map),
 }
 
 impl DatatypeSet {
-    /// Returns the internal datatype in this wrapper, e.g. `DataType::Counter`
+    /// Returns the kind of the contained datatype.
     pub fn get_type(&self) -> DataType {
         match self {
             DatatypeSet::Counter(_) => DataType::Counter,
             DatatypeSet::Variable(_) => DataType::Variable,
+            DatatypeSet::Map(_) => DataType::Map,
         }
     }
 
-    /// Returns [`DatatypeState`] of the internal datatype in this wrapper,
-    /// e.g., `DatatypeState::Creating`
+    /// Returns the contained datatype's current lifecycle state.
     pub fn get_state(&self) -> DatatypeState {
         match self {
             DatatypeSet::Counter(cnt) => cnt.get_state(),
             DatatypeSet::Variable(var) => var.get_state(),
+            DatatypeSet::Map(map) => map.get_state(),
+        }
+    }
+
+    /// Returns the contained datatype's [logical state size in bytes](Datatype::get_state_bytes).
+    pub fn get_state_bytes(&self) -> u64 {
+        match self {
+            Self::Counter(counter) => counter.get_state_bytes(),
+            Self::Variable(variable) => variable.get_state_bytes(),
+            Self::Map(map) => map.get_state_bytes(),
         }
     }
 
@@ -42,6 +56,7 @@ impl DatatypeSet {
         match self {
             DatatypeSet::Counter(cnt) => cnt.get_core() as *const TransactionalDatatype as usize,
             DatatypeSet::Variable(var) => var.get_core() as *const TransactionalDatatype as usize,
+            DatatypeSet::Map(map) => map.get_core() as *const TransactionalDatatype as usize,
         }
     }
 
@@ -49,6 +64,7 @@ impl DatatypeSet {
         match self {
             DatatypeSet::Counter(cnt) => cnt.unsubscribe(),
             DatatypeSet::Variable(var) => var.unsubscribe(),
+            DatatypeSet::Map(map) => map.unsubscribe(),
         }
     }
 
@@ -57,7 +73,7 @@ impl DatatypeSet {
     pub(crate) fn into_counter(self) -> Option<Counter> {
         match self {
             DatatypeSet::Counter(cnt) => Some(cnt),
-            DatatypeSet::Variable(_) => None,
+            _ => None,
         }
     }
 
@@ -65,8 +81,15 @@ impl DatatypeSet {
     /// holds a different datatype.
     pub(crate) fn into_variable(self) -> Option<Variable> {
         match self {
-            DatatypeSet::Counter(_) => None,
             DatatypeSet::Variable(var) => Some(var),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn into_map(self) -> Option<Map> {
+        match self {
+            DatatypeSet::Map(map) => Some(map),
+            _ => None,
         }
     }
 
@@ -90,11 +113,14 @@ impl DatatypeSet {
             option,
             is_readonly,
         ));
-        let datatype = TransactionalDatatype::new_arc(attr.clone(), state, handlers);
-        match r#type {
+        Self::from_core(TransactionalDatatype::new_arc(attr, state, handlers))
+    }
+
+    pub(crate) fn from_core(datatype: Arc<TransactionalDatatype>) -> Self {
+        match datatype.core.attr.r#type {
             DataType::Counter => DatatypeSet::Counter(Counter::new(datatype)),
             DataType::Variable => DatatypeSet::Variable(Variable::new(datatype)),
-            DataType::Map => todo!(),
+            DataType::Map => DatatypeSet::Map(Map::new(datatype)),
         }
     }
 }
@@ -108,6 +134,12 @@ impl From<Counter> for DatatypeSet {
 impl From<Variable> for DatatypeSet {
     fn from(value: Variable) -> Self {
         Self::Variable(value)
+    }
+}
+
+impl From<Map> for DatatypeSet {
+    fn from(value: Map) -> Self {
+        Self::Map(value)
     }
 }
 

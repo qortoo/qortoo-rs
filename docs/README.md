@@ -32,7 +32,7 @@ layers that wrap each other.
 | [Transaction and Rollback](transaction-and-rollback.md) | `TxRecord` structure, transaction lifecycle, and inverse-operation rollback |
 | [Counter](counter.md) | Cumulative `i64` arithmetic, wrapping semantics, and rollback by recorded inverse |
 | [Variable](variable.md) | LWW `Variable` datatype: JSON value contract, timestamp precedence, exact-restore rollback, and snapshot format |
-| [Map Core](map.md) | Per-key LWW state, tombstones, persistent batch forks, rollback, and internal snapshots (public API pending) |
+| [Map](map.md) | Per-key LWW JSON values, public API, tombstones, rollback, and snapshots |
 | [Snapshot Format](snapshot-format.md) | Common QTSN envelope, Counter/Variable schemas, Map CUID table and blocks, compression, and validation |
 | [Connectivity](connectivity.md) | `Connectivity` trait, `NullConnectivity`, `LocalConnectivity`/`LocalDatatypeServer`, and `WiredInterceptor` |
 | [Handler System](handler-system.md) | `DatatypeHandler`, `HandlersManager`, priority-based async dispatch |

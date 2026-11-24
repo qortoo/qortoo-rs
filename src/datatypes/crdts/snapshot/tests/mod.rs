@@ -5,7 +5,7 @@ use super::{
     counter::SnapshotCounter,
     map::{SnapshotMapBlock, SnapshotMapRow, padding},
     variable::SnapshotVariable,
-    wire::{Codec, decode_frame, encode_frame, encode_payload, write_size},
+    wire::{Codec, HEADER_BYTES, decode_frame, encode_frame, encode_payload, write_size},
 };
 use crate::{
     SnapshotCompression, SnapshotDecodeLimits as Limits, SnapshotErrorReason, SnapshotWriteOptions,
@@ -38,18 +38,20 @@ fn fixture(count: usize) -> MapCrdt {
         } else {
             Cuid::try_from("0000000000000001").unwrap()
         };
-        state.replace(
-            format!("k{i:04}").into(),
-            Some(TimedNode {
-                ts: Timestamp::new(1, &cuid),
-                v: if i % 2 == 0 {
-                    None
-                } else {
-                    Some(Arc::from(&b"null"[..]))
-                },
-                approved_sseq_upper: None,
-            }),
-        );
+        state
+            .replace(
+                format!("k{i:04}").into(),
+                Some(TimedNode {
+                    ts: Timestamp::new(1, &cuid),
+                    v: if i % 2 == 0 {
+                        None
+                    } else {
+                        Some(Arc::from(&b"null"[..]))
+                    },
+                    approved_sseq_upper: None,
+                }),
+            )
+            .unwrap();
     }
     state
 }
@@ -114,7 +116,7 @@ fn can_preserve_crdt_states_and_reject_incomplete_or_excess_input() {
             }
             let exact = Limits {
                 max_input_bytes: bytes.len(),
-                max_raw_bytes: bytes.len() - 24,
+                max_raw_bytes: bytes.len() - HEADER_BYTES,
                 max_map_entries: count,
             };
             assert!(MapCrdt::decode_snapshot(&bytes, exact).is_ok());
@@ -224,7 +226,7 @@ fn map_bytes(
         write_size(&mut raw, bytes.len()).unwrap();
         raw.extend(bytes);
     }
-    encode_frame(3, none_options(codec), &raw, WINDOW_LOG)
+    encode_frame(3, none_options(codec), &raw, LIMITS, WINDOW_LOG)
         .unwrap()
         .into_vec()
 }
@@ -355,6 +357,7 @@ fn can_reject_codec_valid_domain_errors() {
                 2,
                 none_options(codec),
                 &encode_payload!(codec, &dto).unwrap(),
+                LIMITS,
                 WINDOW_LOG,
             )
             .unwrap();
@@ -368,7 +371,7 @@ fn can_reject_codec_valid_domain_errors() {
         raw.extend_from_slice(&u32::MAX.to_le_bytes());
         assert!(matches!(
             MapCrdt::decode_snapshot(
-                &encode_frame(3, none_options(codec), &raw, WINDOW_LOG).unwrap(),
+                &encode_frame(3, none_options(codec), &raw, LIMITS, WINDOW_LOG).unwrap(),
                 Limits {
                     max_map_entries: usize::MAX,
                     ..LIMITS
@@ -378,7 +381,7 @@ fn can_reject_codec_valid_domain_errors() {
         ));
         let mut extra = valid;
         extra.push(0);
-        let stored = extra.len() - 24;
+        let stored = extra.len() - HEADER_BYTES;
         extra[8..16].copy_from_slice(&(stored as u64).to_le_bytes());
         extra[16..24].copy_from_slice(&(stored as u64).to_le_bytes());
         assert!(MapCrdt::decode_snapshot(&extra, LIMITS).is_err());
@@ -420,7 +423,7 @@ fn can_preserve_map_json_and_reject_invalid_utf8_and_codec_trailing_bytes() {
         encoded[offset] = 255;
         assert!(matches!(
             VariableCrdt::decode_snapshot(
-                &encode_frame(2, none_options(codec), &encoded, WINDOW_LOG).unwrap(),
+                &encode_frame(2, none_options(codec), &encoded, LIMITS, WINDOW_LOG).unwrap(),
                 LIMITS
             ),
             Err(SnapshotErrorReason::Invalid)
@@ -429,7 +432,7 @@ fn can_preserve_map_json_and_reject_invalid_utf8_and_codec_trailing_bytes() {
         encoded.push(0);
         assert!(
             VariableCrdt::decode_snapshot(
-                &encode_frame(2, none_options(codec), &encoded, WINDOW_LOG).unwrap(),
+                &encode_frame(2, none_options(codec), &encoded, LIMITS, WINDOW_LOG).unwrap(),
                 LIMITS
             )
             .is_err()
@@ -438,15 +441,17 @@ fn can_preserve_map_json_and_reject_invalid_utf8_and_codec_trailing_bytes() {
         encoded.push(0);
         assert!(
             CounterCrdt::decode_snapshot(
-                &encode_frame(1, none_options(codec), &encoded, WINDOW_LOG).unwrap(),
+                &encode_frame(1, none_options(codec), &encoded, LIMITS, WINDOW_LOG).unwrap(),
                 LIMITS
             )
             .is_err()
         );
         let mut bytes = bytes;
-        let n = bytes.len() - 24;
-        bytes[52..60].copy_from_slice(&u64::MAX.to_le_bytes());
-        // The block length begins after the 24-byte envelope and 28-byte Map prefix.
+        let n = bytes.len() - HEADER_BYTES;
+        // The block length begins after the envelope and the 28-byte Map prefix.
+        let block_length_offset = HEADER_BYTES + 28;
+        bytes[block_length_offset..block_length_offset + size_of::<u64>()]
+            .copy_from_slice(&u64::MAX.to_le_bytes());
         assert!(
             MapCrdt::decode_snapshot(
                 &bytes,
@@ -522,8 +527,8 @@ fn can_apply_writer_choices_independently_of_reader_limits() {
                     ));
                 }
                 let mut damaged = bytes.to_vec();
-                damaged.extend_from_slice(&bytes[24..]);
-                let stored = damaged.len() - 24;
+                damaged.extend_from_slice(&bytes[HEADER_BYTES..]);
+                let stored = damaged.len() - HEADER_BYTES;
                 damaged[8..16].copy_from_slice(&(stored as u64).to_le_bytes());
                 assert!(matches!(
                     CounterCrdt::decode_snapshot(&damaged, LIMITS),
@@ -584,4 +589,46 @@ fn can_keep_fixed_default_writer_policy() {
             compression: SnapshotCompression::Zstd1,
         }
     );
+}
+
+#[test]
+fn can_encode_with_exact_snapshot_limits_including_tombstones() {
+    use crate::{DatatypeError, datatypes::Crdt};
+    let map = fixture(32);
+    for codec in codecs() {
+        let raw_len = map.encode_raw(codec, 32).unwrap().len();
+        for compression in [0, 1].into_iter().filter_map(SnapshotCompression::from_id) {
+            let options = SnapshotWriteOptions { codec, compression };
+            let state = Crdt::Map(map.fork_for_batch());
+            let frame = state.serialize(options).unwrap();
+            let limits = Limits {
+                max_input_bytes: frame.len(),
+                max_raw_bytes: raw_len,
+                max_map_entries: 32,
+            };
+            assert_eq!(state.serialize_with_limits(options, limits).unwrap(), frame);
+            MapCrdt::decode_snapshot(&frame, limits).unwrap();
+            for smaller in [
+                Limits {
+                    max_input_bytes: frame.len() - 1,
+                    ..limits
+                },
+                Limits {
+                    max_raw_bytes: raw_len - 1,
+                    ..limits
+                },
+                Limits {
+                    max_map_entries: 31,
+                    ..limits
+                },
+            ] {
+                assert!(matches!(
+                    state.serialize_with_limits(options, smaller),
+                    Err(DatatypeError::SnapshotEncode(
+                        SnapshotErrorReason::LimitExceeded
+                    ))
+                ));
+            }
+        }
+    }
 }

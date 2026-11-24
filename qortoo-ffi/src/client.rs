@@ -38,7 +38,7 @@ pub unsafe extern "C" fn qortoo_client_new(
             if let Some(conn) = connectivity.as_ref() {
                 builder = builder.with_connectivity(conn.inner.clone());
             }
-            match builder.build() {
+            match builder.build_and_open() {
                 Ok(client) => Box::into_raw(Box::new(QortooClient { inner: client })),
                 Err(e) => {
                     set_err(err_out, e.code(), &e.to_string());

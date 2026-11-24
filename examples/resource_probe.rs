@@ -66,7 +66,7 @@ fn main() {
             } else {
                 builder
             }
-            .build()
+            .build_and_open()
             .unwrap()
         })
         .collect();

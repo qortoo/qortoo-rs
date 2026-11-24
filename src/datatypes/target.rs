@@ -1,9 +1,6 @@
 use std::sync::{Arc, Weak};
 
-use crate::{
-    Counter, DataType, Variable,
-    datatypes::{datatype_set::DatatypeSet, transactional::TransactionalDatatype},
-};
+use crate::datatypes::{datatype_set::DatatypeSet, transactional::TransactionalDatatype};
 
 /// Captures an instance without extending its lifetime or consulting the client table.
 pub(crate) struct DatatypeTarget {
@@ -16,12 +13,7 @@ impl DatatypeTarget {
     }
 
     pub(crate) fn resolve(&self) -> Option<DatatypeSet> {
-        let transactional = self.transactional.upgrade()?;
-        match transactional.core.attr.r#type {
-            DataType::Counter => Some(DatatypeSet::Counter(Counter::new(transactional))),
-            DataType::Variable => Some(DatatypeSet::Variable(Variable::new(transactional))),
-            DataType::Map => None,
-        }
+        self.transactional.upgrade().map(DatatypeSet::from_core)
     }
 
     pub(crate) fn detach(&self) {

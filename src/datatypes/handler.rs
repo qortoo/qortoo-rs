@@ -205,7 +205,7 @@ mod tests_handers_manager {
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
 
         let call_count = Arc::new(AtomicUsize::new(0));
@@ -251,7 +251,7 @@ mod tests_handers_manager {
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client
             .create_datatype(get_test_func_name!())
@@ -295,7 +295,7 @@ mod tests_handers_manager {
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
 
         let call_count = Arc::new(AtomicUsize::new(0));
@@ -325,7 +325,7 @@ mod tests_handers_manager {
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
 
         let call_count = Arc::new(AtomicUsize::new(0));

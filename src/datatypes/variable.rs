@@ -15,23 +15,34 @@ use crate::{
     utils::json::{decode_json_value, encode_json_value, validate_json_str},
 };
 
-/// A variable is a conflict-free datatype that stores a single JSON value with
-/// last-writer-wins semantics.
+/// A conflict-free datatype that stores one JSON value.
 ///
-/// The stored value is always exactly one JSON value and starts as JSON `null`.
-/// Every write carries a logical timestamp, and writes made concurrently on
-/// different replicas converge to the one with the greatest timestamp, so every
-/// replica ends up holding the same value.
+/// The value starts as JSON `null`. Writes converge to the value with the
+/// greatest logical timestamp.
 ///
-/// Values are exchanged with user code through `serde`: [`set`](Self::set) stores
-/// any serializable value and [`get`](Self::get) decodes the current value into
-/// the requested type. A value that cannot be converted surfaces as
-/// [`DatatypeError::ValueConversion`], leaving the variable unchanged.
-/// [`set_raw`](Self::set_raw) and [`get_raw`](Self::get_raw) work in the stored
-/// JSON bytes directly, for a caller that already holds serialized JSON.
+/// Use [`DatatypeBuilder::build_variable`](crate::DatatypeBuilder::build_variable)
+/// to obtain a handle and [`Datatype`](crate::Datatype) for lifecycle,
+/// synchronization, and handlers. Reads are local and available in every
+/// lifecycle state, including on read-only handles. See the
+/// [Variable guide](https://github.com/qortoo/qortoo-rs/blob/main/docs/variable.md).
 ///
-/// Like every datatype, a `Variable` shares the lifecycle, synchronization, and
-/// handler API of [`Datatype`](crate::Datatype).
+/// # Examples
+///
+/// ```
+/// use qortoo::Client;
+/// use serde_json::{Value, json};
+///
+/// let client = Client::builder("doc-example", "variable")
+///     .build_and_open()
+///     .unwrap();
+/// let variable = client.create_datatype("status").build_variable().unwrap();
+///
+/// assert_eq!(variable.get::<Option<String>>().unwrap(), None);
+/// assert_eq!(variable.set("ready").unwrap(), Value::Null);
+/// assert_eq!(variable.get::<String>().unwrap(), "ready");
+/// assert_eq!(variable.set(&true).unwrap(), json!("ready"));
+/// assert!(variable.get::<bool>().unwrap());
+/// ```
 #[derive(Clone)]
 pub struct Variable {
     datatype: Arc<TransactionalDatatype>,
@@ -39,8 +50,6 @@ pub struct Variable {
 }
 
 impl Variable {
-    // dead_code is allowed until datatype registration constructs Variable outside tests.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn new(datatype: Arc<TransactionalDatatype>) -> Self {
         Variable {
             datatype,
@@ -58,25 +67,23 @@ impl Variable {
     }
 
     datatype_instrument! {
-    /// Sets the variable to a new value.
+    /// Stores a serializable value as JSON.
     ///
-    /// The value is encoded to JSON and recorded as a last-writer-wins write
-    /// stamped with the next logical timestamp.
+    /// Returns the previous value as a [`serde_json::Value`], which is JSON
+    /// `null` when replacing the initial value. Each write may store a different JSON type.
     ///
-    /// Returns the value the variable held just before this set; the first set
-    /// returns the initial JSON `null`. The previous value is returned as
-    /// dynamic JSON because each set may store a different JSON type.
+    /// # Errors
     ///
-    /// # Arguments
+    /// Returns [`DatatypeError::ValueConversion`] if encoding the new value
+    /// fails or if the previous value cannot be decoded as a
+    /// [`serde_json::Value`]. Encoding failure leaves the value unchanged.
+    /// Decoding the previous value happens after the write, so the new value
+    /// may already be stored when this method returns the error. Use
+    /// [`set_raw`](Self::set_raw) to replace a value while returning its original bytes.
+    /// Also returns an error if the write is rejected or cannot commit locally.
     ///
-    /// * `value` - Any serializable value; it is stored as one JSON value
-    ///
-    /// # Returns
-    ///
-    /// The previous JSON value, or an error if the value cannot be encoded,
-    /// writes are not allowed, or the change cannot be applied locally.
-    /// On error, the variable is unchanged. For writes inside a transaction,
-    /// see [`transaction`](Self::transaction).
+    /// Inside [`transaction`](Self::transaction), return the error from the
+    /// callback to roll back the batch.
     pub fn set<T: Serialize + ?Sized>(
         &self,
         value: &T,
@@ -86,17 +93,17 @@ impl Variable {
     }}
 
     datatype_instrument! {
-    /// Sets the variable from serialized JSON bytes, storing them verbatim.
+    /// Stores exactly one UTF-8 JSON value, preserving the supplied bytes verbatim.
     ///
-    /// `json` must be exactly one UTF-8 JSON value. Unlike [`set`](Self::set) the
-    /// bytes are not reparsed and reserialized, so property order and formatting
-    /// are preserved as the language-neutral stored representation — this is the
-    /// entry point a non-Rust binding forwards its own JSON encoder's output to.
+    /// Returns the previous value as its original bytes, which are `b"null"`
+    /// when replacing the initial value. Whitespace, property order, and numeric
+    /// formatting are preserved.
     ///
-    /// Returns the previous value's JSON bytes (the first set returns `b"null"`),
-    /// or an error if the JSON is invalid, writes are not allowed, or the change
-    /// cannot be applied locally. On error, the variable is unchanged.
-    /// For writes inside a transaction, see [`transaction`](Self::transaction).
+    /// # Errors
+    ///
+    /// Returns [`DatatypeError::ValueConversion`] for invalid input before
+    /// changing the value. Also returns an error if the write is rejected or
+    /// cannot commit locally.
     pub fn set_raw(&self, json: &[u8]) -> Result<Box<[u8]>, DatatypeError> {
         let previous = self.set_encoded(validate_json_str(json)?.as_bytes().into())?;
         Ok(Box::from(&*previous))
@@ -118,30 +125,23 @@ impl Variable {
         }
     }
 
-    /// Gets the current value decoded into the requested type.
+    /// Returns the current value decoded as `T`.
     ///
-    /// This is a local read: it creates no operation and does not change the
-    /// datatype version, so it is allowed in every state, readonly datatypes
-    /// included. The initial value and an explicit [`set`](Self::set) of
-    /// JSON `null` both read as JSON `null`; use a nullable destination such as
-    /// `Option<T>` or `serde_json::Value` to accept it. Decoding JSON `null`
-    /// into a non-nullable type returns [`DatatypeError::ValueConversion`].
+    /// The initial value and an explicitly stored JSON `null` both decode as
+    /// `None` for `Option<U>` or as [`serde_json::Value::Null`].
     ///
-    /// # Returns
+    /// # Errors
     ///
-    /// The current value decoded as `T`, or
-    /// [`DatatypeError::ValueConversion`] if the stored JSON does not fit `T`
+    /// Returns [`DatatypeError::ValueConversion`] if the stored value cannot be
+    /// decoded as `T`.
     pub fn get<T: DeserializeOwned>(&self) -> Result<T, DatatypeError> {
         decode_json_value(&self.shared_value())
     }
 
-    /// Returns the current value as its stored JSON bytes, verbatim.
+    /// Returns a copy of the stored JSON bytes.
     ///
-    /// Like [`get`](Self::get) this is a side-effect-free local read allowed in
-    /// every state. The initial value and an explicit [`set_raw`](Self::set_raw)
-    /// of `b"null"` both read as `b"null"`. This is the counterpart to
-    /// [`get`](Self::get) for a binding that wants the raw bytes; it cannot fail
-    /// because the stored value is always exactly one JSON value.
+    /// The initial value is `b"null"`. An explicitly stored value is returned
+    /// exactly as supplied by [`set_raw`](Self::set_raw) or encoded by [`set`](Self::set).
     pub fn get_raw(&self) -> Box<[u8]> {
         Box::from(&*self.shared_value())
     }
@@ -159,26 +159,43 @@ impl Variable {
     }
 
     datatype_instrument! {
-    /// Executes multiple operations atomically within a transaction.
+    /// Executes a batch of writes as one local transaction.
     ///
-    /// Writes inside the callback are kept only if this method succeeds.
-    /// Use the callback handle for writes. On the callback thread, starting another
-    /// transaction on this datatype or writing through a captured original handle
-    /// returns [`DatatypeError::Disallowed`]. Reads may observe uncommitted writes.
-    /// Complete any work sharing the callback handle before returning.
+    /// Use the callback handle or its clones for writes and finish that work
+    /// before returning. Reads may observe uncommitted writes. `tag` labels the
+    /// transaction. On success, the writes have committed locally. See
+    /// [transaction guarantees](https://github.com/qortoo/qortoo-rs/blob/main/docs/transaction-and-rollback.md#rules-and-guarantees).
     ///
-    /// # Arguments
+    /// # Errors
     ///
-    /// * `tag` - A descriptive label for the transaction
-    /// * `tx_func` - Function containing the operations to execute atomically
+    /// Returns an error if writes are disallowed or the batch cannot commit
+    /// locally. A callback error becomes [`DatatypeError::TransactionFailed`].
+    /// Callback and commit failures roll back the batch. On the callback thread,
+    /// starting another transaction on the same datatype or writing through a
+    /// captured original handle returns [`DatatypeError::Disallowed`].
     ///
-    /// # Returns
+    /// # Examples
     ///
-    /// `Ok(())` when all changes are applied locally. On failure, the changes
-    /// made by this transaction are undone and an error is returned.
-    /// Success does not mean the changes have reached the server.
+    /// The raw setter accepts JSON numbers such as `1e400` that
+    /// [`serde_json::Value`] cannot represent. Returning the conversion error
+    /// from the callback rolls back the write.
     ///
-    /// See [transaction guarantees](https://github.com/qortoo/qortoo-rs/blob/main/docs/transaction-and-rollback.md#rules-and-guarantees).
+    /// ```
+    /// use qortoo::{Client, DatatypeError};
+    ///
+    /// let client = Client::builder("doc-example", "variable-transaction")
+    ///     .build_and_open()
+    ///     .unwrap();
+    /// let variable = client.create_datatype("measurement").build_variable().unwrap();
+    /// variable.set_raw(b"1e400").unwrap();
+    ///
+    /// let result = variable.transaction("replace measurement", |measurement| {
+    ///     measurement.set(&7)?;
+    ///     Ok(())
+    /// });
+    /// assert!(matches!(result, Err(DatatypeError::TransactionFailed(_))));
+    /// assert_eq!(&*variable.get_raw(), b"1e400");
+    /// ```
     pub fn transaction<T>(
         &self,
         tag: impl IntoString,
@@ -330,7 +347,7 @@ mod tests_variable {
         let (collection, key, _) = get_test_ids!();
         let client = Client::builder(collection, "read-invariants")
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
         let variable = client.create_datatype(key).build_variable().unwrap();
         variable.set(&sample_profile()).unwrap();
@@ -437,11 +454,11 @@ mod tests_variable {
         let (collection, _, _) = get_test_ids!();
         let client_a = Client::builder(collection.clone(), "client-a")
             .with_connectivity(connectivity.clone())
-            .build()
+            .build_and_open()
             .unwrap();
         let client_b = Client::builder(collection, "client-b")
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
         (client_a, client_b)
     }

@@ -10,6 +10,7 @@ use super::{
 use crate::{
     DataType, DatatypeError, SnapshotDecodeLimits, SnapshotWriteOptions,
     errors::{datatypes::InternalReason, messages::datatype as msg},
+    operations::transaction::Transaction,
     types::operation_context::OperationContext,
 };
 
@@ -21,6 +22,14 @@ pub enum Crdt {
 }
 
 impl Crdt {
+    pub(crate) fn logical_state_bytes(&self) -> u64 {
+        match self {
+            Self::Counter(_) => size_of::<i64>() as u64,
+            Self::Variable(variable) => variable.value().len() as u64,
+            Self::Map(map) => map.logical_state_bytes(),
+        }
+    }
+
     /// Creates an isolated batch candidate in O(1), sharing immutable payloads.
     /// Never clone CRDT collections here; new datatypes must provide an O(1) fork.
     /// Batch writes must not defer a full collection copy to copy-on-write either.
@@ -54,7 +63,6 @@ impl Crdt {
         }
     }
 
-    #[cfg(test)]
     pub fn as_map(&self) -> Option<&MapCrdt> {
         match self {
             Self::Map(map) => Some(map),
@@ -71,6 +79,21 @@ impl Crdt {
             Crdt::Variable(v) => v.execute_local_operation(context),
             Crdt::Map(m) => m.execute_local_operation(context),
         }
+    }
+
+    /// Applies operations in order and advances the supplied clock after each success.
+    /// On error, earlier operations and their clock updates remain applied.
+    pub(crate) fn execute_remote_transaction(
+        &mut self,
+        tx: &Transaction,
+        lamport: &mut u64,
+    ) -> Result<(), DatatypeError> {
+        for op in tx.iter() {
+            let context = OperationContext::try_new(op, &tx.cuid)?;
+            self.execute_remote_operation(&context)?;
+            *lamport = (*lamport).max(op.lamport);
+        }
+        Ok(())
     }
 
     pub(crate) fn execute_remote_operation(
@@ -101,13 +124,22 @@ impl Crdt {
         }
     }
 
-    pub fn serialize(&self, options: SnapshotWriteOptions) -> Result<Box<[u8]>, DatatypeError> {
+    pub(crate) fn serialize_with_limits(
+        &self,
+        options: SnapshotWriteOptions,
+        limits: SnapshotDecodeLimits,
+    ) -> Result<Box<[u8]>, DatatypeError> {
         match self {
-            Self::Counter(c) => c.encode_snapshot(options),
-            Self::Variable(v) => v.encode_snapshot(options),
-            Self::Map(m) => m.encode_snapshot(options),
+            Self::Counter(c) => c.encode_snapshot_with_limits(options, limits),
+            Self::Variable(v) => v.encode_snapshot_with_limits(options, limits),
+            Self::Map(m) => m.encode_snapshot_with_limits(options, limits),
         }
         .map_err(DatatypeError::SnapshotEncode)
+    }
+
+    #[cfg(test)]
+    pub fn serialize(&self, options: SnapshotWriteOptions) -> Result<Box<[u8]>, DatatypeError> {
+        self.serialize_with_limits(options, super::snapshot::UNLIMITED)
     }
 
     pub fn deserialize(

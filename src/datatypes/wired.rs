@@ -102,14 +102,14 @@ impl WiredDatatype {
     }
 
     #[instrument(skip_all)]
-    pub fn push_pull(&self) -> Result<(), DatatypeErrorWithAction> {
+    pub fn push_pull(&self) -> Result<bool, DatatypeErrorWithAction> {
         let start = std::time::Instant::now();
         let result = self.do_push_pull();
         metrics::emit_sync(&self.core.attr, result.is_ok(), start.elapsed());
         result
     }
 
-    fn do_push_pull(&self) -> Result<(), DatatypeErrorWithAction> {
+    fn do_push_pull(&self) -> Result<bool, DatatypeErrorWithAction> {
         let connectivity = &self.core.attr.client_common.connectivity;
 
         #[cfg_attr(not(test), allow(unused_mut))]
@@ -139,7 +139,8 @@ impl WiredDatatype {
         add_span_event!("recv PULL PushPullPack", "ppp"=> pulled_ppp.to_string());
 
         self.with_transaction_gate(|mutable| {
-            let mut pull_handler = PullHandler::new(&mut pulled_ppp, mutable, sent_cseq);
+            let mut pull_handler =
+                PullHandler::new(&mut pulled_ppp, mutable, sent_cseq, pushing_ppp.has_more);
             pull_handler.apply()
         })
     }
@@ -164,11 +165,17 @@ impl MutableDatatype {
 
         let (transactions, _tx_size) = self.push_buffer.get_pushing_transactions(
             self.checkpoint.cseq + 1,
-            defaults::DEFAULT_MAX_TRANSMISSION_SIZE,
+            self.attr
+                .client_common
+                .get_collection_info()
+                .map_or(defaults::DEFAULT_MAX_TRANSMISSION_BYTES, |info| {
+                    info.max_transmission_bytes
+                }),
         )?;
 
         ppp.transactions = transactions;
         ppp.checkpointing(&self.checkpoint);
+        ppp.has_more = ppp.checkpoint.cseq < self.push_buffer.last_cseq;
         ppp.sseq_gc_safe = self.sseq_gc_safe;
         Ok(ppp)
     }

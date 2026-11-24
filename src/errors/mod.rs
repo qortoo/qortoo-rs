@@ -120,6 +120,23 @@ mod tests_datatype_errors {
                 check(error.code(), 101, error.to_string())
             },
             {
+                let error = ClientError::FailedToOpenClient("timeout".into());
+                assert_eq!(error.to_string(), "[E102] cannot open client: timeout");
+                check(error.code(), 102, error.to_string())
+            },
+            {
+                let error = ClientError::InvalidCollectionLimits(String::new());
+                check(error.code(), 103, error.to_string())
+            },
+            {
+                let error = ClientError::CollectionAlreadyExists(String::new());
+                check(error.code(), 104, error.to_string())
+            },
+            {
+                let error = ClientError::ClientNotOpen;
+                check(error.code(), 105, error.to_string())
+            },
+            {
                 let error = DatatypeError::TransactionFailed(String::new());
                 check(error.code(), 201, error.to_string())
             },
@@ -170,6 +187,10 @@ mod tests_datatype_errors {
                 check(error.code(), 217, error.to_string())
             },
             {
+                let error = DatatypeError::CollectionPolicyViolation(String::new());
+                check(error.code(), 218, error.to_string())
+            },
+            {
                 let error = PushPullError::ProtocolViolation(String::new());
                 check(error.code(), 301, error.to_string())
             },
@@ -196,6 +217,10 @@ mod tests_datatype_errors {
             {
                 let error = PushPullError::SnapshotUnavailable(String::new());
                 check(error.code(), 307, error.to_string())
+            },
+            {
+                let error = PushPullError::CollectionPolicyViolation(String::new());
+                check(error.code(), 308, error.to_string())
             },
             #[cfg(any(feature = "observability-trace", feature = "observability-metrics"))]
             {
@@ -410,6 +435,21 @@ mod tests_datatype_errors {
             "[E213] server rejected: snapshot unavailable: detail"
         );
         assert_eq!(error.mapping().recovery, RecoveryAction::Disable);
+    }
+
+    #[test]
+    fn can_retry_a_server_collection_policy_violation() {
+        let wire = PushPullError::CollectionPolicyViolation("detail".into());
+        assert_eq!(
+            wire.to_string(),
+            "[E308] collection write policy violation: detail"
+        );
+        let error = wire.to_datatype_error();
+        assert_eq!(
+            error.to_string(),
+            "[E218] collection write policy violation: detail"
+        );
+        assert_eq!(error.mapping().recovery, RecoveryAction::RetryWithBackOff);
     }
 
     #[test]

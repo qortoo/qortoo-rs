@@ -14,6 +14,16 @@ pub(crate) mod client {
     pub(crate) const SUBSCRIBE_OR_CREATE_FAILED_PREFIX: &str =
         "cannot subscribe or create datatype: ";
 
+    pub(crate) const OPEN_CLIENT_FAILED_PREFIX: &str = "cannot open client: ";
+    pub(crate) const CLIENT_NOT_OPEN: &str = "client is not open";
+    pub(crate) const INVALID_COLLECTION_LIMITS_PREFIX: &str = "invalid collection limits: ";
+    pub(crate) const COLLECTION_ALREADY_EXISTS_PREFIX: &str = "collection already exists: ";
+
+    pub(crate) fn collection_limit_too_low(field: &str, minimum: u64, allows_zero: bool) -> String {
+        let zero = if allows_zero { "zero or " } else { "" };
+        format!("{field} must be {zero}at least {minimum}")
+    }
+
     pub(crate) const INVALID_COLLECTION_NAME_TEMPLATE: &str = "'{}': collection name must be 1-47 bytes, start with an ASCII letter or underscore, contain only ASCII letters, digits, '.', '_', '~', or '-', and must not start with 'system.' or contain '.system.'";
 
     pub(crate) const INVALID_DATATYPE_KEY_TEMPLATE: &str = "invalid datatype key '{}': must be 1-255 bytes, must not contain null characters (\\0), and must not start with '$'";
@@ -44,6 +54,15 @@ pub(crate) mod datatype {
     pub(crate) const INVALID_ARGUMENT_PREFIX: &str = "invalid argument: ";
 
     pub(crate) const UNSUPPORTED_OPERATION: &str = "operation is not supported by this datatype";
+    pub(crate) const STATE_SIZE_OVERFLOW: &str = "logical state size exceeds its accounting range";
+
+    pub(crate) const COLLECTION_POLICY_VIOLATION_PREFIX: &str =
+        "collection write policy violation: ";
+    pub(crate) const COLLECTION_FORBIDDEN_KEY: &str = "the Map key is forbidden by the collection";
+
+    pub(crate) fn collection_byte_limit(field: &str, actual: u64, limit: u64) -> String {
+        format!("{field} allows {limit} bytes, got {actual}")
+    }
 
     pub(crate) const EXECUTE_OPERATION_PREFIX: &str = "execute operation: ";
 
@@ -98,6 +117,8 @@ pub(crate) mod datatype {
 pub(crate) mod sync {
     use std::fmt::{Debug, Display};
 
+    pub(crate) const SNAPSHOT_SIZE_LIMIT: &str =
+        "snapshot exceeds the collection or default decoder limits";
     pub(crate) const SNAPSHOT_UNAVAILABLE_PREFIX: &str = "snapshot unavailable: ";
 
     pub(crate) const EVENT_LOOP_PREFIX: &str = "event loop: ";

@@ -14,7 +14,7 @@ fn can_read_write_transact_sync_and_unsubscribe_from_a_handler() {
     connectivity.set_realtime(false);
     let client = Client::builder("runtime-contract", "reentrant-handler")
         .with_connectivity(connectivity)
-        .build()
+        .build_and_open()
         .unwrap();
     let (done_tx, done_rx) = bounded(1);
     let handler = DatatypeHandler::new().set_on_state_change(move |ds, _, new| {
@@ -63,7 +63,7 @@ fn can_keep_a_blocked_callback_alive_after_external_handles_are_dropped() {
     connectivity.set_realtime(false);
     let client = Client::builder("runtime-contract", "blocked-handler")
         .with_connectivity(connectivity)
-        .build()
+        .build_and_open()
         .unwrap();
     let (entered_tx, entered_rx) = bounded(1);
     let (release_tx, release_rx) = bounded(1);

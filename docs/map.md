@@ -1,8 +1,25 @@
-# Map Core
+# Map
 
-The Map core stores one independently versioned JSON value per key. It supports internal
-operation execution and snapshots; a public Map handle and builder are not yet available.
+A Map stores one independently versioned JSON value per key. Use `build_map()` on a
+[datatype builder](client-and-datatype-builder.md) to create or subscribe to a Map.
 GC approval and physical tombstone reclamation are not enabled.
+
+```rust
+let map = client.subscribe_or_create_datatype("settings").build_map()?;
+map.put("theme", "dark")?;
+assert_eq!(map.get::<String>("theme")?.as_deref(), Some("dark"));
+```
+
+`put` and `remove` return the previous value as an `Option<serde_json::Value>`.
+`put_raw`, `get_raw`, and `remove_raw` preserve the original JSON bytes.
+`len`, `is_empty`, `contains_key`, and `to_json` report only live entries.
+`Datatype::get_state_bytes()` includes both live entries and tombstones. Each entry
+contributes its UTF-8 key length plus 42 metadata bytes. A live entry also contributes
+its stored JSON byte length. The result includes pending local writes.
+`to_json` captures a consistent root under the read lock and decodes it after releasing the
+lock. Use `transaction` and its callback handle to commit multiple writes together.
+Datatype handlers receive a `DatatypeSet::Map` variant for Map events. Include this variant
+when matching exhaustively on `DatatypeSet`.
 
 ## Model
 
@@ -24,23 +41,24 @@ are immutable `Arc` values. Counts and approval fields belong to each fork's sta
   preserved byte-for-byte. JSON `null` is a live value, distinct from deletion and absence.
 - A newer timestamp wins per key. An older operation is a successful no-op. Equal timestamps
   are accepted only for identical raw bytes and entry state; conflicting payloads are errors.
-  The CRDT treats payloads as opaque bytes. JSON validation belongs at the public API and
-  remote receive boundaries; both are pending for Map. Snapshot decoding validates JSON.
+- The public Map write API validates Put values. The in-process backend trusts
+  those values. A network backend must validate Put values from clients before
+  applying them. Clients trust Put values received during synchronization.
+  Snapshot decoding validates JSON.
 - Local Put always records a write. Local Remove on an absent or tombstoned key records
   nothing, consumes no operation ID, and retains any existing tombstone. Remote Remove
   creates or advances a tombstone even for a missing key.
 - An accepted remote operation advances the observed Lamport clock, including stale and
   duplicate operations. An invalid operation does not advance it.
-- Rollback restores the previous entry, timestamp, approval field, live count, and tombstone
-  count/byte total. Actions run in reverse transaction order. Tombstone accounting uses
-  `key UTF-8 bytes + 42` logical bytes per entry; it does not measure allocator usage.
+- Rollback restores the previous entry, timestamp, approval field, entry counts, and logical
+  byte totals. Actions run in reverse transaction order.
 - Debug and display output expose sizes and counts rather than map keys or JSON payloads.
 
 The transactional layer provides a closure boundary under its normal transaction gate and
 mutable write lock. This lets typed writes decode the previous value before mutation: raw
 JSON can be valid while exceeding `serde_json::Value`'s number range or nesting limit.
 A failed conversion leaves earlier successful operations in the transaction intact unless
-the caller propagates the error and aborts the transaction. The public typed API is pending.
+the caller propagates the error and aborts the transaction.
 
 ## Behavior
 
@@ -48,15 +66,29 @@ Putting `null` at `k` creates a live entry and returns the previously stored byt
 Removing `k` replaces it with a tombstone and returns `null`'s bytes. Removing it again is a
 local no-op. A delayed Put older than the tombstone cannot recreate `k`; a newer Put can.
 
+### Collection write limits
+
+A collection can limit the UTF-8 byte length of Map keys and the uncompressed JSON
+byte length of each Put value. Raw JSON whitespace counts toward the value limit.
+The collection can also disallow exact keys for Put. Reads and removes can still
+access those keys if they exist.
+
+The logical state limit applies to the final size of a committed transaction, including
+tombstones. See [collection policy](connectivity.md#collection-policy).
+
 ### Snapshot format
 
 The [Map snapshot payload](snapshot-format.md#map-payload) uses the common QTSN envelope,
 a snapshot-local CUID table, and codec-encoded blocks of 32 rows in strictly ascending key
 order. Both live entries and tombstones retain their timestamps; live JSON null remains
 distinct from a tombstone. The format document specifies fields, padding, and validation.
-Decoding builds a validated temporary map before replacing state.
-Counts are recomputed and local GC approvals are cleared. Validated snapshot approval and
-GC integration remain future work; snapshots alone do not authorize reclamation.
+Decoding builds a validated temporary map before replacing state. The snapshot receiver
+counts live entries and tombstones toward `SnapshotDecodeLimits::max_map_entries`
+(1,000,000 by default). An operation stream can grow a Map beyond this limit, at which point
+a receiver with that limit will reject its snapshot.
+Counts and logical byte totals are recomputed and local GC approvals are cleared.
+Validated snapshot approval and GC integration remain future work; snapshots alone do not
+authorize reclamation.
 
 ## Rationale
 
@@ -68,6 +100,7 @@ while retaining exact prior entries makes rollback independent of the operation'
 
 | Responsibility | Source |
 |----------------|--------|
+| Public API | `src/datatypes/map.rs` |
 | Put/Remove bodies, constructors, and memory sizes | `src/operations/body/map.rs` |
 | Shared timestamped node (`TimedNode`), payload, and approval metadata | `src/datatypes/crdts/timed_node.rs` |
 | Entry transitions, accounting, fork, and rollback | `src/datatypes/crdts/map_crdt.rs` |

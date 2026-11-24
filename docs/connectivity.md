@@ -1,11 +1,9 @@
 # Connectivity
 
-Connectivity is the seam between a datatype and whatever it synchronizes through. Everything
-above it — transactions, convergence, lifecycle — is the same regardless of what sits below,
-and everything a backend has to do is expressed as one exchange: take what this client has,
-return what it should know. This document defines that contract, what a backend is obliged to
-honor, and what the two bundled implementations do. It does not define the schedule on which
-exchanges happen; see [`docs/event-loop.md`](event-loop.md).
+Connectivity links a client and its datatypes to a synchronization backend. Opening a
+client returns its collection information. Each datatype then exchanges its
+transactions and progress with the backend. See [`docs/event-loop.md`](event-loop.md) for
+how exchanges are scheduled.
 
 ## Model
 
@@ -15,22 +13,24 @@ exchanges happen; see [`docs/event-loop.md`](event-loop.md).
 | Exchange | One call carrying what the client has and returning what the backend answers |
 | Package | The value carried in both directions of an exchange, naming the datatype and holding the work |
 | Resource | The datatype a package refers to, addressed by collection and key |
+| Client open | Registering a client identity for a collection and returning its information |
 | Registration | Attaching a datatype to the backend so it can be notified of work from elsewhere |
 | Realtime | Whether the backend tells clients when work arrives, rather than waiting to be asked |
 | Progress | The pair of sequence numbers describing how far a client and the backend have acknowledged each other |
 
-A backend is asked for three things: to accept a registration, to perform an exchange, and to
-say whether it is realtime. Everything else — how it stores data, whether it is in this process
-or across a network, how it decides what to return — is the backend's own business.
+A backend opens clients, handles datatype registrations, performs exchanges, and reports
+whether it is realtime.
 
 ```mermaid
 flowchart TD
     WD["a datatype's wired layer"]
-    C["connectivity contract:<br/>register · exchange · realtime?"]
+    Client["Client::open()"]
+    C["connectivity contract:<br/>open_client · register · exchange · realtime?"]
     N["default backend<br/>answers this client alone"]
     L["local backend<br/>shares between in-process clients"]
     S["per-resource server state:<br/>CRDT, clock, subscribers, progress, history"]
 
+    Client -->|open_client| C
     WD -->|exchange| C
     C -.->|implemented by| N
     C -.->|implemented by| L
@@ -40,10 +40,82 @@ flowchart TD
 
 ## Rules and Guarantees
 
-**One exchange carries everything.** A package names its resource, the client sending it, that
-datatype's state, its progress, and the transactions it wants accepted. The response is another
-package, carrying what the client should apply and either the new state or an error. There is
-no separate handshake and no partial exchange.
+**Opening a client registers its identity.** `Client::open()` sends the collection and CUID
+through the backend. On success, the client stores the returned `CollectionInfo` once and
+`Client::is_open()` returns `true`.
+A failed call can be retried with the same CUID.
+`LocalConnectivity` retains one record per collection and CUID for its lifetime. A repeated
+backend request with the same identity returns the existing collection information. Registration and
+subscription progress remain per datatype.
+
+**An exchange carries one datatype's work.** A package names its resource, the sending
+client, the datatype's state and progress, and the transactions submitted for acceptance.
+The response carries the work the client should apply and either the new state or an error.
+
+## Collection Policy
+
+Call `LocalConnectivity::create_collection(name, info)` to configure a collection
+before opening a client for it. Use `create_collection_with_options(name, info, options)`
+to set server-only `LocalCollectionOptions`. Its `snapshot_write_options` selects the
+codec and compression for the collection. `create_collection` uses the backend's
+default writer. Clients read the codec and compression from the snapshot header.
+Use `LocalCollectionOptions::new(writer)` to set a writer with both server policy
+checks enabled.
+
+Opening the first client for an unconfigured collection uses default limits and
+server options. Opening a client returns the shared `CollectionInfo`. Both the shared
+information and the server options stay fixed for the lifetime of the collection.
+`NullConnectivity` returns default limits and does not retain client records.
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `max_state_bytes` | 0 | Inclusive logical state size per datatype, counting Map tombstones |
+| `max_key_bytes` | 0 | Inclusive UTF-8 byte size of an individual Map key |
+| `max_value_bytes` | 0 | Inclusive uncompressed JSON byte size of an individual Map value |
+| `forbidden_keys` | Empty | Map keys disallowed by exact, whole-string match |
+| `max_snapshot_bytes` | 10,000,000 | Inclusive encoded snapshot size, including the header |
+| `max_transmission_bytes` | 4,000,000 | Byte limit for a batch of transactions. A single transaction may exceed it |
+
+Collection creation requires at least 1,000 bytes for the snapshot limit and the
+transmission batch target. The client decoder applies its own input limit to each
+received snapshot. Zero disables a state, key, or value limit. When
+enabled, state limits must be at least 10,000 bytes and key and value limits must
+each be at least 10 bytes. Opening the client makes this configuration available to it.
+The client checks Map Put keys and values on each operation and checks the logical state
+size at transaction commit. A datatype already over its state limit may commit a
+transaction that strictly reduces its size. Map reads and removes can use forbidden keys.
+Removes still count the resulting tombstones toward the state size.
+
+By default, the local backend applies the same checks to every new transaction in its
+candidate state, including writes merged with changes from other clients. Set
+`LocalCollectionOptions::validate_writes` to `false` to skip server checks on Map Put
+keys and values, including forbidden keys. Set `validate_state_size` to `false` to
+skip the server's logical state size check. Client write checks and server protocol
+validation still apply. The backend publishes the batch only if every transaction
+passes the applicable checks. A rejected batch leaves the client's pending writes
+and sync progress in place for retry. Later transactions stay behind the rejected ones
+until the server can accept them. Already accepted remote transactions and snapshots
+bypass write admission.
+
+The backend encodes a snapshot when a client subscribes. The complete frame must fit
+both `max_snapshot_bytes` and the default decoder input limit. The raw payload and
+Map entry count (including tombstones) must also fit the default decoder limits.
+Exceeding any of these limits fails the subscription with `E307` before the server
+records subscription progress. Existing subscribers can continue syncing transactions
+while new subscriptions fail. A new subscription can succeed once the state fits again.
+Subscribers may enforce stricter decoder limits.
+Push and Pull each use `max_transmission_bytes` as a target for the sum of transaction
+sizes. Both send a transaction larger than the target on its own. A subscription
+snapshot always travels as one transaction under the separate snapshot limits.
+
+On Push, `has_more` means the client has buffered writes beyond this batch. On Pull,
+it means the server has more history after this page. If either side has more work,
+the client applies the response and continues from its new checkpoint in the same sync
+call, even for a readonly client with no pending writes. A continuation must advance
+`sseq`. An unsubscribe retains its generation and stays `Unsubscribing` until both
+directions finish, then the server closes the subscription and returns `Disabled`.
+
+## Datatype Exchange
 
 **A resource is addressed by collection and key.** Both bundled backends look up their state by
 that pair, so two clients converge exactly when they use the same collection and key.
@@ -175,8 +247,10 @@ push is processed. A fresh subscription from the same client can therefore start
 sequence at zero without inheriting the previous subscription's accepted sequence.
 
 Push `checkpoint.sseq` acknowledges the last server boundary successfully applied by that
-client. Pull `checkpoint.sseq` reports the server head; sending it does not acknowledge client
-application. The backend trusts each client's reported applied boundary and tracks it
+client. Pull `checkpoint.sseq` ends the contiguous history prefix covered by this page.
+The prefix includes the client's own transactions, which consume no response bytes.
+Pull `checkpoint.cseq` acknowledges only the client's writes covered by that prefix.
+Sending the page does not acknowledge client application. The backend trusts each client's reported applied boundary and tracks it
 monotonically per subscription, without tracking which responses it previously provided.
 The reported boundary must not exceed the server head before the request is processed.
 This bound is checked separately from identity, with the same protocol error message across
@@ -246,9 +320,9 @@ conflict metadata are preserved, and the subscriber retains its own local identi
 
 `LocalConnectivity::new_arc()` uses `SnapshotWriteOptions::default()`: native bitcode
 and Zstd level 1. Both APIs require `snapshot-bitcode` and `snapshot-zstd`.
-`new_arc_with_snapshot_options(options)` accepts an explicit writer policy and returns the
-backend directly. Writer enum variants exist only for enabled Cargo features, so unavailable
-choices cannot be constructed. The policy stays fixed for that backend; there is no fallback.
+`new_arc_with_snapshot_options(options)` sets the backend's default writer options.
+Each collection uses its own fixed options to write snapshots for subscribers.
+Writer enum variants exist only for enabled Cargo features.
 
 All datatypes use the revision-one `QTSN` envelope: a 24-byte header carries the revision,
 datatype kind, codec, compression, stored length, and raw length. Payloads use bitcode or
@@ -340,7 +414,7 @@ free of conditional compilation while still keeping the capability out of produc
 
 | Concern | Location |
 |---------|----------|
-| The backend contract: register, exchange, realtime | `src/connectivity/mod.rs` |
+| The backend contract: open clients, register datatypes, exchange, realtime | `src/connectivity/mod.rs` |
 | The package exchanged in both directions, and how a resource is addressed | `src/types/push_pull_pack.rs` |
 | The default backend | `src/connectivity/null_connectivity.rs` |
 | The local backend and its per-resource map | `src/connectivity/local_connectivity.rs` |

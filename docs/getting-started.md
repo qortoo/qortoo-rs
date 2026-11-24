@@ -23,7 +23,9 @@ the one CI actually verifies.
 ```rust
 use qortoo::Client;
 
-let client = Client::builder("my-collection", "my-client").build().unwrap();
+let client = Client::builder("my-collection", "my-client")
+    .build_and_open()
+    .unwrap();
 
 let counter = client
     .create_datatype("my-counter")
@@ -54,7 +56,9 @@ when what you're storing isn't a running total.
 use qortoo::Client;
 use serde_json::Value;
 
-let client = Client::builder("my-collection", "my-other-client").build().unwrap();
+let client = Client::builder("my-collection", "my-other-client")
+    .build_and_open()
+    .unwrap();
 
 let name = client
     .create_datatype("my-name")
@@ -82,11 +86,11 @@ connectivity.set_realtime(false); // require explicit sync() calls
 
 let client1 = Client::builder("my-collection", "client-1")
     .with_connectivity(connectivity.clone())
-    .build()
+    .build_and_open()
     .unwrap();
 let client2 = Client::builder("my-collection", "client-2")
     .with_connectivity(connectivity)
-    .build()
+    .build_and_open()
     .unwrap();
 
 let counter1 = client1.create_datatype("shared-counter").build_counter().unwrap();

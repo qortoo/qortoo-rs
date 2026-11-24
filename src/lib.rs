@@ -5,8 +5,7 @@
 //!
 //! # Features
 //!
-//! - **CRDT Datatypes**: Conflict-free replicated data types ([`Counter`] and [`Variable`],
-//!   with more coming)
+//! - **CRDT Datatypes**: Conflict-free replicated data types ([`Counter`], [`Variable`], and [`Map`])
 //! - **Transaction Support**: Atomic transactions with automatic rollback on failure
 //! - **Read-Only Mode**: Create read-only datatypes for observation without modification
 //! - **Event Loop System**: Priority-based event processing with graceful shutdown
@@ -20,7 +19,9 @@
 //! use qortoo::Client;
 //!
 //! // Create a client
-//! let client = Client::builder("my-collection", "my-client").build().unwrap();
+//! let client = Client::builder("my-collection", "my-client")
+//!     .build_and_open()
+//!     .unwrap();
 //!
 //! // Create and use a counter
 //! let counter = client
@@ -80,11 +81,13 @@ pub use crate::observability::settings::{
     DEFAULT_METRICS_LISTEN_ADDR, MetricsSettings, resolve_metrics_listen_addr,
 };
 pub use crate::{
-    clients::client::Client,
-    connectivity::local_connectivity::LocalConnectivity,
+    clients::{client::Client, collection_info::CollectionInfo},
+    connectivity::{
+        local_collection_config::LocalCollectionOptions, local_connectivity::LocalConnectivity,
+    },
     datatypes::{
         builder::DatatypeBuilder, counter::Counter, datatype::Datatype, datatype_set::DatatypeSet,
-        handler::DatatypeHandler, variable::Variable,
+        handler::DatatypeHandler, map::Map, variable::Variable,
     },
     errors::{
         BoxedError,

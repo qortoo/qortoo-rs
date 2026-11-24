@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet, hash_map::Entry},
     fmt::{Debug, Formatter},
     sync::{
         Arc,
@@ -11,12 +11,31 @@ use crossbeam_channel::Sender;
 use parking_lot::RwLock;
 
 use crate::{
-    DatatypeState, SnapshotWriteOptions,
-    connectivity::{Connectivity, local_datatype_server::LocalDatatypeServer},
+    ClientError, CollectionInfo, DatatypeState, SnapshotWriteOptions,
+    connectivity::{
+        Connectivity,
+        local_collection_config::{LocalCollectionConfig, LocalCollectionOptions},
+        local_datatype_server::LocalDatatypeServer,
+    },
     datatypes::{event_loop::Event, wired::WiredDatatype},
     errors::{connectivity::ConnectivityError, messages::sync as msg, push_pull::PushPullError},
     types::{common::ResourceID, push_pull_pack::PushPullPack, uid::Cuid},
+    utils::name_validator::is_valid_collection_name,
 };
+
+struct LocalCollection {
+    config: Arc<LocalCollectionConfig>,
+    clients: HashSet<Cuid>,
+}
+
+impl LocalCollection {
+    fn new(config: LocalCollectionConfig) -> Self {
+        Self {
+            config: Arc::new(config),
+            clients: HashSet::new(),
+        }
+    }
+}
 
 #[derive(Default)]
 struct LocalDatatypeServers {
@@ -40,9 +59,8 @@ struct LocalDatatypeServers {
 /// are automatically synchronized. Use [`set_realtime(false)`](Self::set_realtime)
 /// to switch to manual mode, requiring explicit [`sync()`](crate::Datatype::sync) calls.
 ///
-/// Client records retain the maximum subscription generation per resource for this
-/// backend's lifetime, including after unsubscribe or resource removal. This costs
-/// one upper bound per resource/CUID; a new backend clears these in-memory records.
+/// The backend retains opened client identities per collection and maximum
+/// subscription generations per resource for its lifetime.
 ///
 /// # Examples
 ///
@@ -59,12 +77,12 @@ struct LocalDatatypeServers {
 /// // Create two clients sharing the same backend
 /// let client1 = Client::builder("my-collection", "client-1")
 ///     .with_connectivity(connectivity.clone())
-///     .build()
+///     .build_and_open()
 ///     .unwrap();
 ///
 /// let client2 = Client::builder("my-collection", "client-2")
 ///     .with_connectivity(connectivity)
-///     .build()
+///     .build_and_open()
 ///     .unwrap();
 ///
 /// // Create a counter in client1
@@ -82,16 +100,17 @@ struct LocalDatatypeServers {
 /// ```
 #[allow(dead_code)]
 pub struct LocalConnectivity {
+    collections: RwLock<HashMap<String, LocalCollection>>,
     datatype_servers: RwLock<LocalDatatypeServers>,
     is_realtime: AtomicBool,
-    snapshot_write_options: SnapshotWriteOptions,
+    default_snapshot_write_options: SnapshotWriteOptions,
 }
 
 impl LocalConnectivity {
     /// Creates a new `LocalConnectivity` instance wrapped in an `Arc`.
     ///
     /// The returned instance starts in realtime mode, meaning changes
-    /// are automatically synchronized across connected clients.
+    /// are automatically synchronized across clients.
     ///
     /// # Examples
     ///
@@ -108,14 +127,60 @@ impl LocalConnectivity {
         Self::new_arc_with_snapshot_options(Default::default())
     }
 
-    /// Creates a backend with an explicit immutable snapshot writer policy.
+    /// Creates a backend with explicit default snapshot writer options for its collections.
     /// Only capabilities enabled by Cargo features can be selected.
     pub fn new_arc_with_snapshot_options(options: SnapshotWriteOptions) -> Arc<Self> {
         Arc::new(Self {
+            collections: RwLock::default(),
             datatype_servers: RwLock::default(),
             is_realtime: AtomicBool::new(true),
-            snapshot_write_options: options,
+            default_snapshot_write_options: options,
         })
+    }
+
+    /// Creates a collection using the backend's default snapshot writer and server policy checks.
+    ///
+    /// Call this before opening the first client for the collection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the name or limits are invalid, or if the collection already exists.
+    pub fn create_collection(&self, name: &str, info: CollectionInfo) -> Result<(), ClientError> {
+        self.create_collection_with_options(
+            name,
+            info,
+            LocalCollectionOptions::new(self.default_snapshot_write_options),
+        )
+    }
+
+    /// Creates a collection with shared information and server-only options.
+    ///
+    /// Call this before opening the first client for the collection. Both settings
+    /// are fixed at creation. The validation options apply only to the local backend.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the name or limits are invalid, or if the collection already exists.
+    pub fn create_collection_with_options(
+        &self,
+        name: &str,
+        info: CollectionInfo,
+        options: LocalCollectionOptions,
+    ) -> Result<(), ClientError> {
+        if !is_valid_collection_name(name) {
+            return Err(ClientError::invalid_collection_name(name));
+        }
+        info.validate_limits()?;
+
+        match self.collections.write().entry(name.to_owned()) {
+            Entry::Vacant(entry) => {
+                entry.insert(LocalCollection::new(LocalCollectionConfig::new(
+                    info, options,
+                )));
+                Ok(())
+            }
+            Entry::Occupied(_) => Err(ClientError::CollectionAlreadyExists(name.to_owned())),
+        }
     }
 
     /// Returns the local datatype server for a given resource ID, if it exists.
@@ -185,9 +250,32 @@ impl Debug for LocalConnectivity {
 }
 
 impl Connectivity for LocalConnectivity {
+    fn open_client(
+        &self,
+        collection: &str,
+        cuid: &Cuid,
+    ) -> Result<Arc<CollectionInfo>, ConnectivityError> {
+        let mut collections = self.collections.write();
+        let collection = collections.entry(collection.to_owned()).or_insert_with(|| {
+            LocalCollection::new(LocalCollectionConfig::new(
+                CollectionInfo::default(),
+                LocalCollectionOptions::new(self.default_snapshot_write_options),
+            ))
+        });
+        collection.clients.insert(cuid.clone());
+        Ok(collection.config.info.clone())
+    }
+
     fn register(&self, wired: Arc<WiredDatatype>, sender: Sender<Event>) {
         let attr = wired.core.attr.clone();
         let resource_id = attr.resource_id();
+        let config = self
+            .collections
+            .read()
+            .get(attr.client_common.collection.as_ref())
+            .expect("client must open its collection before registering a datatype")
+            .config
+            .clone();
 
         let mut datatypes = self.datatype_servers.write();
         let LocalDatatypeServers {
@@ -199,7 +287,7 @@ impl Connectivity for LocalConnectivity {
             Arc::new(RwLock::new(LocalDatatypeServer::new(
                 &attr,
                 max_sub_gens,
-                self.snapshot_write_options,
+                config,
             )))
         });
         server.write().insert_client_item(wired, sender);

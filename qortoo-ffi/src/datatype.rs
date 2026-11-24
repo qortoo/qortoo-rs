@@ -86,6 +86,7 @@ impl QortooDatatype {
         match &self.inner {
             DatatypeSet::Counter(counter) => counter,
             DatatypeSet::Variable(variable) => variable,
+            DatatypeSet::Map(map) => map,
         }
     }
 }

@@ -3,11 +3,11 @@ use std::sync::Arc;
 use crossbeam_channel::Sender;
 
 use crate::{
-    DatatypeState,
+    CollectionInfo, DatatypeState,
     connectivity::Connectivity,
     datatypes::{event_loop::Event, wired::WiredDatatype},
     errors::{connectivity::ConnectivityError, messages::sync as msg, push_pull::PushPullError},
-    types::{checkpoint::CheckPoint, push_pull_pack::PushPullPack},
+    types::{checkpoint::CheckPoint, push_pull_pack::PushPullPack, uid::Cuid},
 };
 
 #[derive(Debug)]
@@ -29,6 +29,14 @@ impl NullConnectivity {
 }
 
 impl Connectivity for NullConnectivity {
+    fn open_client(
+        &self,
+        _collection: &str,
+        _cuid: &Cuid,
+    ) -> Result<Arc<CollectionInfo>, ConnectivityError> {
+        Ok(Arc::new(CollectionInfo::default()))
+    }
+
     fn register(&self, _wired: Arc<WiredDatatype>, _ender: Sender<Event>) {
         // do nothing
     }
@@ -58,7 +66,9 @@ impl Connectivity for NullConnectivity {
                 self.push_transaction(pushed, &mut pulled);
             }
             DatatypeState::Unsubscribing => {
-                pulled.state = DatatypeState::Disabled;
+                if !pushed.has_more {
+                    pulled.state = DatatypeState::Disabled;
+                }
                 self.push_transaction(pushed, &mut pulled);
             }
             DatatypeState::Deleting => {

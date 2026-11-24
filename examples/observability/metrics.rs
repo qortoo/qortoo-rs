@@ -28,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("                   172.17.0.1:9000           (Linux / docker bridge)");
     println!("Ctrl-C to stop.");
 
-    let client = Client::builder("example-metrics", "client-a").build()?;
+    let client = Client::builder("example-metrics", "client-a").build_and_open()?;
     let counter = client.create_datatype("counter").build_counter()?;
 
     let mut iteration: i64 = 0;

@@ -1,36 +1,34 @@
 use super::{
     SnapshotCodec, WINDOW_LOG,
-    wire::{decode_frame, decode_payload, encode_frame, encode_payload},
+    wire::{decode_frame, decode_payload, encode_payload},
 };
 use crate::{
-    SnapshotDecodeLimits, SnapshotErrorReason, SnapshotWriteOptions,
+    SnapshotCodecKind, SnapshotDecodeLimits, SnapshotErrorReason,
     datatypes::crdts::variable_crdt::VariableCrdt,
     types::{timestamp::Timestamp, uid::Cuid},
 };
 
 impl SnapshotCodec for VariableCrdt {
-    fn encode_snapshot(
+    const KIND: u8 = 2;
+
+    fn encode_raw(
         &self,
-        options: SnapshotWriteOptions,
-    ) -> Result<Box<[u8]>, SnapshotErrorReason> {
+        codec: SnapshotCodecKind,
+        _max_map_entries: usize,
+    ) -> Result<Vec<u8>, SnapshotErrorReason> {
         let dto = SnapshotVariable {
             lamport: self.timestamp().lamport(),
             cuid: self.timestamp().cuid().to_bytes(),
             value: self.validate_state().ok_or(SnapshotErrorReason::Invalid)?,
         };
-        encode_frame(
-            2,
-            options,
-            &encode_payload!(options.codec, &dto)?,
-            WINDOW_LOG,
-        )
+        encode_payload!(codec, &dto)
     }
 
     fn decode_snapshot(
         bytes: &[u8],
         limits: SnapshotDecodeLimits,
     ) -> Result<Self, SnapshotErrorReason> {
-        let (codec, raw) = decode_frame(bytes, 2, limits, WINDOW_LOG)?;
+        let (codec, raw) = decode_frame(bytes, Self::KIND, limits, WINDOW_LOG)?;
         let dto: SnapshotVariable = decode_payload!(codec, raw.as_ref())?;
         let timestamp = Timestamp::new(
             dto.lamport,

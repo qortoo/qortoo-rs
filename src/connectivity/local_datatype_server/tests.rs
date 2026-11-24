@@ -24,6 +24,25 @@ pub(super) use crate::{
         snapshot_write_options,
     },
 };
+use crate::{
+    CollectionInfo, LocalCollectionOptions, SnapshotWriteOptions,
+    connectivity::local_collection_config::LocalCollectionConfig,
+};
+
+pub(super) fn collection_config(options: SnapshotWriteOptions) -> Arc<LocalCollectionConfig> {
+    Arc::new(LocalCollectionConfig::new(
+        CollectionInfo::default(),
+        LocalCollectionOptions::new(options),
+    ))
+}
+
+pub(super) fn test_server(attr: &crate::datatypes::common::Attribute) -> LocalDatatypeServer {
+    LocalDatatypeServer::new(
+        attr,
+        Default::default(),
+        collection_config(snapshot_write_options()),
+    )
+}
 
 pub(super) fn transaction(cuid: &Cuid, cseq: u64, mut operation: Operation) -> Arc<Transaction> {
     operation.set_lamport(cseq);
@@ -54,7 +73,7 @@ impl TestFixture {
     pub(super) fn client(&self, alias: impl crate::types::common::IntoString) -> Client {
         Client::builder(self.collection.clone(), alias)
             .with_connectivity(self.connectivity.clone())
-            .build()
+            .build_and_open()
             .unwrap()
     }
 

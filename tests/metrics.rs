@@ -58,7 +58,7 @@ mod tests_metrics {
         let base_ok = counter_val!(s, "qortoo_sync_total", "result", "success");
 
         let client = Client::builder("metrics-test", "can_record_sync_success_metrics")
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client.create_datatype("c1").build_counter().unwrap();
         counter.sync().unwrap();

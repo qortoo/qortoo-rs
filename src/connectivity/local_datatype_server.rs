@@ -8,15 +8,15 @@ use crossbeam_channel::Sender;
 use tracing::{instrument, trace};
 
 use crate::{
-    DataType, DatatypeState, SnapshotWriteOptions,
+    DataType, DatatypeError, DatatypeState, SnapshotDecodeLimits, SnapshotErrorReason,
+    connectivity::local_collection_config::LocalCollectionConfig,
     datatypes::{Crdt, common::Attribute, event_loop::Event, wired::WiredDatatype},
     errors::{connectivity::ConnectivityError, messages::sync as msg, push_pull::PushPullError},
-    operations::{Operation, transaction::Transaction},
+    operations::{MemoryMeasurable, Operation, transaction::Transaction},
     types::{
         checkpoint::CheckPoint,
         common::ArcStr,
         notification::Notification,
-        operation_context::OperationContext,
         push_pull_pack::PushPullPack,
         uid::{Cuid, Duid},
     },
@@ -71,14 +71,14 @@ struct SyncedState {
     history: VecDeque<Arc<Transaction>>,
     sseq_history_pruned: u64,
     sseq_gc_safe: u64,
-    snapshot_write_options: SnapshotWriteOptions,
+    config: Arc<LocalCollectionConfig>,
 }
 
 impl SyncedState {
-    fn new(r#type: DataType, snapshot_write_options: SnapshotWriteOptions) -> Self {
+    fn new(r#type: DataType, config: Arc<LocalCollectionConfig>) -> Self {
         Self {
             crdt: Crdt::new(r#type),
-            snapshot_write_options,
+            config,
             lamport: 0,
             sseq_at_server: 0,
             checkpoints: HashMap::new(),
@@ -116,11 +116,11 @@ impl SyncedState {
             .or_insert_with(|| Subscription::new(initial_sseq, 0, self.sseq_gc_safe))
     }
 
-    fn push_transactions(&mut self, pushed: &PushPullPack) -> Result<(u64, bool), PushPullError> {
+    fn push_transactions(&mut self, pushed: &PushPullPack) -> Result<bool, PushPullError> {
         let previous_cseq = self.cseq_at_server(&pushed.cuid);
         let mut incoming = pushed.transactions_after_cseq(previous_cseq).peekable();
         if incoming.peek().is_none() {
-            return Ok((previous_cseq, false));
+            return Ok(false);
         }
 
         // Publish state and progress only after the entire new batch applies successfully.
@@ -138,13 +138,11 @@ impl SyncedState {
                     msg::INVALID_TRANSACTION.into(),
                 ));
             }
-            for operation in tx.iter() {
-                let context = OperationContext::try_new(operation, &tx.cuid)
-                    .map_err(|e| PushPullError::ProtocolViolation(e.to_string()))?;
-                crdt.execute_remote_operation(&context)
-                    .map_err(|e| PushPullError::ProtocolViolation(e.to_string()))?;
-                lamport = lamport.max(operation.lamport);
-            }
+            self.config.validate_transaction_writes(tx)?;
+            let before = self.config.state_size_before(&crdt);
+            crdt.execute_remote_transaction(tx, &mut lamport)
+                .map_err(|e| PushPullError::ProtocolViolation(e.to_string()))?;
+            self.config.validate_state_change(before, &crdt)?;
             sseq += 1;
             let mut owned_tx: Transaction = (**tx).clone();
             owned_tx.sseq = sseq;
@@ -157,7 +155,7 @@ impl SyncedState {
         self.history.extend(transactions);
         self.get_or_insert_checkpoint(pushed, pushed.checkpoint.sseq)
             .cseq_at_server = cseq;
-        Ok((cseq, true))
+        Ok(true)
     }
 
     fn sseq_history_prunable(&self) -> u64 {
@@ -180,10 +178,19 @@ impl SyncedState {
     }
 
     fn get_subscribe_snapshot(&self) -> Result<Transaction, PushPullError> {
+        let mut limits = SnapshotDecodeLimits::default();
+        limits.max_input_bytes = limits
+            .max_input_bytes
+            .min(self.config.info.max_snapshot_bytes);
         let bytes = self
             .crdt
-            .serialize(self.snapshot_write_options)
-            .map_err(|error| PushPullError::SnapshotUnavailable(error.to_string()))?;
+            .serialize_with_limits(self.config.options.snapshot_write_options, limits)
+            .map_err(|error| match error {
+                DatatypeError::SnapshotEncode(SnapshotErrorReason::LimitExceeded) => {
+                    PushPullError::SnapshotUnavailable(msg::SNAPSHOT_SIZE_LIMIT.into())
+                }
+                _ => PushPullError::SnapshotUnavailable(error.to_string()),
+            })?;
         let mut operation = Operation::new_snapshot(bytes);
         operation.set_lamport(self.lamport);
         let mut transaction = Transaction::new_with_cuid(&Cuid::new_nil());
@@ -192,14 +199,37 @@ impl SyncedState {
         Ok(transaction)
     }
 
-    fn pull_transactions(&self, pulled: &mut PushPullPack) {
-        let from_sseq = pulled.checkpoint.sseq;
-        for tx in &self.history {
-            if tx.sseq > from_sseq && tx.cuid != pulled.cuid {
+    fn pull_transactions(&self, pushed: &PushPullPack, pulled: &mut PushPullPack) {
+        let max_transmission_bytes = self.config.info.max_transmission_bytes;
+        let mut bytes = 0;
+        // A partial Pull acknowledges this client's writes as the history scan crosses them.
+        let (cseq_before_push, last_pushed_cseq) = match pushed.pushed_transaction_cseq_range() {
+            Some(range) => (range.start().saturating_sub(1), *range.end()),
+            None => (pushed.checkpoint.cseq, pushed.checkpoint.cseq),
+        };
+        pulled.checkpoint = CheckPoint::new(
+            pushed.checkpoint.sseq,
+            cseq_before_push.min(self.cseq_at_server(&pushed.cuid)),
+        );
+        let start = self
+            .history
+            .partition_point(|tx| tx.sseq <= pushed.checkpoint.sseq);
+        for tx in self.history.range(start..) {
+            if tx.cuid == pushed.cuid {
+                pulled.checkpoint.cseq = tx.cseq.min(last_pushed_cseq);
+            } else {
+                let size = tx.size();
+                if !pulled.transactions.is_empty()
+                    && size > max_transmission_bytes.saturating_sub(bytes)
+                {
+                    pulled.has_more = true;
+                    break;
+                }
+                bytes += size;
                 pulled.transactions.push(tx.clone());
             }
+            pulled.checkpoint.sseq = tx.sseq;
         }
-        pulled.checkpoint.sseq = self.sseq_at_server;
     }
 }
 
@@ -233,13 +263,13 @@ impl LocalDatatypeServer {
     pub(super) fn new(
         attr: &Attribute,
         max_sub_gens: HashMap<Cuid, u64>,
-        snapshot_write_options: SnapshotWriteOptions,
+        config: Arc<LocalCollectionConfig>,
     ) -> Self {
         Self {
             max_sub_gens,
             wired_map: HashMap::new(),
             sender_map: HashMap::new(),
-            synced: SyncedState::new(attr.r#type, snapshot_write_options),
+            synced: SyncedState::new(attr.r#type, config),
             collection: attr.client_common.collection.clone(),
             key: attr.key.clone(),
             r#type: attr.r#type,
@@ -465,8 +495,9 @@ impl LocalDatatypeServer {
         previous: Option<Subscription>,
         max_sub_gen: Option<u64>,
     ) -> PushPullPack {
-        // Unsubscribe closes its generation even when the final batch is rejected.
-        if (result.is_ok() || pushed.state == DatatypeState::Unsubscribing)
+        let closes_subscription = pushed.state == DatatypeState::Unsubscribing
+            && !matches!(result, Err(PushPullError::CollectionPolicyViolation(_)));
+        if (result.is_ok() || closes_subscription)
             && max_sub_gen.is_none_or(|generation| pushed.sub_gen > generation)
         {
             self.max_sub_gens
@@ -504,11 +535,10 @@ impl LocalDatatypeServer {
         pulled: &mut PushPullPack,
     ) -> Result<(), PushPullError> {
         self.validate_creation(pushed)?;
-        let (cseq, _) = self.synced.push_transactions(pushed)?;
+        self.synced.push_transactions(pushed)?;
         self.duid = pushed.duid.clone();
-        pulled.checkpoint = CheckPoint::new(pushed.checkpoint.sseq, cseq);
         // A creation retry after a lost response must also pull intervening changes from other clients.
-        self.synced.pull_transactions(pulled);
+        self.synced.pull_transactions(pushed, pulled);
         pulled.state = DatatypeState::Subscribed;
         self.update_subscription_progress(pushed, pulled, 0);
         Ok(())
@@ -545,9 +575,8 @@ impl LocalDatatypeServer {
         is_realtime: bool,
     ) -> Result<(), PushPullError> {
         self.validate_client_push(pushed)?;
-        let (cseq, pushed_any) = self.synced.push_transactions(pushed)?;
-        pulled.checkpoint = CheckPoint::new(pushed.checkpoint.sseq, cseq);
-        self.synced.pull_transactions(pulled);
+        let pushed_any = self.synced.push_transactions(pushed)?;
+        self.synced.pull_transactions(pushed, pulled);
         pulled.state = success_state;
         self.update_subscription_progress(pushed, pulled, 0);
         if is_realtime && pushed_any {
@@ -589,14 +618,22 @@ impl LocalDatatypeServer {
         is_realtime: bool,
     ) -> Result<(), PushPullError> {
         let result = if self.synced.has_active_subscription(&pushed.cuid) {
-            self.process_push_pull(pushed, pulled, DatatypeState::Disabled, is_realtime)
+            let result = self.process_push_pull(pushed, pulled, DatatypeState::Disabled, is_realtime);
+            if result.is_ok() && (pushed.has_more || pulled.has_more) {
+                pulled.state = DatatypeState::Unsubscribing;
+                return Ok(());
+            }
+            result
         } else {
             pulled.state = DatatypeState::Disabled;
             Ok(())
         };
 
-        // Always clean up client subscription regardless of error: the client will be Disabled
-        // either way, and leaving stale entries would cause infinite unsubscribe retry loops.
+        // A policy rejection retains the subscription so the final batch can be retried.
+        if matches!(result, Err(PushPullError::CollectionPolicyViolation(_))) {
+            return result;
+        }
+        // Other outcomes close the subscription.
         self.wired_map.remove(&pushed.cuid);
         self.sender_map.remove(&pushed.cuid);
         self.synced.checkpoints.remove(&pushed.cuid);
@@ -630,7 +667,7 @@ impl LocalDatatypeServer {
         pulled.duid = self.duid.clone();
         pulled.checkpoint = CheckPoint::new(
             snapshot.sseq,
-            self.synced.cseq_at_server(&pushed.cuid),
+            self.synced.cseq_at_server(&pushed.cuid).min(pushed.checkpoint.cseq),
         );
         pulled.snapshot_transaction = Some(Arc::new(snapshot));
         pulled.state = DatatypeState::Subscribed;

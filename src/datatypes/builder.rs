@@ -3,34 +3,38 @@ use std::collections::BTreeMap;
 use dyn_fmt::AsStrFormatExt;
 
 use crate::{
-    Client, ClientError, Counter, DataType, DatatypeHandler, DatatypeState, Variable,
-    datatypes::option::DatatypeOption,
+    Client, ClientError, Counter, DataType, DatatypeHandler, DatatypeState, Map, Variable,
+    datatypes::{datatype_set::DatatypeSet, option::DatatypeOption},
     errors::{messages::client as msg, with_err_out},
     utils::name_validator::is_valid_datatype_key,
 };
 
-/// A builder for constructing Qortoo datatypes with configurable options.
+/// Configures and registers a datatype with a [`Client`].
 ///
-/// `DatatypeBuilder` is obtained from a [`Client`] via one of:
-/// - [`Client::subscribe_datatype`] — subscribe to an existing datatype by key
-/// - [`Client::create_datatype`] — create a new datatype by key
-/// - [`Client::subscribe_or_create_datatype`] — subscribe if exists, otherwise create
+/// The client method chooses the datatype's initial lifecycle state.
 ///
-/// construction by calling a concrete builder, such as [`DatatypeBuilder::build_counter`].
+/// - [`Client::subscribe_datatype`] requests an existing datatype by key.
+/// - [`Client::create_datatype`] requests a new datatype by key.
+/// - [`Client::subscribe_or_create_datatype`] accepts either outcome.
 ///
-/// The provided values are clamped to an allowed range. If a value is smaller
-/// than the minimum, the minimum is used; if larger than the maximum, the
-/// maximum is used.
+/// Finish registration with [`build_counter`](Self::build_counter),
+/// [`build_variable`](Self::build_variable), or [`build_map`](Self::build_map).
+/// These methods validate the datatype key and register the handle locally.
+/// The backend processes the request during synchronization.
+/// A datatype key must be 1 to 255 bytes long, contain no NUL bytes, and
+/// start with a character other than `$`.
+/// See the [builder guide](https://github.com/qortoo/qortoo-rs/blob/main/docs/client-and-datatype-builder.md).
 ///
-/// The builder preserves the intended lifecycle state based on how it was
-/// obtained from [`Client`]. For example:
+/// # Examples
+///
 /// ```
 /// use qortoo::{
 ///     Client, DatatypeState, Datatype, LocalConnectivity,
 ///     SnapshotCodecKind, SnapshotCompression, SnapshotWriteOptions,
 /// };
+///
 /// # #[cfg(feature = "snapshot-bitcode")]
-/// let codec = SnapshotCodecKind::Bitcode;
+/// # let codec = SnapshotCodecKind::Bitcode;
 /// # #[cfg(not(feature = "snapshot-bitcode"))]
 /// # let codec = SnapshotCodecKind::Postcard;
 /// // Pause automatic synchronization to inspect the initial builder states.
@@ -41,20 +45,20 @@ use crate::{
 /// connectivity.set_realtime(false);
 /// let client = Client::builder("docs-example", "DatatypeBuilder-test")
 ///     .with_connectivity(connectivity)
-///     .build()
+///     .build_and_open()
 ///     .unwrap();
 /// assert_eq!(
 ///     client.subscribe_datatype("k1").build_counter().unwrap().get_state(),
 ///     DatatypeState::Subscribing
 /// );
 /// assert_eq!(
-///     client.create_datatype("k2").build_counter().unwrap().get_state(),
+///     client.create_datatype("k2").build_variable().unwrap().get_state(),
 ///     DatatypeState::Creating
 /// );
 /// assert_eq!(
 ///     client
 ///         .subscribe_or_create_datatype("k3")
-///         .build_counter()
+///         .build_map()
 ///         .unwrap()
 ///         .get_state(),
 ///     DatatypeState::SubscribingOrCreating
@@ -82,64 +86,49 @@ impl<'c> DatatypeBuilder<'c> {
         }
     }
 
-    /// Finalizes the builder and constructs a [`Counter`].
-    ///
-    /// Uses the builder's lifecycle state (subscribe/create/subscribe-or-create)
-    /// to return a ready-to-use counter.
+    /// Registers a [`Counter`] with the builder's client.
     ///
     /// # Errors
-    /// Returns [`ClientError`] if the underlying creation/subscription fails.
     ///
-    /// # Examples
-    /// ```
-    /// use qortoo::Client;
-    /// let client = Client::builder("doc-example", "build_counter-test").build().unwrap();
-    /// let counter = client
-    ///     .create_datatype("counter-1")
-    ///     .build_counter()
-    ///     .unwrap();
-    /// assert_eq!(counter.get_value(), 0);
-    /// ```
+    /// Returns [`ClientError::FailedToSubscribeOrCreateDatatype`] if the key
+    /// is invalid or the client already manages that key, or
+    /// [`ClientError::ClientNotOpen`] if the client has not been opened.
     pub fn build_counter(self) -> Result<Counter, ClientError> {
-        if !is_valid_datatype_key(&self.key) {
-            return Err(with_err_out!(
-                ClientError::FailedToSubscribeOrCreateDatatype(
-                    msg::INVALID_DATATYPE_KEY_TEMPLATE.format(&[self.key])
-                )
-            ));
-        }
-        let ds = self.client.do_subscribe_or_create_datatype(
-            self.key,
-            DataType::Counter,
-            self.state,
-            self.option,
-            self.is_readonly,
-            self.handlers,
-        )?;
-        Ok(ds
+        Ok(self
+            .build(DataType::Counter)?
             .into_counter()
-            .expect("DatatypeSet::new must return DatatypeSet::Counter for DataType::Counter"))
+            .expect("DatatypeSet must match the requested type"))
     }
 
-    /// Finalizes the builder and constructs a [`Variable`].
-    ///
-    /// Uses the builder's lifecycle state (subscribe/create/subscribe-or-create)
-    /// to return a ready-to-use variable.
+    /// Registers a [`Variable`] with the builder's client.
     ///
     /// # Errors
-    /// Returns [`ClientError`] if the underlying creation/subscription fails.
     ///
-    /// # Examples
-    /// ```
-    /// use qortoo::Client;
-    /// let client = Client::builder("doc-example", "build_variable-test").build().unwrap();
-    /// let variable = client
-    ///     .create_datatype("profile-1")
-    ///     .build_variable()
-    ///     .unwrap();
-    /// assert_eq!(variable.get::<serde_json::Value>().unwrap(), serde_json::Value::Null);
-    /// ```
+    /// Returns [`ClientError::FailedToSubscribeOrCreateDatatype`] if the key
+    /// is invalid or the client already manages that key, or
+    /// [`ClientError::ClientNotOpen`] if the client has not been opened.
     pub fn build_variable(self) -> Result<Variable, ClientError> {
+        Ok(self
+            .build(DataType::Variable)?
+            .into_variable()
+            .expect("DatatypeSet must match the requested type"))
+    }
+
+    /// Registers a [`Map`] with the builder's client.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError::FailedToSubscribeOrCreateDatatype`] if the key
+    /// is invalid or the client already manages that key, or
+    /// [`ClientError::ClientNotOpen`] if the client has not been opened.
+    pub fn build_map(self) -> Result<Map, ClientError> {
+        Ok(self
+            .build(DataType::Map)?
+            .into_map()
+            .expect("DatatypeSet must match the requested type"))
+    }
+
+    fn build(self, datatype: DataType) -> Result<DatatypeSet, ClientError> {
         if !is_valid_datatype_key(&self.key) {
             return Err(with_err_out!(
                 ClientError::FailedToSubscribeOrCreateDatatype(
@@ -147,34 +136,29 @@ impl<'c> DatatypeBuilder<'c> {
                 )
             ));
         }
-        let ds = self.client.do_subscribe_or_create_datatype(
+        self.client.do_subscribe_or_create_datatype(
             self.key,
-            DataType::Variable,
+            datatype,
             self.state,
             self.option,
             self.is_readonly,
             self.handlers,
-        )?;
-        Ok(ds
-            .into_variable()
-            .expect("DatatypeSet::new must return DatatypeSet::Variable for DataType::Variable"))
+        )
     }
 
-    /// Configures the maximum memory size for the push buffer.
+    /// Sets the byte limit for the push buffer.
     ///
-    /// The push buffer stores pending operations before they are synchronized.
-    /// When the buffer exceeds this limit, further write operations will fail
-    /// until pending operations are synchronized.
-    ///
-    /// # Arguments
-    ///
-    /// * `size` - Maximum memory size in bytes (will be clamped to allowed range)
+    /// The buffer holds local transactions pending synchronization. The default
+    /// limit is 100 MB and `size` is clamped to 1 MB through 1 GB. A transaction
+    /// that would exceed the limit fails to commit and is rolled back.
     ///
     /// # Examples
     ///
     /// ```
     /// use qortoo::Client;
-    /// let client = Client::builder("doc-example", "push-buffer-test").build().unwrap();
+    /// let client = Client::builder("doc-example", "push-buffer-test")
+    ///     .build_and_open()
+    ///     .unwrap();
     /// let counter = client
     ///     .create_datatype("my-counter")
     ///     .with_max_memory_size_of_push_buffer(20_000_000) // 20MB
@@ -187,23 +171,25 @@ impl<'c> DatatypeBuilder<'c> {
         self
     }
 
-    /// Marks this datatype as read-only.
+    /// Configures the datatype to reject local writes.
     ///
-    /// Read-only datatypes reject all write operations, making them
-    /// suitable for scenarios where you want to observe state without
-    /// modification.
+    /// The read-only setting also applies after a subscription is confirmed.
+    /// Read-only handles can read local state and receive remote updates.
     ///
     /// # Examples
     ///
     /// ```
     /// use qortoo::Client;
-    /// let client = Client::builder("doc-example", "readonly-test").build().unwrap();
+    /// let client = Client::builder("doc-example", "readonly-test")
+    ///     .build_and_open()
+    ///     .unwrap();
     /// let counter = client
     ///     .subscribe_datatype("read-only-counter")
     ///     .with_readonly()
     ///     .build_counter()
     ///     .unwrap();
-    /// // Write operations will fail on readonly counters
+    /// assert_eq!(counter.get_value(), 0);
+    /// assert!(counter.increase().is_err());
     /// ```
     pub fn with_readonly(mut self) -> Self {
         self.is_readonly = true;
@@ -212,16 +198,16 @@ impl<'c> DatatypeBuilder<'c> {
 
     /// Registers a [`DatatypeHandler`] at the given `priority`.
     ///
-    /// Handlers are invoked in ascending priority order. If a handler is already
-    /// registered at the same priority, it will be replaced when the datatype is built.
-    ///
-    /// This method can be chained multiple times to register multiple handlers.
+    /// Handlers run in ascending priority order. Setting a priority again
+    /// replaces the handler previously configured at that priority.
     ///
     /// # Examples
     ///
     /// ```
     /// use qortoo::{Client, DatatypeHandler};
-    /// let client = Client::builder("doc-example", "with-handler-test").build().unwrap();
+    /// let client = Client::builder("doc-example", "with-handler-test")
+    ///     .build_and_open()
+    ///     .unwrap();
     /// let counter = client
     ///     .create_datatype("my-counter")
     ///     .with_handler(0, DatatypeHandler::new())
@@ -248,7 +234,7 @@ mod tests_datatype_builder {
     #[instrument]
     fn can_show_how_to_use_datatype_builder() {
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
-            .build()
+            .build_and_open()
             .unwrap();
         let _counter = client
             .subscribe_datatype(get_test_func_name!())
@@ -261,7 +247,7 @@ mod tests_datatype_builder {
     #[instrument]
     fn can_create_readonly_counter() {
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client
             .subscribe_datatype(get_test_func_name!())
@@ -299,7 +285,7 @@ mod tests_datatype_builder {
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
 
         let counter = client.create_datatype("create_dt").build_counter().unwrap();
@@ -331,7 +317,7 @@ mod tests_datatype_builder {
     #[instrument]
     fn can_fail_with_invalid_datatype_keys(#[case] key: &str, #[case] success_expected: bool) {
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
-            .build()
+            .build_and_open()
             .unwrap();
         let ret = client.create_datatype(key).build_counter();
         assert_eq!(ret.is_ok(), success_expected);
@@ -354,7 +340,7 @@ mod tests_datatype_builder {
     #[instrument]
     fn can_build_a_variable_via_datatype_builder() {
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
-            .build()
+            .build_and_open()
             .unwrap();
         let variable = client
             .create_datatype(get_test_func_name!())

@@ -15,7 +15,7 @@ mod tests_getting_started {
     #[instrument]
     fn can_run_the_getting_started_counter_walkthrough() {
         let client = Client::builder("my-collection", "my-client")
-            .build()
+            .build_and_open()
             .unwrap();
 
         let counter = client
@@ -32,7 +32,7 @@ mod tests_getting_started {
     #[instrument]
     fn can_run_the_getting_started_variable_walkthrough() {
         let client = Client::builder("my-collection", "my-other-client")
-            .build()
+            .build_and_open()
             .unwrap();
 
         let name = client.create_datatype("my-name").build_variable().unwrap();
@@ -51,11 +51,11 @@ mod tests_getting_started {
 
         let client1 = Client::builder("my-collection", "client-1")
             .with_connectivity(connectivity.clone())
-            .build()
+            .build_and_open()
             .unwrap();
         let client2 = Client::builder("my-collection", "client-2")
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
 
         let counter1 = client1

@@ -11,6 +11,8 @@ use crate::{
 
 pub(super) type Result<T> = std::result::Result<T, SnapshotErrorReason>;
 
+pub(super) const HEADER_BYTES: usize = 24;
+
 macro_rules! encode_payload {
     ($codec:expr, $value:expr) => {{
         use $crate::{SnapshotErrorReason, datatypes::crdts::snapshot::wire::Codec};
@@ -78,20 +80,26 @@ pub(super) fn encode_frame(
     kind: u8,
     options: SnapshotWriteOptions,
     raw: &[u8],
+    limits: Limits,
     window_log: u32,
 ) -> Result<Box<[u8]>> {
     #[cfg(not(feature = "snapshot-zstd"))]
     let _ = window_log;
+    if raw.len() > limits.max_raw_bytes {
+        return Err(SnapshotErrorReason::LimitExceeded);
+    }
     let payload = match options.compression {
         SnapshotCompression::None => Cow::Borrowed(raw),
         #[cfg(feature = "snapshot-zstd")]
         SnapshotCompression::Zstd1 => Cow::Owned(compression::encode(raw, window_log)?),
     };
-    let mut out = buffer_with_capacity(
-        24usize
-            .checked_add(payload.len())
-            .ok_or(SnapshotErrorReason::Invalid)?,
-    )?;
+    let frame_len = HEADER_BYTES
+        .checked_add(payload.len())
+        .ok_or(SnapshotErrorReason::LimitExceeded)?;
+    if frame_len > limits.max_input_bytes {
+        return Err(SnapshotErrorReason::LimitExceeded);
+    }
+    let mut out = buffer_with_capacity(frame_len)?;
     out.extend_from_slice(b"QTSN");
     out.extend_from_slice(&[1, kind, options.codec.id(), options.compression.id()]);
     write_size(&mut out, payload.len())?;
@@ -112,7 +120,7 @@ pub(super) fn decode_frame(
         return Err(SnapshotErrorReason::LimitExceeded);
     }
     let mut cursor = input;
-    let header = take_bytes(&mut cursor, 24)?;
+    let header = take_bytes(&mut cursor, HEADER_BYTES)?;
     if &header[..4] != b"QTSN" {
         return Err(SnapshotErrorReason::Invalid);
     }

@@ -1,3 +1,4 @@
+use dyn_fmt::AsStrFormatExt;
 use thiserror::Error;
 
 use crate::errors::messages::client as msg;
@@ -26,6 +27,22 @@ pub enum ClientError {
     /// example, mismatched type or datatype state).
     #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = msg::SUBSCRIBE_OR_CREATE_FAILED_PREFIX)]
     FailedToSubscribeOrCreateDatatype(String) = 101,
+
+    /// The backend could not open the client.
+    #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = msg::OPEN_CLIENT_FAILED_PREFIX)]
+    FailedToOpenClient(String) = 102,
+
+    /// The requested collection policy cannot be used by the backend.
+    #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = msg::INVALID_COLLECTION_LIMITS_PREFIX)]
+    InvalidCollectionLimits(String) = 103,
+
+    /// The collection already has an immutable policy.
+    #[error("[E{code}] {prefix}{0}", code = self.code(), prefix = msg::COLLECTION_ALREADY_EXISTS_PREFIX)]
+    CollectionAlreadyExists(String) = 104,
+
+    /// A datatype build was attempted before opening the client.
+    #[error("[E{code}] {message}", code = self.code(), message = msg::CLIENT_NOT_OPEN)]
+    ClientNotOpen = 105,
 }
 
 impl PartialEq for ClientError {
@@ -42,7 +59,15 @@ impl ClientError {
         match self {
             Self::InvalidCollectionName(_) => 100,
             Self::FailedToSubscribeOrCreateDatatype(_) => 101,
+            Self::FailedToOpenClient(_) => 102,
+            Self::InvalidCollectionLimits(_) => 103,
+            Self::CollectionAlreadyExists(_) => 104,
+            Self::ClientNotOpen => 105,
         }
+    }
+
+    pub(crate) fn invalid_collection_name(name: &str) -> Self {
+        Self::InvalidCollectionName(msg::INVALID_COLLECTION_NAME_TEMPLATE.format(&[name]))
     }
 }
 

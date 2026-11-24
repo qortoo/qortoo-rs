@@ -38,7 +38,9 @@ dependency; `qortoo-go`'s CI does exactly this.
 use qortoo::Client;
 
 // Create a client
-let client = Client::builder("my-collection", "my-client").build().unwrap();
+let client = Client::builder("my-collection", "my-client")
+    .build_and_open()
+    .unwrap();
 
 // Create a writable counter
 let counter = client

@@ -1,7 +1,7 @@
 //! Snapshot writer choices and independent receiver limits.
 use crate::defaults::{
-    DEFAULT_SNAPSHOT_MAX_INPUT_BYTES, DEFAULT_SNAPSHOT_MAX_MAP_ENTRIES,
-    DEFAULT_SNAPSHOT_MAX_RAW_BYTES,
+    UPPER_LIMIT_SNAPSHOT_INPUT_BYTES, UPPER_LIMIT_SNAPSHOT_MAP_ENTRIES,
+    UPPER_LIMIT_SNAPSHOT_RAW_BYTES,
 };
 
 /// Binary encoding of a revision-one snapshot payload.
@@ -139,9 +139,9 @@ impl Default for SnapshotWriteOptions {
 impl Default for SnapshotDecodeLimits {
     fn default() -> Self {
         Self {
-            max_input_bytes: DEFAULT_SNAPSHOT_MAX_INPUT_BYTES,
-            max_raw_bytes: DEFAULT_SNAPSHOT_MAX_RAW_BYTES,
-            max_map_entries: DEFAULT_SNAPSHOT_MAX_MAP_ENTRIES,
+            max_input_bytes: UPPER_LIMIT_SNAPSHOT_INPUT_BYTES,
+            max_raw_bytes: UPPER_LIMIT_SNAPSHOT_RAW_BYTES,
+            max_map_entries: UPPER_LIMIT_SNAPSHOT_MAP_ENTRIES,
         }
     }
 }

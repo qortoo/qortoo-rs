@@ -10,7 +10,9 @@ use derive_more::Display;
 /// ```
 /// use qortoo::{Client, DataType, Datatype};
 ///
-/// let client = Client::builder("doc-example", "datatype-test").build().unwrap();
+/// let client = Client::builder("doc-example", "datatype-test")
+///     .build_and_open()
+///     .unwrap();
 /// let counter = client.create_datatype("my-counter").build_counter().unwrap();
 /// assert_eq!(counter.get_type(), DataType::Counter);
 /// ```
@@ -23,7 +25,7 @@ pub enum DataType {
     /// CRDT variable storing a single JSON value with last-writer-wins semantics
     #[display("Variable")]
     Variable = 1,
-    /// Per-key LWW map core (public handle and builder are not yet available)
+    /// CRDT map storing JSON values with per-key last-writer-wins semantics
     #[display("Map")]
     Map = 2,
 }
@@ -44,7 +46,9 @@ pub enum DataType {
 /// ```
 /// use qortoo::{Client, DatatypeState, Datatype};
 ///
-/// let client = Client::builder("doc-example", "state-test").build().unwrap();
+/// let client = Client::builder("doc-example", "state-test")
+///     .build_and_open()
+///     .unwrap();
 ///
 /// // Creating state allows writing
 /// let counter1 = client.create_datatype("c1").build_counter().unwrap();
@@ -164,7 +168,7 @@ mod tests_datatype {
     #[instrument]
     fn can_not_write_when_readonly() {
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
-            .build()
+            .build_and_open()
             .unwrap();
 
         // Creating state allows writing

@@ -16,7 +16,7 @@ fn can_hold_gc_acknowledgements_until_the_entire_push_buffer_is_drained() {
     for _ in 0..3 {
         writer
             .transaction(
-                "x".repeat(crate::defaults::DEFAULT_MAX_TRANSMISSION_SIZE as usize / 2 + 1),
+                "x".repeat(crate::defaults::DEFAULT_MAX_TRANSMISSION_BYTES as usize / 2 + 1),
                 |counter| {
                     counter.increase()?;
                     Ok(())
@@ -34,8 +34,6 @@ fn can_hold_gc_acknowledgements_until_the_entire_push_buffer_is_drained() {
         ));
     });
     writer.sync().unwrap();
-    writer.sync().unwrap();
-    writer.sync().unwrap();
     assert_eq!(*reports.lock(), vec![(1, 1, 1), (1, 3, 1), (1, 4, 1)]);
     assert_eq!(writer.get_value(), 23);
     assert_eq!(
@@ -49,7 +47,9 @@ fn can_hold_gc_acknowledgements_until_the_entire_push_buffer_is_drained() {
         5
     );
     peer.sync().unwrap();
-    assert_eq!(f.server().read().synced.sseq_gc_safe, 2);
+    // Each follow-up reports the preceding page. The final page (5) is still unacknowledged.
+    assert_eq!(f.server().read().synced.sseq_gc_safe, 4);
+    assert_eq!(f.server().read().synced.sseq_history_pruned, 4);
 }
 
 #[test]
@@ -91,7 +91,7 @@ fn can_preserve_the_bootstrap_floor_without_acknowledging_a_lost_snapshot() {
 #[test]
 fn can_include_readonly_gc_reports_and_ignore_delayed_confirmations() {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
+    let mut server = test_server(&attr);
     let mut writer = PushPullPack::new(&attr, DatatypeState::Creating);
     writer.transactions = (1..=3)
         .map(|seq| transaction(&writer.cuid, seq, Operation::new_counter_increase(1)))
@@ -161,7 +161,7 @@ fn can_reset_gc_confirmation_before_automatic_resubscription() {
 #[case::invalid_batch(false)]
 fn can_reject_gc_reports_without_publishing_progress(#[case] above_checkpoint: bool) {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
+    let mut server = test_server(&attr);
     let mut pushed = PushPullPack::new(&attr, DatatypeState::Creating);
     pushed.transactions = vec![transaction(
         &pushed.cuid,

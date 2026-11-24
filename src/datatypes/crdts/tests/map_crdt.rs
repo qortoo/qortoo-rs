@@ -5,9 +5,7 @@ use crate::{
     datatypes::{
         common::ReturnType,
         crdts::{
-            Crdt, LocalOperationOutcome, RollbackAction,
-            map_crdt::{MapCrdt, TOMBSTONE_LOGICAL_OVERHEAD_BYTES},
-            snapshot::SnapshotCodec,
+            Crdt, LocalOperationOutcome, RollbackAction, map_crdt::MapCrdt, snapshot::SnapshotCodec,
         },
     },
     operations::Operation,
@@ -122,7 +120,7 @@ fn can_put_remove_and_snapshot_an_empty_key_locally_and_remotely() {
             local_map
         );
         if value.is_none() {
-            assert_eq!(local_map.tombstone_bytes, TOMBSTONE_LOGICAL_OVERHEAD_BYTES);
+            assert_eq!(local_map.tombstone_bytes, 42);
         }
     }
 }
@@ -341,6 +339,7 @@ fn can_fork_shared_roots_and_isolate_payloads_metadata_and_rollback() {
     forked.apply_rollback_action(rollback).unwrap();
     assert_eq!(map.live_count, forked.live_count);
     assert_eq!(map.tombstone_bytes, forked.tombstone_bytes);
+    assert_eq!(map.logical_state_bytes(), forked.logical_state_bytes());
 }
 
 #[test]
@@ -367,6 +366,15 @@ fn can_round_trip_deterministic_snapshots_without_serializing_approvals() {
         bytes
     );
     let decoded = MapCrdt::decode_snapshot(&bytes, Default::default()).unwrap();
+    let recounted: u64 = decoded
+        .entries
+        .iter()
+        .map(|(key, entry)| {
+            42 + key.len() as u64 + entry.v.as_deref().unwrap_or_default().len() as u64
+        })
+        .sum();
+    assert_eq!(map.logical_state_bytes(), recounted);
+    assert_eq!(decoded.logical_state_bytes(), recounted);
     assert_eq!(
         decoded.entries.get("gone").unwrap().approved_sseq_upper,
         None

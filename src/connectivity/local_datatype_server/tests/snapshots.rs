@@ -148,7 +148,7 @@ fn can_keep_a_failed_snapshot_application_unacknowledged() {
 #[test]
 fn can_serve_an_empty_backend_snapshot_before_any_writes() {
     let attr = new_attribute!(DataType::Counter);
-    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
+    let mut server = test_server(&attr);
     let create = PushPullPack::new(&attr, DatatypeState::Creating);
     assert!(server.process(&create, false).unwrap().error.is_none());
     let subscribe = PushPullPack::with_sub_gen(&attr, DatatypeState::Subscribing, create.sub_gen);
@@ -171,7 +171,7 @@ fn can_serve_a_snapshot_without_accessing_client_state(#[case] keep_busy_handle:
         DatatypeState::Subscribed,
         WiredInterceptor::new_arc(),
     );
-    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
+    let mut server = test_server(&attr);
     let (sender, _) = crossbeam_channel::unbounded();
     server.insert_client_item(wired.clone(), sender);
     let mut create = PushPullPack::new(&attr, DatatypeState::Creating);
@@ -257,7 +257,8 @@ fn can_apply_snapshot_policy_for_each_available_writer_and_datatype() {
             let options = SnapshotWriteOptions { codec, compression };
             for kind in [DataType::Counter, DataType::Variable, DataType::Map] {
                 let attr = new_attribute!(kind);
-                let mut server = LocalDatatypeServer::new(&attr, Default::default(), options);
+                let mut server =
+                    LocalDatatypeServer::new(&attr, Default::default(), collection_config(options));
                 let mut create = PushPullPack::new(&attr, DatatypeState::Creating);
                 let operation = match kind {
                     DataType::Counter => Operation::new_counter_increase(7),
@@ -302,7 +303,7 @@ fn can_apply_snapshot_policy_for_each_available_writer_and_datatype() {
 fn can_keep_subscription_progress_when_snapshot_capture_fails() {
     use crate::types::operation_context::OperationContext;
     let attr = new_attribute!(DataType::Variable);
-    let mut server = LocalDatatypeServer::new(&attr, Default::default(), snapshot_write_options());
+    let mut server = test_server(&attr);
     let mut create = PushPullPack::new(&attr, DatatypeState::Creating);
     create.transactions = vec![transaction(
         &create.cuid,
@@ -355,7 +356,7 @@ fn can_disable_after_a_snapshot_limit_failure_without_installing_state(
     let reader = Client::builder(f.collection.clone(), "reader")
         .with_connectivity(f.connectivity.clone())
         .with_snapshot_decode_limits(limits)
-        .build()
+        .build_and_open()
         .unwrap();
     let replica = reader
         .subscribe_or_create_datatype(f.key.clone())
@@ -441,4 +442,122 @@ fn can_propagate_snapshot_policy_from_local_connectivity() {
         replica.sync().unwrap();
         assert_eq!(replica.get_value(), 7);
     }
+}
+
+#[test]
+fn can_keep_syncing_when_a_new_subscription_exceeds_the_snapshot_limit() {
+    let attr = new_attribute!(DataType::Variable);
+    let mut options = snapshot_write_options();
+    options.compression = crate::SnapshotCompression::None;
+    let config = LocalCollectionConfig::new(
+        crate::CollectionInfo {
+            max_snapshot_bytes: 1000,
+            ..Default::default()
+        },
+        crate::LocalCollectionOptions {
+            validate_state_size: false,
+            ..crate::LocalCollectionOptions::new(options)
+        },
+    );
+    let mut server = LocalDatatypeServer::new(&attr, Default::default(), Arc::new(config));
+    let mut push = PushPullPack::new(&attr, DatatypeState::Creating);
+    let set = |value: &str| Operation::new_variable_set(value.as_bytes().into());
+    push.transactions = vec![transaction(&push.cuid, 1, set("1"))];
+    assert!(server.process(&push, false).unwrap().error.is_none());
+
+    let mut reader = PushPullPack::new(&attr, DatatypeState::Subscribing);
+    reader.cuid = Cuid::new();
+    let subscribed = server.process(&reader, false).unwrap();
+    assert!(subscribed.snapshot_transaction.is_some());
+    reader.state = DatatypeState::Subscribed;
+    reader.duid = subscribed.duid;
+    reader.checkpoint = subscribed.checkpoint;
+
+    let large = format!("\"{}\"", "x".repeat(2000));
+    push.state = DatatypeState::Subscribed;
+    push.transactions = vec![
+        transaction(&push.cuid, 2, set("2")),
+        transaction(&push.cuid, 3, set(&large)),
+    ];
+    let accepted = server.process(&push, false).unwrap();
+    assert!(accepted.error.is_none());
+    assert_eq!(accepted.checkpoint, CheckPoint::new(3, 3));
+
+    let mut subscribe = PushPullPack::new(&attr, DatatypeState::Subscribing);
+    subscribe.cuid = Cuid::new();
+    let history = server.synced.history.clone();
+    let checkpoints = server.synced.checkpoints.clone();
+    let generations = server.max_sub_gens.clone();
+    let rejected = server.process(&subscribe, false).unwrap();
+    assert_eq!(
+        rejected.error,
+        Some(PushPullError::SnapshotUnavailable(
+            "snapshot exceeds the collection or default decoder limits".into()
+        ))
+    );
+    assert!(rejected.snapshot_transaction.is_none());
+    assert_eq!(
+        server.synced.crdt.as_variable().unwrap().value(),
+        large.as_bytes()
+    );
+    assert_eq!(server.synced.history, history);
+    assert_eq!(server.synced.checkpoints, checkpoints);
+    assert_eq!(server.max_sub_gens, generations);
+
+    let pulled = server.process(&reader, false).unwrap();
+    assert!(pulled.error.is_none());
+    assert_eq!(pulled.checkpoint.sseq, 3);
+    assert_eq!(
+        pulled.transactions,
+        history
+            .into_iter()
+            .filter(|tx| tx.sseq > 1)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(pulled.transactions.len(), 2);
+
+    push.checkpoint = accepted.checkpoint;
+    push.transactions = vec![transaction(&push.cuid, 4, set("4"))];
+    assert!(server.process(&push, false).unwrap().error.is_none());
+    let subscribed = server.process(&subscribe, false).unwrap();
+    assert!(subscribed.error.is_none());
+    assert_eq!(subscribed.snapshot_transaction.unwrap().sseq, 4);
+}
+
+#[test]
+fn can_subscribe_with_one_snapshot_larger_than_the_batch_target() {
+    use crate::operations::MemoryMeasurable;
+
+    let f = TestFixture::new(get_test_ids!());
+    let mut writer = snapshot_write_options();
+    writer.compression = crate::SnapshotCompression::None;
+    let target = 1_000;
+    f.connectivity
+        .create_collection_with_options(
+            &f.collection,
+            crate::CollectionInfo {
+                max_transmission_bytes: target,
+                ..Default::default()
+            },
+            crate::LocalCollectionOptions::new(writer),
+        )
+        .unwrap();
+    let source = f
+        .client("writer")
+        .create_datatype(&f.key)
+        .build_variable()
+        .unwrap();
+    let value = "x".repeat(2_000);
+    source.set(&value).unwrap();
+    source.sync().unwrap();
+    let client = f.client("reader");
+    let reader = client.subscribe_datatype(&f.key).build_variable().unwrap();
+    f.interceptor(&client).set_after_pull(move |pull| {
+        assert!(pull.snapshot_transaction.as_ref().unwrap().size() > target);
+        assert!(pull.transactions.is_empty());
+        assert!(!pull.has_more);
+        Ok(())
+    });
+    reader.sync().unwrap();
+    assert_eq!(reader.get::<String>().unwrap(), value);
 }

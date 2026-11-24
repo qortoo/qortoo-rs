@@ -86,7 +86,7 @@ another handle can observe values written by a transaction that has not committe
 
 **Calls during a transaction callback.**
 
-A **handle** is a `Counter` or `Variable` value used to access a datatype. Cloning it
+A **handle** is a `Counter`, `Variable`, or `Map` value used to access a datatype. Cloning it
 shares the same local value and state. Each handle also carries a transaction context,
 which determines whether a write joins the active transaction.
 
@@ -498,7 +498,7 @@ because a remote transaction is never rolled back locally.
 Local execution distinguishes applied operations from no-ops. A no-op returns its result
 without recording an operation or rollback action or advancing the operation ID. A transaction
 containing only no-ops adds no push batch or push event. Map uses this for missing-key Removes;
-see [Map Core](map.md). The shared `with_local_operation_as_tx` boundary also permits validation
+see [Map](map.md). The shared `with_local_operation_as_tx` boundary also permits validation
 and previous-value conversion under the same mutable write lock as execution.
 
 ## Related Concepts

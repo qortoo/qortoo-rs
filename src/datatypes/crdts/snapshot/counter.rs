@@ -1,31 +1,29 @@
 use super::{
     SnapshotCodec, WINDOW_LOG,
-    wire::{decode_frame, decode_payload, encode_frame, encode_payload},
+    wire::{decode_frame, decode_payload, encode_payload},
 };
 use crate::{
-    SnapshotDecodeLimits, SnapshotErrorReason, SnapshotWriteOptions,
+    SnapshotCodecKind, SnapshotDecodeLimits, SnapshotErrorReason,
     datatypes::crdts::counter_crdt::CounterCrdt,
 };
 
 impl SnapshotCodec for CounterCrdt {
-    fn encode_snapshot(
+    const KIND: u8 = 1;
+
+    fn encode_raw(
         &self,
-        options: SnapshotWriteOptions,
-    ) -> Result<Box<[u8]>, SnapshotErrorReason> {
+        codec: SnapshotCodecKind,
+        _max_map_entries: usize,
+    ) -> Result<Vec<u8>, SnapshotErrorReason> {
         let dto = SnapshotCounter { value: self.value };
-        encode_frame(
-            1,
-            options,
-            &encode_payload!(options.codec, &dto)?,
-            WINDOW_LOG,
-        )
+        encode_payload!(codec, &dto)
     }
 
     fn decode_snapshot(
         bytes: &[u8],
         limits: SnapshotDecodeLimits,
     ) -> Result<Self, SnapshotErrorReason> {
-        let (codec, raw) = decode_frame(bytes, 1, limits, WINDOW_LOG)?;
+        let (codec, raw) = decode_frame(bytes, Self::KIND, limits, WINDOW_LOG)?;
         let dto: SnapshotCounter = decode_payload!(codec, raw.as_ref())?;
         Ok(CounterCrdt { value: dto.value })
     }

@@ -141,6 +141,10 @@ impl Datatype for TransactionalDatatype {
         self.core.mutable.read().get_state()
     }
 
+    fn get_state_bytes(&self) -> u64 {
+        self.core.mutable.read().crdt.logical_state_bytes()
+    }
+
     fn get_server_version(&self) -> u64 {
         self.core.mutable.read().checkpoint.sseq
     }
@@ -451,6 +455,10 @@ mod tests_transactional {
             connectivity,
             Default::default(),
         );
+        common
+            .connectivity
+            .open_client(&common.collection, &common.cuid)
+            .unwrap();
         Arc::new(Attribute::new(
             get_test_func_name!().into(),
             DataType::Counter,
@@ -715,7 +723,7 @@ mod tests_transactional {
     #[test]
     fn can_reject_sync_from_both_handles_inside_a_transaction_callback() {
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client.create_datatype("counter").build_counter().unwrap();
         let original = counter.clone();
@@ -756,7 +764,7 @@ mod tests_transactional {
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client.create_datatype("counter").build_counter().unwrap();
         let original = counter.clone();
@@ -831,7 +839,7 @@ mod tests_transactional {
         connectivity.set_realtime(false);
         let client = Client::builder(get_test_collection_name!(), get_test_func_name!())
             .with_connectivity(connectivity)
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client.create_datatype("counter").build_counter().unwrap();
         let reader = counter.clone();
@@ -862,7 +870,7 @@ mod tests_transactional {
         let collection = get_test_collection_name!();
         let client = Client::builder(collection.clone(), get_test_func_name!())
             .with_connectivity(connectivity.clone())
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client.create_datatype("counter").build_counter().unwrap();
         counter.sync().unwrap();
@@ -1399,7 +1407,7 @@ mod tests_transactional {
     #[instrument]
     async fn can_execute_the_same_tx_ctx_continuously_with_none_tx_ctx() {
         let client1 = Client::builder(get_test_collection_name!(), get_test_func_name!())
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client1
             .create_datatype(get_test_func_name!())

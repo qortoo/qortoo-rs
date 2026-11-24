@@ -24,13 +24,14 @@ checked.
 flowchart TD
     CB["Client::builder(collection, alias)"]
     WC["optional: .with_connectivity(backend)"]
-    B["build() — validates the collection name"]
+    B["build() — validates the collection name and constructs the client"]
+    O["Client::open() — registers the identity and stores collection information"]
     INTENT["create_datatype(key) — create<br/>subscribe_datatype(key) — subscribe<br/>subscribe_or_create_datatype(key) — either"]
     OPT["optional: .with_readonly()<br/>.with_max_memory_size_of_push_buffer(bytes)<br/>.with_handler(priority, handler)"]
-    TERM["build_counter() / build_variable()<br/>validates the key, registers it, constructs the datatype"]
-    DT["Counter / Variable"]
+    TERM["build_counter() / build_variable() / build_map()<br/>validates the key, registers it, constructs the datatype"]
+    DT["Counter / Variable / Map"]
 
-    CB --> WC --> B --> INTENT --> OPT --> TERM --> DT
+    CB --> WC --> B --> O --> INTENT --> OPT --> TERM --> DT
 ```
 
 ## Snapshot Receiver Policy
@@ -95,10 +96,12 @@ addressing.
 
 ## Rules and Guarantees
 
-**Client construction.** A client is built from a collection and an alias, with a backend that
-defaults to one exchanging with no one. The collection name is validated at construction and a
-client is never created with an invalid one, so no datatype-level state exists before the name
-is known to be good.
+**Opening a client.** `ClientBuilder::build_and_open()` creates a client and registers its
+identity through the backend. To keep the client available for retry with the same identity,
+use `ClientBuilder::build()` to create it locally and call `Client::open()` separately.
+Once open succeeds, `Client::is_open()` returns `true`. Before then, a datatype build with a valid key
+returns `ClientError::ClientNotOpen`. The default backend supplies the default information.
+See [Connectivity](connectivity.md#collection-policy) for policy configuration.
 
 **Lifecycle intent is fixed when the builder is obtained.** Which client method produced the
 builder decides the state the datatype starts in, and nothing later in the chain can change it.
@@ -122,17 +125,12 @@ calls.
 brought to the nearest bound rather than refused. The default is 100 MB, the lower bound 1 MB,
 and the upper bound 1 GB.
 
-**Limits on the guarantees.** Validation covers the shape of a name, not its availability: a
-well-formed collection or key that the server refuses still fails later, as a routed error
-rather than at build time. A successfully built datatype is also not yet synchronized — it
-starts in the requested state and reaches subscribed only when the backend confirms it.
+**Limits on the guarantees.** The backend can refuse to open a client even when the
+collection name is valid. Datatype creation and subscription are confirmed separately by
+synchronization. A newly built datatype starts in the requested state and reaches
+subscribed when the backend confirms it.
 
 ## Behavior
-
-**Building a client.** `Client::builder("my-collection", "web-1").build()` validates the
-collection name and returns a client with the default backend, which exchanges with no one.
-Passing a backend before `build()` replaces it. An invalid collection name fails here, before
-any datatype exists.
 
 **Requesting a datatype three ways.** `create_datatype(key)` asks the server to create it and
 starts in the creating state. `subscribe_datatype(key)` asks for one that already exists and

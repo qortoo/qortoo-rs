@@ -8,6 +8,7 @@ mod variable_crdt;
 
 pub(crate) use crdt::Crdt;
 pub(crate) use execution::{LocalOperationOutcome, RollbackAction};
+pub(crate) use map_crdt::MapCrdt;
 
 #[cfg(test)]
 mod tests;

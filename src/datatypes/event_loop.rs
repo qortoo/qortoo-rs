@@ -128,7 +128,7 @@ impl EventLoop {
         let rt_handle = wired.core.attr.client_common.handle.clone();
         let unbounded_tx = self.unbounded_tx.clone();
         let bounded_tx = self.bounded_tx.clone();
-        let connectivity = wired.core.attr.client_common.connectivity.clone();
+        let connectivity = &wired.core.attr.client_common.connectivity;
         let span = Span::current();
         connectivity.register(wired.clone(), unbounded_tx.clone());
         rt_handle.spawn_blocking(move || {
@@ -137,95 +137,93 @@ impl EventLoop {
                 let mut loop_mode = LoopMode::Normal;
                 let mut backoff = None;
                 loop {
-                    match Self::receive_event(
+                    let event = match Self::receive_event(
                         &wired,
                         &bounded_rx,
                         &unbounded_rx,
                         &mut loop_mode,
                         &mut backoff,
                     ) {
-                        Ok(event) => match event {
-                            Event::Stop(tx) => {
-                                add_span_event!("receive STOP");
-                                if tx.send(()).is_err() {
-                                    error!("failed to respond STOP event");
-                                }
-                                break;
-                            }
-                            Event::PushTransaction { resp_tx, caller } => {
-                                if matches!(loop_mode, LoopMode::Stopped) {
-                                    Self::process_blocking_resp(
-                                        resp_tx,
-                                        Some(
-                                            InternalReason::EventLoop(
-                                                msg::EVENT_LOOP_STOPPED.into(),
-                                            )
-                                            .into_error(),
-                                        ),
-                                    );
-                                    continue;
-                                }
-                                // Entering the requester's span makes the sync — and the
-                                // handler notifications dispatched from it — part of the
-                                // trace that asked for it.
-                                let mut resubscribed = false;
-                                let opt_datatype_error = caller.in_scope(|| {
-                                    loop {
-                                        match wired.push_pull() {
-                                            Ok(_) => {
-                                                loop_mode = LoopMode::Normal;
-                                                break None;
-                                            }
-                                            Err(mut dewa) => {
-                                                if dewa.recovery == RecoveryAction::Resubscribe {
-                                                    if !resubscribed {
-                                                        wired.handle_error(
-                                                            dewa.error.clone(),
-                                                            dewa.recovery,
-                                                        );
-                                                        connectivity.register(
-                                                            wired.clone(),
-                                                            unbounded_tx.clone(),
-                                                        );
-                                                        resubscribed = true;
-                                                        continue;
-                                                    }
-                                                    dewa.recovery = RecoveryAction::Disable;
-                                                }
-                                                loop_mode = LoopMode::from(dewa.recovery);
-                                                if matches!(loop_mode, LoopMode::BackOff) {
-                                                    metrics::emit_backoff(&wired.core.attr);
-                                                }
-                                                wired.handle_error(
-                                                    dewa.error.clone(),
-                                                    dewa.recovery,
-                                                );
-                                                break Some(dewa.error);
-                                            }
-                                        }
-                                    }
-                                });
-                                if !matches!(loop_mode, LoopMode::BackOff) {
-                                    backoff = None;
-                                }
-                                Self::process_blocking_resp(resp_tx, opt_datatype_error);
-                            }
-                            Event::BackOff => {}
-                            Event::Notify(notify) => {
-                                if wired.handle_notification(notify) {
-                                    // best-effort: drop if a PushTransaction is already queued
-                                    let _ = bounded_tx.try_send(Event::push_transaction(None));
-                                }
-                            }
-                        },
+                        Ok(event) => event,
                         Err(err) => {
                             wired.handle_error(err, RecoveryAction::Disable);
+                            continue;
+                        }
+                    };
+                    match event {
+                        Event::Stop(tx) => {
+                            add_span_event!("receive STOP");
+                            if tx.send(()).is_err() {
+                                error!("failed to respond STOP event");
+                            }
+                            break;
+                        }
+                        Event::PushTransaction { resp_tx, caller } => {
+                            let error = caller.in_scope(|| {
+                                Self::sync_until_complete(&wired, &unbounded_tx, &mut loop_mode)
+                            });
+                            if !matches!(loop_mode, LoopMode::BackOff) {
+                                backoff = None;
+                            }
+                            Self::process_blocking_resp(resp_tx, error);
+                        }
+                        Event::BackOff => {}
+                        Event::Notify(notify) => {
+                            if wired.handle_notification(notify) {
+                                // Best effort: drop if a PushTransaction is already queued.
+                                let _ = bounded_tx.try_send(Event::push_transaction(None));
+                            }
                         }
                     }
                 }
                 add_span_event!("quiting event_loop");
             });
         });
+    }
+
+    /// Run consecutive PushPull pages for one request, allowing one immediate resubscription.
+    fn sync_until_complete(
+        wired: &Arc<WiredDatatype>,
+        unbounded_tx: &Sender<Event>,
+        loop_mode: &mut LoopMode,
+    ) -> Option<DatatypeError> {
+        if matches!(loop_mode, LoopMode::Stopped) {
+            return Some(InternalReason::EventLoop(msg::EVENT_LOOP_STOPPED.into()).into_error());
+        }
+
+        let mut resubscribed = false;
+        loop {
+            let mut failure = match wired.push_pull() {
+                Ok(true) => continue,
+                Ok(false) => {
+                    *loop_mode = LoopMode::Normal;
+                    return None;
+                }
+                Err(failure) => failure,
+            };
+
+            if failure.recovery == RecoveryAction::Resubscribe {
+                if !resubscribed {
+                    wired.handle_error(failure.error, failure.recovery);
+                    wired
+                        .core
+                        .attr
+                        .client_common
+                        .connectivity
+                        .register(wired.clone(), unbounded_tx.clone());
+                    resubscribed = true;
+                    continue;
+                }
+                failure.recovery = RecoveryAction::Disable;
+            }
+
+            *loop_mode = LoopMode::from(failure.recovery);
+            if matches!(loop_mode, LoopMode::BackOff) {
+                metrics::emit_backoff(&wired.core.attr);
+            }
+            wired.handle_error(failure.error.clone(), failure.recovery);
+            return Some(failure.error);
+        }
     }
 
     fn process_blocking_resp(
@@ -380,7 +378,7 @@ mod tests_event_loop {
         let (collection, key, resource_id) = get_test_ids!();
         let client = Client::builder(collection, "client")
             .with_connectivity(connectivity.clone())
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client.create_datatype(key).build_counter().unwrap();
 
@@ -414,7 +412,7 @@ mod tests_event_loop {
 
         let client = Client::builder(collection, "client")
             .with_connectivity(connectivity.clone())
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client.create_datatype(key).build_counter().unwrap();
 
@@ -457,7 +455,7 @@ mod tests_event_loop {
 
         let client = Client::builder(collection, "client")
             .with_connectivity(connectivity.clone())
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client.create_datatype(key).build_counter().unwrap();
 
@@ -503,7 +501,7 @@ mod tests_event_loop {
 
         let client = Client::builder(collection, "client")
             .with_connectivity(connectivity.clone())
-            .build()
+            .build_and_open()
             .unwrap();
         let counter = client.create_datatype(key).build_counter().unwrap();
 
