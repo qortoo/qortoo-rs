@@ -1,5 +1,6 @@
 use std::{
     fmt::{Debug, Display},
+    ops::RangeInclusive,
     sync::Arc,
 };
 
@@ -28,6 +29,8 @@ pub struct PushPullPack {
     /// Push: client GC acknowledgement. Pull: server-issued GC coordination boundary.
     /// Candidate and reference checks are still required before physical collection.
     pub sseq_gc_safe: u64,
+    /// More buffered writes on Push, or more server history on Pull.
+    pub has_more: bool,
     pub transactions: Vec<Arc<Transaction>>,
     pub snapshot_transaction: Option<Arc<Transaction>>,
     pub is_readonly: bool,
@@ -51,6 +54,7 @@ impl PushPullPack {
             state,
             checkpoint: CheckPoint::default(),
             sseq_gc_safe: 0,
+            has_more: false,
             transactions: Vec::new(),
             snapshot_transaction: None,
             is_readonly: attr.is_readonly,
@@ -75,12 +79,15 @@ impl PushPullPack {
         self.transactions.iter().filter(move |tx| tx.cseq > cseq)
     }
 
+    /// First through last transaction cseq in a Push batch, in wire order.
+    pub(crate) fn pushed_transaction_cseq_range(&self) -> Option<RangeInclusive<u64>> {
+        Some(self.transactions.first()?.cseq..=self.transactions.last()?.cseq)
+    }
+
     pub fn checkpointing(&mut self, cp: &CheckPoint) {
         let cseq = self
-            .transactions
-            .last()
-            .map(|tx| tx.cseq)
-            .unwrap_or(cp.cseq);
+            .pushed_transaction_cseq_range()
+            .map_or(cp.cseq, |range| *range.end());
         self.checkpoint = CheckPoint::new(cp.sseq, cseq);
     }
 
@@ -95,6 +102,7 @@ impl PushPullPack {
             state: self.state,
             checkpoint: CheckPoint::default(),
             sseq_gc_safe: 0,
+            has_more: false,
             transactions: Vec::new(),
             snapshot_transaction: None,
             is_readonly: self.is_readonly,

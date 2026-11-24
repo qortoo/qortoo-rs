@@ -361,3 +361,101 @@ fn can_recover_a_new_creation_generation_with_a_snapshot(#[case] state: Datatype
     assert_eq!(server.read().synced.crdt.as_counter().unwrap().value(), 11);
     assert_eq!(counter.get_synced_client_version(), 1);
 }
+
+#[test]
+fn can_retry_a_partial_unsubscribe_and_finish_batched_sync_for_a_readonly_peer() {
+    let f = TestFixture::new(get_test_ids!());
+    f.connectivity
+        .create_collection(
+            &f.collection,
+            crate::CollectionInfo {
+                max_transmission_bytes: 1_000,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let source = f.create_counter(&f.client("source"));
+    source.sync().unwrap();
+    let leaving_client = f.client("leaving");
+    let leaving = f.subscribe_counter(&leaving_client);
+    leaving.sync().unwrap();
+    let reader_client = f.client("reader");
+    let reader = f.subscribe_counter_readonly(&reader_client);
+    reader.sync().unwrap();
+
+    // Each tagged transaction exceeds the target and must travel intact on its own.
+    for counter in [&source, &source, &source, &leaving, &leaving] {
+        counter
+            .transaction("x".repeat(1_000), |counter| {
+                counter.increase()?;
+                counter.increase()?;
+                Ok(())
+            })
+            .unwrap();
+    }
+    source.sync().unwrap();
+    leaving.unsubscribe().unwrap();
+    let interceptor = f.interceptor(&leaving_client);
+    let pages = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let observed = pages.clone();
+    interceptor.set_after_pull(move |pull| {
+        let mut pages = observed.lock();
+        pages.push((pull.checkpoint, pull.state, pull.has_more));
+        if pages.len() == 2 {
+            return Err(ConnectivityError::TimedOut("lost middle page".into())
+                .to_datatype_error()
+                .mapping());
+        }
+        Ok(())
+    });
+    assert!(leaving.sync().is_err());
+    let server = f.server();
+    {
+        let server = server.read();
+        let checkpoint = &server.synced.checkpoints[&leaving_client.get_cuid()];
+        assert_eq!(checkpoint.sseq_at_client, 1);
+        assert_eq!(checkpoint.cseq_at_server, 1);
+        assert_eq!(checkpoint.sseq_gc_for_client, 0);
+        assert_eq!(server.synced.sseq_at_server, 4);
+    }
+    leaving.sync().unwrap();
+    let intermediate = DatatypeState::Unsubscribing;
+    assert_eq!(
+        *pages.lock(),
+        vec![
+            (CheckPoint::new(1, 0), intermediate, true),
+            (CheckPoint::new(2, 0), intermediate, true),
+            (CheckPoint::new(2, 0), intermediate, true),
+            (CheckPoint::new(4, 1), intermediate, false),
+            (CheckPoint::new(5, 2), DatatypeState::Disabled, false),
+        ]
+    );
+    assert_eq!(leaving.get_value(), 10);
+    assert!(
+        !server
+            .read()
+            .synced
+            .has_active_subscription(&leaving_client.get_cuid())
+    );
+
+    let pages = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let observed = pages.clone();
+    f.interceptor(&reader_client).set_after_pull(move |pull| {
+        observed
+            .lock()
+            .push((pull.transactions.len(), pull.checkpoint.sseq, pull.has_more));
+        Ok(())
+    });
+    reader.sync().unwrap();
+    assert_eq!(
+        *pages.lock(),
+        vec![
+            (1, 1, true),
+            (1, 2, true),
+            (1, 3, true),
+            (1, 4, true),
+            (1, 5, false)
+        ]
+    );
+    assert_eq!(reader.get_value(), 10);
+}

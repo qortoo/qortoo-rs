@@ -104,7 +104,16 @@ Exceeding any of these limits fails the subscription with `E307` before the serv
 records subscription progress. Existing subscribers can continue syncing transactions
 while new subscriptions fail. A new subscription can succeed once the state fits again.
 Subscribers may enforce stricter decoder limits.
-Using the collection's transmission target for Push and Pull batches is planned.
+Push and Pull each use `max_transmission_bytes` as a target for the sum of transaction
+sizes. Both send a transaction larger than the target on its own. A subscription
+snapshot always travels as one transaction under the separate snapshot limits.
+
+On Push, `has_more` means the client has buffered writes beyond this batch. On Pull,
+it means the server has more history after this page. If either side has more work,
+the client applies the response and continues from its new checkpoint in the same sync
+call, even for a readonly client with no pending writes. A continuation must advance
+`sseq`. An unsubscribe retains its generation and stays `Unsubscribing` until both
+directions finish, then the server closes the subscription and returns `Disabled`.
 
 ## Datatype Exchange
 
@@ -238,8 +247,10 @@ push is processed. A fresh subscription from the same client can therefore start
 sequence at zero without inheriting the previous subscription's accepted sequence.
 
 Push `checkpoint.sseq` acknowledges the last server boundary successfully applied by that
-client. Pull `checkpoint.sseq` reports the server head; sending it does not acknowledge client
-application. The backend trusts each client's reported applied boundary and tracks it
+client. Pull `checkpoint.sseq` ends the contiguous history prefix covered by this page.
+The prefix includes the client's own transactions, which consume no response bytes.
+Pull `checkpoint.cseq` acknowledges only the client's writes covered by that prefix.
+Sending the page does not acknowledge client application. The backend trusts each client's reported applied boundary and tracks it
 monotonically per subscription, without tracking which responses it previously provided.
 The reported boundary must not exceed the server head before the request is processed.
 This bound is checked separately from identity, with the same protocol error message across

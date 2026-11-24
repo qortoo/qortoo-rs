@@ -74,8 +74,8 @@ is what makes a manual retry actually manual.
 **Auto-push depends on the backend being realtime, not on the loop's mode.** Both the direct
 per-iteration check and the best-effort nudge sent after a commit are no-ops when the backend
 answers that it is not realtime. A caller using a non-realtime backend is expected to call
-`sync()` — on the guaranteed channel — whenever it wants an exchange to happen; the loop
-schedules nothing on its own in that mode.
+`sync()` on the guaranteed channel. The loop continues the requested sync while either peer
+has another batch and replies to the caller after applying the final response or encountering an error.
 
 **Loop mode is derived from the last routed recovery action, and tracks scheduling only.**
 What a recovery action means for the datatype's lifecycle is decided once, in

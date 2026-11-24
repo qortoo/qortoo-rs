@@ -22,6 +22,7 @@ pub struct PullHandler<'a> {
     pending_steps: Vec<PendingStep<'a>>,
     skip: usize,
     sent_cseq: u64,
+    continue_sync: bool,
 }
 
 impl<'a> PullHandler<'a> {
@@ -29,9 +30,11 @@ impl<'a> PullHandler<'a> {
         pulled_ppp: &'a mut PushPullPack,
         mutable: &'a mut MutableDatatype,
         sent_cseq: u64,
+        more_writes: bool,
     ) -> Self {
         let old_state = mutable.get_state();
         Self {
+            continue_sync: more_writes || pulled_ppp.has_more,
             pulled_ppp,
             mutable,
             old_state,
@@ -44,9 +47,9 @@ impl<'a> PullHandler<'a> {
     }
 
     #[instrument(skip_all, name = "applyPull")]
-    pub fn apply(&mut self) -> Result<(), DatatypeErrorWithAction> {
+    pub fn apply(&mut self) -> Result<bool, DatatypeErrorWithAction> {
         if !self.validate()? {
-            return Ok(());
+            return Ok(false);
         }
         let result = (|| -> Result<(), DatatypeErrorWithAction> {
             self.handle_error_and_datatype_state()?;
@@ -65,7 +68,7 @@ impl<'a> PullHandler<'a> {
             }
             self.mutable.needs_snapshot = false;
         }
-        result
+        result.map(|()| self.continue_sync)
     }
 
     fn validate(&self) -> Result<bool, DatatypeErrorWithAction> {
@@ -88,6 +91,7 @@ impl<'a> PullHandler<'a> {
         if self.pulled_ppp.sseq_gc_safe > new.sseq
             || new.cseq > self.sent_cseq
             || new.cseq < old.cseq
+            || (self.continue_sync && new.sseq == old.sseq)
             || new.sseq < old.sseq
             || new.sseq - old.sseq < new.cseq - old.cseq
         {
@@ -165,7 +169,12 @@ impl<'a> PullHandler<'a> {
                 }
             }
             DatatypeState::Unsubscribing => {
-                if self.pulled_ppp.state != DatatypeState::Disabled {
+                let expected = if self.continue_sync {
+                    DatatypeState::Unsubscribing
+                } else {
+                    DatatypeState::Disabled
+                };
+                if self.pulled_ppp.state != expected {
                     self.new_state = DatatypeState::Disabled;
                     self.process_illegal_state_response(self.old_state, self.pulled_ppp.state)?;
                 }
@@ -303,7 +312,7 @@ mod tests_push_handlers {
         }
         mutable.apply_action(crate::errors::datatypes::RecoveryAction::Resubscribe);
         let generation = mutable.sub_gen;
-        PullHandler::new(&mut stale, &mut mutable, 3)
+        PullHandler::new(&mut stale, &mut mutable, 3, false)
             .apply()
             .unwrap();
         assert_eq!(mutable.sub_gen, generation);
@@ -318,14 +327,14 @@ mod tests_push_handlers {
         let mut mutable = buffered_counter();
         let mut accepted = response(&mutable, CheckPoint::new(3, 3));
         accepted.sseq_gc_safe = 2;
-        PullHandler::new(&mut accepted, &mut mutable, 3)
+        PullHandler::new(&mut accepted, &mut mutable, 3, false)
             .apply()
             .unwrap();
         assert_eq!(mutable.sseq_gc_safe, 3);
         let mut invalid = response(&mutable, CheckPoint::new(3, 3));
         invalid.sseq_gc_safe = 4;
         assert!(
-            PullHandler::new(&mut invalid, &mut mutable, 3)
+            PullHandler::new(&mut invalid, &mut mutable, 3, false)
                 .apply()
                 .is_err()
         );
@@ -342,7 +351,7 @@ mod tests_push_handlers {
         failed.error =
             Some(crate::errors::push_pull::PushPullError::ServerInternalError("retry".into()));
         assert!(
-            PullHandler::new(&mut failed, &mut mutable, 3)
+            PullHandler::new(&mut failed, &mut mutable, 3, false)
                 .apply()
                 .is_err()
         );
@@ -358,7 +367,7 @@ mod tests_push_handlers {
         let tx_size = mutable.push_buffer.iter().next().unwrap().size();
         for acknowledged in [1, 1, 3, 3] {
             let mut response = response(&mutable, CheckPoint::new(acknowledged, acknowledged));
-            PullHandler::new(&mut response, &mut mutable, 3)
+            PullHandler::new(&mut response, &mut mutable, 3, false)
                 .apply()
                 .unwrap();
             assert_eq!(
@@ -396,20 +405,25 @@ mod tests_push_handlers {
     }
 
     #[rstest]
-    #[case(CheckPoint::new(4, 4))]
-    #[case(CheckPoint::new(0, 1))]
-    #[case(CheckPoint::new(2, 0))]
-    #[case(CheckPoint::new(1, 2))]
-    fn can_reject_invalid_acknowledgements_without_reclaiming(#[case] checkpoint: CheckPoint) {
+    #[case(CheckPoint::new(4, 4), false)]
+    #[case(CheckPoint::new(0, 1), false)]
+    #[case(CheckPoint::new(2, 0), false)]
+    #[case(CheckPoint::new(1, 2), false)]
+    #[case(CheckPoint::new(1, 1), true)]
+    fn can_reject_invalid_acknowledgements_without_reclaiming(
+        #[case] checkpoint: CheckPoint,
+        #[case] has_more: bool,
+    ) {
         let mut mutable = buffered_counter();
         let mut first = response(&mutable, CheckPoint::new(1, 1));
-        PullHandler::new(&mut first, &mut mutable, 3)
+        PullHandler::new(&mut first, &mut mutable, 3, false)
             .apply()
             .unwrap();
         let memory = mutable.push_buffer.mem_size;
         let mut invalid = response(&mutable, checkpoint);
+        invalid.has_more = has_more;
         assert!(
-            PullHandler::new(&mut invalid, &mut mutable, 3)
+            PullHandler::new(&mut invalid, &mut mutable, 3, false)
                 .apply()
                 .is_err()
         );
@@ -437,7 +451,7 @@ mod tests_push_handlers {
         invalid.push_operation(Operation::new_snapshot(Vec::new().into_boxed_slice()));
         failed.transactions.push(Arc::new(invalid));
         assert!(
-            PullHandler::new(&mut failed, &mut mutable, 3)
+            PullHandler::new(&mut failed, &mut mutable, 3, false)
                 .apply()
                 .is_err()
         );
@@ -453,7 +467,7 @@ mod tests_push_handlers {
             vec![1, 2, 3]
         );
         let mut successful = response(&mutable, CheckPoint::new(3, 3));
-        PullHandler::new(&mut successful, &mut mutable, 3)
+        PullHandler::new(&mut successful, &mut mutable, 3, false)
             .apply()
             .unwrap();
         assert_eq!(mutable.checkpoint, CheckPoint::new(3, 3));

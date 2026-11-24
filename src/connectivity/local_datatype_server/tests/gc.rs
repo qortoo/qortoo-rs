@@ -34,8 +34,6 @@ fn can_hold_gc_acknowledgements_until_the_entire_push_buffer_is_drained() {
         ));
     });
     writer.sync().unwrap();
-    writer.sync().unwrap();
-    writer.sync().unwrap();
     assert_eq!(*reports.lock(), vec![(1, 1, 1), (1, 3, 1), (1, 4, 1)]);
     assert_eq!(writer.get_value(), 23);
     assert_eq!(
@@ -49,7 +47,9 @@ fn can_hold_gc_acknowledgements_until_the_entire_push_buffer_is_drained() {
         5
     );
     peer.sync().unwrap();
-    assert_eq!(f.server().read().synced.sseq_gc_safe, 2);
+    // Each follow-up reports the preceding page. The final page (5) is still unacknowledged.
+    assert_eq!(f.server().read().synced.sseq_gc_safe, 4);
+    assert_eq!(f.server().read().synced.sseq_history_pruned, 4);
 }
 
 #[test]

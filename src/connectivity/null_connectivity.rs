@@ -66,7 +66,9 @@ impl Connectivity for NullConnectivity {
                 self.push_transaction(pushed, &mut pulled);
             }
             DatatypeState::Unsubscribing => {
-                pulled.state = DatatypeState::Disabled;
+                if !pushed.has_more {
+                    pulled.state = DatatypeState::Disabled;
+                }
                 self.push_transaction(pushed, &mut pulled);
             }
             DatatypeState::Deleting => {

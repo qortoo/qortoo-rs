@@ -947,6 +947,7 @@ fn can_replace_only_with_a_valid_new_subscription_generation(#[case] state: Data
     assert_eq!(server.synced.crdt.as_counter().unwrap().value(), 10);
     let progress = server.synced.checkpoints.clone();
     new.state = state;
+    new.checkpoint.cseq = 1;
     new.transactions.clear();
     let retry = server.process(&new, false).unwrap();
     assert!(retry.error.is_none());

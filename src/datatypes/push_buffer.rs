@@ -99,13 +99,13 @@ impl PushBuffer for MemoryPushBuffer {
             return Ok((popped, total_size));
         }
 
-        for i in index..self.transaction.len() {
-            let tx = self.transaction.get(i).unwrap().clone();
-            if total_size + tx.size() > max_mem_size {
+        for tx in self.transaction.range(index..) {
+            let size = tx.size();
+            if !popped.is_empty() && size > max_mem_size.saturating_sub(total_size) {
                 break;
             }
-            total_size += tx.size();
-            popped.push(tx);
+            total_size += size;
+            popped.push(tx.clone());
         }
         Ok((popped, total_size))
     }

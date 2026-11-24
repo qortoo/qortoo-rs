@@ -523,3 +523,41 @@ fn can_keep_syncing_when_a_new_subscription_exceeds_the_snapshot_limit() {
     assert!(subscribed.error.is_none());
     assert_eq!(subscribed.snapshot_transaction.unwrap().sseq, 4);
 }
+
+#[test]
+fn can_subscribe_with_one_snapshot_larger_than_the_batch_target() {
+    use crate::operations::MemoryMeasurable;
+
+    let f = TestFixture::new(get_test_ids!());
+    let mut writer = snapshot_write_options();
+    writer.compression = crate::SnapshotCompression::None;
+    let target = 1_000;
+    f.connectivity
+        .create_collection_with_options(
+            &f.collection,
+            crate::CollectionInfo {
+                max_transmission_bytes: target,
+                ..Default::default()
+            },
+            crate::LocalCollectionOptions::new(writer),
+        )
+        .unwrap();
+    let source = f
+        .client("writer")
+        .create_datatype(&f.key)
+        .build_variable()
+        .unwrap();
+    let value = "x".repeat(2_000);
+    source.set(&value).unwrap();
+    source.sync().unwrap();
+    let client = f.client("reader");
+    let reader = client.subscribe_datatype(&f.key).build_variable().unwrap();
+    f.interceptor(&client).set_after_pull(move |pull| {
+        assert!(pull.snapshot_transaction.as_ref().unwrap().size() > target);
+        assert!(pull.transactions.is_empty());
+        assert!(!pull.has_more);
+        Ok(())
+    });
+    reader.sync().unwrap();
+    assert_eq!(reader.get::<String>().unwrap(), value);
+}
