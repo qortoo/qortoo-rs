@@ -19,7 +19,8 @@ pub const QORTOO_ABI_VERSION_MAJOR: u32 = 1;
 ///   a datatype — synchronization, metadata, handlers — are exported once as
 ///   `qortoo_datatype_*` and reached through `qortoo_<type>_as_datatype`, replacing
 ///   the per-type copy of each.
-pub const QORTOO_ABI_VERSION_MINOR: u32 = 0;
+/// - 1: separate client construction and registration.
+pub const QORTOO_ABI_VERSION_MINOR: u32 = 1;
 
 /// Returns the ABI major version this library implements. Compare against the value
 /// the binding was generated for before making any other call into this library.

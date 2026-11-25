@@ -16,7 +16,7 @@ pub struct QortooClient {
     pub(crate) inner: Client,
 }
 
-/// Creates a client. `connectivity` may be null (no-op backend).
+/// Builds and opens a client. `connectivity` may be null (no-op backend).
 /// Returns null on error (see `err_out`). Release with `qortoo_client_free`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn qortoo_client_new(
@@ -24,6 +24,28 @@ pub unsafe extern "C" fn qortoo_client_new(
     alias: *const c_char,
     connectivity: *const QortooLocalConnectivity,
     err_out: *mut QortooError,
+) -> *mut QortooClient {
+    unsafe { build_client(collection, alias, connectivity, err_out, true) }
+}
+
+/// Builds a client without contacting the backend. Call `qortoo_client_open`
+/// before creating or subscribing to datatypes. Release with `qortoo_client_free`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn qortoo_client_build(
+    collection: *const c_char,
+    alias: *const c_char,
+    connectivity: *const QortooLocalConnectivity,
+    err_out: *mut QortooError,
+) -> *mut QortooClient {
+    unsafe { build_client(collection, alias, connectivity, err_out, false) }
+}
+
+unsafe fn build_client(
+    collection: *const c_char,
+    alias: *const c_char,
+    connectivity: *const QortooLocalConnectivity,
+    err_out: *mut QortooError,
+    open: bool,
 ) -> *mut QortooClient {
     unsafe {
         clear_err(err_out);
@@ -38,12 +60,38 @@ pub unsafe extern "C" fn qortoo_client_new(
             if let Some(conn) = connectivity.as_ref() {
                 builder = builder.with_connectivity(conn.inner.clone());
             }
-            match builder.build_and_open() {
+            let result = if open {
+                builder.build_and_open()
+            } else {
+                builder.build()
+            };
+            match result {
                 Ok(client) => Box::into_raw(Box::new(QortooClient { inner: client })),
                 Err(e) => {
                     set_err(err_out, e.code(), &e.to_string());
                     ptr::null_mut()
                 }
+            }
+        })
+    }
+}
+
+/// Registers the client with its backend. After a failure the same handle can retry.
+/// Repeated calls after success leave the existing registration in place.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn qortoo_client_open(
+    client: *const QortooClient,
+    err_out: *mut QortooError,
+) {
+    unsafe {
+        clear_err(err_out);
+        ffi_guard(err_out, (), || {
+            let Some(client) = client.as_ref() else {
+                set_err(err_out, QORTOO_ERR_INVALID_ARGUMENT, msg::NULL_CLIENT);
+                return;
+            };
+            if let Err(e) = client.inner.open() {
+                set_err(err_out, e.code(), &e.to_string());
             }
         })
     }

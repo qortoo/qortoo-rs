@@ -1,9 +1,11 @@
 qortoo_abi_version_major
 qortoo_abi_version_minor
+qortoo_client_build
 qortoo_client_free
 qortoo_client_get_alias
 qortoo_client_get_collection
 qortoo_client_new
+qortoo_client_open
 qortoo_client_unsubscribe_datatype
 qortoo_counter_as_datatype
 qortoo_counter_create
