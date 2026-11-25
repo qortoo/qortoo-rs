@@ -29,6 +29,10 @@ flowchart LR
 
 ## Rules and Guarantees
 
+ABI 1.1 exposes `qortoo_client_build` and `qortoo_client_open` for separate
+construction and registration. Opening can be retried on the same handle after a
+backend error. The existing `qortoo_client_new` entry point builds and opens in one call.
+
 **The surface splits on whether an operation's signature names a datatype kind.** An operation
 that does not — synchronization, metadata, handler registration — is exported exactly once as
 `qortoo_datatype_*`, reached from any concrete handle through `qortoo_<kind>_as_datatype`. An

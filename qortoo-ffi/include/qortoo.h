@@ -67,8 +67,9 @@
  *   a datatype — synchronization, metadata, handlers — are exported once as
  *   `qortoo_datatype_*` and reached through `qortoo_<type>_as_datatype`, replacing
  *   the per-type copy of each.
+ * - 1: separate client construction and registration.
  */
-#define QORTOO_ABI_VERSION_MINOR 0
+#define QORTOO_ABI_VERSION_MINOR 1
 
 /**
  * Opaque handle to a `qortoo::Client`.
@@ -252,13 +253,28 @@ extern "C" {
 #endif // __cplusplus
 
 /**
- * Creates a client. `connectivity` may be null (no-op backend).
+ * Builds and opens a client. `connectivity` may be null (no-op backend).
  * Returns null on error (see `err_out`). Release with `qortoo_client_free`.
  */
 struct QortooClient *qortoo_client_new(const char *collection,
                                        const char *alias,
                                        const struct QortooLocalConnectivity *connectivity,
                                        struct QortooError *err_out);
+
+/**
+ * Builds a client without contacting the backend. Call `qortoo_client_open`
+ * before creating or subscribing to datatypes. Release with `qortoo_client_free`.
+ */
+struct QortooClient *qortoo_client_build(const char *collection,
+                                         const char *alias,
+                                         const struct QortooLocalConnectivity *connectivity,
+                                         struct QortooError *err_out);
+
+/**
+ * Registers the client with its backend. After a failure the same handle can retry.
+ * Repeated calls after success leave the existing registration in place.
+ */
+void qortoo_client_open(const struct QortooClient *client, struct QortooError *err_out);
 
 /**
  * Releases the client. Datatypes built from it stay valid until their own free.
